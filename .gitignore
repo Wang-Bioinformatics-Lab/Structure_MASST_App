@@ -1,11 +1,14 @@
-database/*
-sessionoutput/*
+# Project data/output you don't want in git
+database/
+sessionoutput/
+output/
 yasin
 requirements_disabled.txt
-bin/__pycache__
-__pycache__
-output
+
+# Python caches / artifacts
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
+*$py.class
