@@ -10,6 +10,7 @@ dependencies:
   - tqdm
   - streamlit>=1.45  
   - ete3
+  - minify_html
   - requests
   - matplotlib
   - upsetplot

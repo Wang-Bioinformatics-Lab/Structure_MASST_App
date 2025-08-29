@@ -1,6 +1,6 @@
-from rdkit import Chem
+from rdkit import Chem, DataStructs
 from tqdm import tqdm
-from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import rdMolDescriptors, rdFingerprintGenerator
 import pandas as pd
 import re
 from formula_validation.Formula import Formula
@@ -38,7 +38,7 @@ def detect_smiles_or_smarts(s):
     else:
         return "Invalid"
 
-def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='only', smiles_type='unknown', formula_base='any', element_diff='any', max_by_grp = 8, max_overall = 10):
+def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='only', smiles_type='unknown', formula_base='any', element_diff='any', tanimoto_threshold=0.8, max_by_grp = None, max_overall = None):
 
     
     #make all column names lower case
@@ -69,7 +69,7 @@ def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='o
     if match_type == 'exact':
         # Perform exact match based on InChIKey
         df_matched = df[df['inchikey_first_block'] == target_inchi_key]
-    else:
+    elif match_type == 'substructure':
         # Perform substructure matching
         unique_smiles = df.groupby('inchikey_first_block')['Smiles'].first().dropna().reset_index()
         unique_smiles = unique_smiles['Smiles'].dropna().unique()
@@ -106,6 +106,25 @@ def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='o
                 matching_smiles.append(smiles)
 
         df_matched = df[df['Smiles'].isin(matching_smiles)]
+    elif match_type == 'tanimoto':
+        generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+
+        target_fp = generator.GetFingerprint(target_mol)
+
+        unique_smiles = df.groupby('inchikey_first_block')['Smiles'].first().dropna().reset_index()
+        unique_smiles = unique_smiles['Smiles'].dropna().unique()
+
+        matching_smiles = []
+        for smiles in tqdm(unique_smiles, desc="Tanimoto Matching"):
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                continue
+            fp = generator.GetFingerprint(mol)
+            sim = DataStructs.TanimotoSimilarity(target_fp, fp)
+            if sim >= tanimoto_threshold:
+                matching_smiles.append(smiles)
+
+        df_matched = df[df['Smiles'].isin(matching_smiles)]
 
     # If no matching SMILES were found, return an empty list
     if df_matched.empty:
@@ -114,72 +133,76 @@ def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='o
 
     df_matched = df_matched.copy()
 
-    df_matched[['collision_energy', 'Adduct', 'msManufacturer', 'msMassAnalyzer', 'GNPS_library_membership']] = df_matched[
-        ['collision_energy', 'Adduct', 'msManufacturer', 'msMassAnalyzer', 'GNPS_library_membership']
-    ].fillna('unknown')
 
-    # Group by the required columns and limit to at most 8 rows per group
-    df_matched['row_num'] = df_matched.groupby(
-        ['collision_energy', 'Adduct', 'msManufacturer', 'msMassAnalyzer', 'GNPS_library_membership', 'InChIKey_smiles']
-    ).cumcount() + 1
+    if max_by_grp is not None:
 
-    # Keep only the first 8 rows per group
-    df_limited = df_matched[df_matched['row_num'] <= max_by_grp]
+        df_matched[['collision_energy', 'Adduct', 'msManufacturer', 'msMassAnalyzer', 'GNPS_library_membership']] = df_matched[
+            ['collision_energy', 'Adduct', 'msManufacturer', 'msMassAnalyzer', 'GNPS_library_membership']
+        ].fillna('unknown')
+
+        # Group by the required columns and limit to at most 8 rows per group
+        df_matched['row_num'] = df_matched.groupby(
+            ['collision_energy', 'Adduct', 'msManufacturer', 'msMassAnalyzer', 'GNPS_library_membership', 'InChIKey_smiles']
+        ).cumcount() + 1
+
+        # Keep only the first 8 rows per group
+        df_limited = df_matched[df_matched['row_num'] <= max_by_grp]
+        
+        if len(df_limited) > max_overall:
+            df_matched['row_num'] = df_matched.groupby(
+                ['collision_energy', 'Adduct', 'msManufacturer', 'msMassAnalyzer', 'InChIKey_smiles']
+            ).cumcount() + 1
+
+            # Keep only the first 8 rows per group
+            df_limited = df_matched[df_matched['row_num'] <= max_by_grp]
+
+        if len(df_limited) > max_overall:
+            df_matched['row_num'] = df_matched.groupby(
+                ['collision_energy', 'Adduct', 'InChIKey_smiles']
+            ).cumcount() + 1
+
+            # Keep only the first 8 rows per group
+            df_limited = df_matched[df_matched['row_num'] <= max_by_grp]
+
+        if len(df_limited) > max_overall:
+            df_matched['row_num'] = df_matched.groupby(
+                ['Adduct', 'InChIKey_smiles']
+            ).cumcount() + 1
+
+            # Keep only the first 8 rows per group
+            df_limited = df_matched[df_matched['row_num'] <= max_by_grp]
+
+        if len(df_limited) > max_overall:
+            df_matched['row_num'] = df_matched.groupby(
+                ['InChIKey_smiles']
+            ).cumcount() + 1
+
+            # Keep only the first 8 rows per group
+            df_limited = df_matched[df_matched['row_num'] <= max_by_grp]
+
+        if len(df_limited) > max_overall:
+            print(f"Warning: More than {max_overall} matching structures found. Limiting to {max_overall}.")
+
+            df_limited = df_limited.head(max_overall)
+
+        print(f"Found {len(df_limited)} matching structures after limiting by group.")
     
-    if len(df_limited) > max_overall:
-        df_matched['row_num'] = df_matched.groupby(
-            ['collision_energy', 'Adduct', 'msManufacturer', 'msMassAnalyzer', 'InChIKey_smiles']
-        ).cumcount() + 1
+    else:
+        df_limited = df_matched
 
-        # Keep only the first 8 rows per group
-        df_limited = df_matched[df_matched['row_num'] <= max_by_grp]
-
-    if len(df_limited) > max_overall:
-        df_matched['row_num'] = df_matched.groupby(
-            ['collision_energy', 'Adduct', 'InChIKey_smiles']
-        ).cumcount() + 1
-
-        # Keep only the first 8 rows per group
-        df_limited = df_matched[df_matched['row_num'] <= max_by_grp]
-
-    if len(df_limited) > max_overall:
-        df_matched['row_num'] = df_matched.groupby(
-            ['Adduct', 'InChIKey_smiles']
-        ).cumcount() + 1
-
-        # Keep only the first 8 rows per group
-        df_limited = df_matched[df_matched['row_num'] <= max_by_grp]
-
-    if len(df_limited) > max_overall:
-        df_matched['row_num'] = df_matched.groupby(
-            ['InChIKey_smiles']
-        ).cumcount() + 1
-
-        # Keep only the first 8 rows per group
-        df_limited = df_matched[df_matched['row_num'] <= max_by_grp]
-
-    if len(df_limited) > max_overall:
-        print(f"Warning: More than {max_overall} matching structures found. Limiting to {max_overall}.")
-
-        df_limited = df_limited.head(max_overall)
-
-    print(f"Found {len(df_limited)} matching structures after limiting by group.")
-
-    df_limited = df_limited.copy()
     df_limited.loc[:, 'smiles_name'] = smiles_name
 
-    df_limited = df_limited.copy()
 
     #rename spectrum_id to query_spectrum_id
-    df_limited.rename(columns={'spectrum_id': 'query_spectrum_id'}, inplace=True)
+    
 
     #remove entries where query id does not start on CCMS or MSBNK
-    df_limited = df_limited[df_limited['query_spectrum_id'].str.startswith(('CCMS', 'MSBNK'))]
+    #df_limited = df_limited[df_limited['query_spectrum_id'].str.startswith(('CCMS', 'MSBNK'))]
 
     #reindex
     df_limited.reset_index(drop=True, inplace=True)
 
-    print(f"Returning {len(df_limited)} unique spectrum_ids after limiting to {max_overall}, with {max_by_grp} by group.")
+    print(f"Returning {len(df_limited)} unique spectrum_ids for {smiles_name}.")
 
     # Return the unique spectrum_ids
     return df_limited

@@ -1,1 +1,7 @@
 database/*
+sessionoutput/*
+yasin
+requirements_disabled.txt
+bin/__pycache__
+__pycache__
+output
