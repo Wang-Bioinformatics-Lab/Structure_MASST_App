@@ -1,0 +1,7 @@
+[submodule "external/GNPSDataPackage"]
+	path = external/GNPSDataPackage
+	url = https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage.git
+[submodule "external/microbe_masst"]
+	path = external/microbe_masst
+	url = https://github.com/Wang-Bioinformatics-Lab/microbe_masst.git
+	branch = no_query_drawing

@@ -1,4 +1,21 @@
-streamlit
+python_version < 3.11
+
+--extra-index-url https://pypi.anaconda.org/rdkit/simple
+
+numpy<2
+streamlit>=1.45
 pandas
+biopython
+tqdm
 requests
-plotly
+matplotlib
+upsetplot
+wikidata-dl
+Pillow
+networkx
+minify_html
+psycopg2-binary
+formula_validation
+git+https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage.git
+dash_extensions
+rdkit

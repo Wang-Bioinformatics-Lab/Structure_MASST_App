@@ -2,11 +2,9 @@ import pandas as pd
 from bin.match_smiles import fetch_and_match_smiles, detect_smiles_or_smarts
 from bin.match_smiles import detect_smiles_or_smarts
 from bin.run_fasst import query_fasst_usi
-# from match_smiles import fetch_and_match_smiles, detect_smiles_or_smarts
-# from run_fasst import query_fasst_usi
-# from make_linkouts import create_gnps_link
+from bin.run_masstRecords_queries import _get_fetcher
 import argparse
-from collections import defaultdict
+from collections import defaultdict, deque
 import os
 import requests
 import pandas as pd
@@ -14,323 +12,51 @@ from rdkit import Chem
 from rdkit.Chem import inchi
 from io import StringIO
 import sqlite3
+from urllib.parse import quote_plus
+import sys
+import time
+
+HERE = os.path.dirname(__file__)  
+PKG_PATH = os.path.abspath(os.path.join(HERE, '..', 'external', 'GNPSDataPackage'))
+
+if PKG_PATH not in sys.path:
+    sys.path.insert(0, PKG_PATH)
 
 
+from gnpsdata import fasst
 
-def get_masst_related_data(
-    smiles: str,
-    sqlite_path: str = None,
-    api_endpoint: str = "http://127.0.0.1:8001/masst_records",
-    timeout: int = 10,
-    chunk_size: int = 500
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Given a SMILES, returns (masst_df, library_df, redu_df).
-    If sqlite_path exists, queries local SQLite; otherwise uses the Datasette CSV API.
-    Splits large IN(...) queries into chunks of size `chunk_size`.
-    """
 
-    # 1) SMILES → InChIKey prefix
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        raise ValueError(f"Invalid SMILES: {smiles}")
-    prefix = inchi.MolToInchiKey(mol).split('-')[0]
+FASST_API_SERVER_URL = "https://api.fasst.gnps2.org"
 
-    # ——— helpers ———
-    def fetch_csv(sql: str) -> pd.DataFrame:
-        print(f"[API ] Querying with SQL: {sql}")
-        resp = requests.get(
-            f"{api_endpoint}.csv",
-            params={"sql": sql, "_stream": "on"},
-            timeout=timeout
-        )
-        resp.raise_for_status()
-        df = pd.read_csv(StringIO(resp.text))
-        print(f"[API ] returned {len(df)} rows")
-        return df
 
-    def fetch_sqlite(sql: str) -> pd.DataFrame:
-        print(f"[SQL ] Querying with SQL: {sql}")
-        with sqlite3.connect(sqlite_path) as conn:
-            df = pd.read_sql(sql, conn)
-        print(f"[SQL ] returned {len(df)} rows")
-        return df
-
-    use_sqlite = bool(sqlite_path and os.path.isfile(sqlite_path))
-    fetch = fetch_sqlite if use_sqlite else fetch_csv
-
-    def batched_fetch(template_sql: str, id_list: list[int]) -> pd.DataFrame:
-        """
-        Runs template_sql multiple times, substituting `{ids}` with comma–sep chunks.
-        Returns the concatenated DataFrame.
-        """
-        if not id_list:
-            print("[BATCH] No IDs to fetch.")
-            return pd.DataFrame()
-        dfs = []
-        for i in range(0, len(id_list), chunk_size):
-            chunk = id_list[i : i + chunk_size]
-            sql = template_sql.format(ids=",".join(map(str, chunk)))
-            print(f"[BATCH] chunk {i//chunk_size+1}: {len(chunk)} IDs")
-            df = fetch(sql)
-            if not df.empty:
-                dfs.append(df)
-        if dfs:
-            result = pd.concat(dfs, ignore_index=True)
-            print(f"[BATCH] total returned {len(result)} rows")
-            return result
-        else:
-            print("[BATCH] returned 0 rows")
-            return pd.DataFrame()
-
-    # 2) library_table
-    lib_sql = (
-        "SELECT * FROM library_table "
-        f"WHERE InChIKey_smiles_firstBlock = '{prefix}'"
-    )
-    print(f"[STEP 1] library_table for prefix='{prefix}'")
-    library_df = fetch(lib_sql)
-    if library_df.empty:
-        print("[STEP 1] no library hits → exiting")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-    # 3) masst_table (batch on spectrum_id_int)
-    sids = library_df['spectrum_id_int'].dropna().unique().tolist()
-    print(f"[STEP 2] masst_table for {len(sids)} spectrum_id_ints")
-    if not sids:
-        return pd.DataFrame(), library_df, pd.DataFrame()
-    masst_sql_tmpl = "SELECT * FROM masst_table WHERE spectrum_id_int IN ({ids})"
-    masst_df = batched_fetch(masst_sql_tmpl, sids)
-    if masst_df.empty:
-        print("[STEP 2] no masst hits → exiting")
-        return pd.DataFrame(), library_df, pd.DataFrame()
-
-    # 3a) Join in actual mri strings from mri_table
-    mids = masst_df['mri_id_int'].dropna().unique().tolist()
-    if mids:
-        print(f"[STEP 3a] fetching mri strings for {len(mids)} mri_id_ints")
-        mri_sql_tmpl = "SELECT mri_id_int, mri FROM mri_table WHERE mri_id_int IN ({ids})"
-        mri_map_df = batched_fetch(mri_sql_tmpl, mids)
-        if not mri_map_df.empty:
-            masst_df = masst_df.merge(mri_map_df, on='mri_id_int', how='left')
-            print(f"[STEP 3a] merged mri strings into masst_df")
-        else:
-            masst_df['mri'] = None
+def make_library_usi(lib_id):
+    if lib_id.startswith("CCMSLIB"):
+        return "mzspec:GNPS:GNPS-LIBRARY:accession:{}".format(lib_id)
     else:
-        masst_df['mri'] = None
-
-    # 3b) Join in actual spectrum_id from library_table
-    print(f"[STEP 3b] merging spectrum_id for {len(sids)} spectrum_id_ints")
-    spec_map_df = library_df[['spectrum_id_int', 'spectrum_id']].drop_duplicates()
-    masst_df = masst_df.merge(spec_map_df, on='spectrum_id_int', how='left')
-    print(f"[STEP 3b] merged spectrum_id into masst_df")
-
-    # 4) redu_table (direct on mri_id_int, batch)
-    print(f"[STEP 4] redu_table for {len(mids)} mri_id_ints")
-    if not mids:
-        print("[STEP 4] no mri_ids → returning masst+library only")
-        return masst_df, library_df, pd.DataFrame()
-    redu_sql_tmpl = "SELECT * FROM redu_table WHERE mri_id_int IN ({ids})"
-    redu_df = batched_fetch(redu_sql_tmpl, mids)
-
-    return masst_df, library_df, redu_df
-
-
-
-def GetLibraryConflicts(df_libfasst, df_library_adduct_inchikey_smiles):
-
-    print("Preparing input tables for library conflicts...")
-    df_library_adduct_inchikey_smiles = df_library_adduct_inchikey_smiles.copy()
-    df_libfasst = df_libfasst.copy()
-
-    df_library_adduct_inchikey_smiles.rename(columns={'spectrum_id': 'query_spectrum_id'}, inplace=True)
-    df_library_adduct_inchikey_smiles = df_library_adduct_inchikey_smiles.drop_duplicates(subset=['query_spectrum_id'])
-
-    df_libfasst = pd.merge(df_libfasst, df_library_adduct_inchikey_smiles, on="query_spectrum_id", how="left")
-    df_libfasst.rename(columns={
-        'Adduct': 'query_adduct',
-        'InChIKey_smiles': 'query_inchikey_smiles',
-        'Smiles': 'query_smiles'
-    }, inplace=True)
-
-    df_library_adduct_inchikey_smiles.rename(columns={'query_spectrum_id': 'GNPSLibraryAccession'}, inplace=True)
-    df_libfasst = pd.merge(df_libfasst, df_library_adduct_inchikey_smiles, on="GNPSLibraryAccession", how="left")
-    df_libfasst.rename(columns={
-        'Adduct': 'matching_adduct',
-        'InChIKey_smiles': 'matching_inchikey_smiles',
-        'Smiles': 'matching_smiles',
-        'GNPSLibraryAccession': 'matching_spectrum_id'
-    }, inplace=True)
-
-    df_libfasst = df_libfasst[df_libfasst['matching_inchikey_smiles'].notnull()]
-
-    print("Counting same and different InChIKey matches...")
-    same_inchikey = df_libfasst[df_libfasst['matching_inchikey_smiles'] == df_libfasst['query_inchikey_smiles']]
-    same_counts = same_inchikey.groupby('query_spectrum_id').size().reset_index(name='same_molecule_spectral_match_count')
-
-    different_inchikey = df_libfasst[df_libfasst['matching_inchikey_smiles'] != df_libfasst['query_inchikey_smiles']]
-    diff_row_counts = (
-        different_inchikey.groupby('query_spectrum_id')
-        .size()
-        .reset_index(name='different_molecule_spectral_match_count')
-    )
-    diff_unique_counts = (
-        different_inchikey.groupby('query_spectrum_id')['matching_inchikey_smiles']
-        .nunique()
-        .reset_index(name='different_molecule_count')
-    )
-
-    print("Extracting static query info...")
-    query_info = df_libfasst[['query_spectrum_id', 'query_adduct', 'query_smiles', 'query_inchikey_smiles']].drop_duplicates()
-
-
-
-    conflict_map = defaultdict(dict)
-
-    for query_id, group in df_libfasst.groupby('query_spectrum_id'):
-        q_inchikey = group['query_inchikey_smiles'].iloc[0]
-        
-        for _, row in group.iterrows():
-            m_inchikey = row['matching_inchikey_smiles']
-            m_smiles = row['matching_smiles']
-            
-            if pd.isna(m_inchikey) or pd.isna(m_smiles):
-                continue
-            if m_inchikey == q_inchikey:
-                continue
-            
-            # store one representative SMILES per InChIKey
-            # After — store a tuple of (SMILES, adduct)
-            if m_inchikey not in conflict_map[query_id]:
-                conflict_map[query_id][m_inchikey] = (m_smiles, row['matching_adduct'])
-
-
-    # Identify all unique conflicting InChIKeys across all queries
-    all_conflicting_inchikeys = sorted({ik for row in conflict_map.values() for ik in row})
-
-    # Now pivot the conflict_map to a DataFrame with stable column order
-    rows = []
-    for query_id, inchikey_to_smiles in conflict_map.items():
-        row = {"query_spectrum_id": query_id}
-        for idx, inchikey in enumerate(all_conflicting_inchikeys):
-            val = inchikey_to_smiles.get(inchikey)
-            if val:
-                smi, adduct = val
-                row[f"conflicting_molecule_{idx+1}"] = smi
-                row[f"conflicting_molecule_{idx+1}_adduct"] = adduct
-        rows.append(row)
-
-    # Build the DataFrame
-    smiles_wide = pd.DataFrame(rows)
-
-    # Fill missing conflicts with None
-    smiles_wide = smiles_wide.fillna(value=pd.NA)
-
-
-    print("Merging all conflict information into summary table...")
-    summary = query_info.merge(same_counts, on='query_spectrum_id', how='left')
-    summary = summary.merge(diff_row_counts, on='query_spectrum_id', how='left')
-    summary = summary.merge(diff_unique_counts, on='query_spectrum_id', how='left')
-    if not smiles_wide.empty:
-        summary = summary.merge(smiles_wide, on='query_spectrum_id', how='left')
-
-    summary[['same_molecule_spectral_match_count', 'different_molecule_spectral_match_count', 'different_molecule_count']] = (
-        summary[['same_molecule_spectral_match_count', 'different_molecule_spectral_match_count', 'different_molecule_count']]
-        .fillna(0).astype(int)
-    )
-
-    summary = summary.sort_values(by='different_molecule_spectral_match_count', ascending=False)
-
-
-    print("Saving library conflicts summary to output/structureMASST_library_conflicts.tsv")
-
-    return summary
-
-def retrieveSpectraCandidates(df_library, input_structure, get_conflicts = False, analog=False, database = 'metabolomicspanrepo_index_nightly', precursor_mz_tol = 0.05, fragment_mz_tol = 0.05, min_cos = 0.7, matching_peaks = 6, cache = "Yes"):
-
-    print("Filtering library for valid SMILES and InChIKey_smiles...")
-    df_library = df_library[
-        df_library['Smiles'].notnull() & (df_library['Smiles'] != '') & (df_library['Smiles'] != 'NaN') &
-        df_library['InChIKey_smiles'].notnull() & (df_library['InChIKey_smiles'] != '') & (df_library['InChIKey_smiles'] != 'NaN') &
-        (df_library['ppmBetweenExpAndThMass'] <= 20) &
-        ~df_library['msMassAnalyzer'].isin(['quadrupole', 'ion trap'])
-    ]
-    
-    df_library_adduct_inchikey_smiles = df_library[['spectrum_id', 'Adduct', 'InChIKey_smiles', 'Smiles']]
-    print("Matching input structure to library...")
-    structure_type = detect_smiles_or_smarts(input_structure)
-    df_library_structurematch = fetch_and_match_smiles(df_library, input_structure, smiles_type = structure_type, max_by_grp = 1000, max_overall = 1000)
-    df_library_structurematch = df_library_structurematch[["Compound_Name", "query_spectrum_id", "inchikey_first_block", 'Adduct', 'collision_energy', 'msMassAnalyzer', 'Ion_Mode']]
-
-
-    libfasst_results = []
-    df_libfasst = pd.DataFrame()
-    if len(df_library_structurematch) <= 20 and get_conflicts:
-        for index, row in df_library_structurematch.iterrows():
-            print(f"Querying FASST for spectrum {row['query_spectrum_id']} in {database} and GNPS library...")
-            lib_id = row['query_spectrum_id']
-            df_libresponse = query_fasst_usi(lib_id, 'gnpslibrary', analog=analog, precursor_mz_tol=precursor_mz_tol,
-                                            fragment_mz_tol=fragment_mz_tol, min_cos=min_cos, matching_peaks=matching_peaks,
-                                            cache=cache)
-            
-            if not df_libresponse.empty:
-                # eliminate GNPSLibraryAccession not present in spectrum_id
-                df_libresponse = df_libresponse[df_libresponse['GNPSLibraryAccession'].isin(df_library['spectrum_id'])]
-
-            libfasst_results.append(pd.DataFrame())
-            libfasst_results.append(df_libresponse)
-
-        print("Combining FASST results...")
-        df_libfasst = pd.concat(libfasst_results)
-
-    if not df_libfasst.empty and get_conflicts:
-        df_libfasst = df_libfasst[['GNPSLibraryAccession', 'query_spectrum_id']]
-
-        print("Analyzing library conflicts...")
-        df_library_conflicts = GetLibraryConflicts(df_libfasst, df_library_adduct_inchikey_smiles)
-
-        # Add columns "same_molecule_spectral_match_count", "different_molecule_spectral_match_count", "different_molecule_count" to df_library_structurematch
-        df_library_structurematch = df_library_structurematch.merge(
-            df_library_conflicts[['query_spectrum_id', 'same_molecule_spectral_match_count', 
-                                'different_molecule_spectral_match_count', 'different_molecule_count']],
-            on='query_spectrum_id', how='left'
-        )
-
-        # Where no values were added, fill with 0. if nothing was added because
-        df_library_structurematch.fillna(0, inplace=True)
-
-    else:        
-
-        df_library_conflicts = pd.DataFrame(columns=[
-            'query_spectrum_id', 'same_molecule_spectral_match_count', 'different_molecule_spectral_match_count', 'different_molecule_count'
-        ])
-
-    df_library_structurematch['Smiles'] = input_structure
-
-
-    return df_library_conflicts, df_library_structurematch
-
-    
+        return "mzspec:MASSBANK::accession:{}".format(lib_id)
+   
 def retrieve_raw_data_matches(
     library_subset: pd.DataFrame,
-    redu_df: pd.DataFrame | None = None,
     analog: bool = False,
     elimination: bool = False,
     addition: bool = False,
     modimass: float | None = None,
+    modification_condition: str = None,
     database: str = 'metabolomicspanrepo_index_nightly',
     precursor_mz_tol: float = 0.05,
     fragment_mz_tol: float = 0.05,
     min_cos: float = 0.7,
     matching_peaks: int = 6,
-    cache: str = "Yes"
+    cache: str = "Yes",
+    sqlite_path: str | None = None,
+    api_endpoint: str = "http://127.0.0.1:8001/masst_records",
+    timeout: int = 10,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Query FASST for each spectrum in library_subset and optionally merge ReDU metadata.
 
     Args:
         library_subset: DataFrame with a 'query_spectrum_id' column.
-        redu_df: Optional DataFrame of ReDU data to merge on 'mri'.
         analog: Whether to run an analog search.
         database: FASST database name.
         precursor_mz_tol: Precursor m/z tolerance.
@@ -343,55 +69,217 @@ def retrieve_raw_data_matches(
         raw_matches: concatenated FASST responses with 'spectrum_id' column.
         redu_enriched: raw_matches merged with redu_df (empty if redu_df is None/empty).
     """
-    # 1. Run FASST queries and collect non-empty responses
-    responses = []
-    for spectrum_id in library_subset['query_spectrum_id']:
-        print(f"Querying FASST for spectrum {spectrum_id} in {database}...")
-        df = query_fasst_usi(
-            spectrum_id,
-            database,
-            analog=analog,
-            precursor_mz_tol=precursor_mz_tol,
-            fragment_mz_tol=fragment_mz_tol,
-            min_cos=min_cos,
-            matching_peaks=matching_peaks,
-            cache=cache,
-            modimass=modimass,
-            elimination=elimination,
-            addition=addition
-        )
-        if not df.empty:
-            responses.append(df)
 
-    # 2. Combine all responses
+
+    # 0. load redu data
+    print("Loading ReDU table...")
+
+    fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
+
+    # get the column names
+    redu_columns = fetch("SELECT name FROM pragma_table_info('redu_table')")
+    redu_columns_list = redu_columns["name"].tolist()
+
+    # exclude unwanted columns
+    columns_to_exclude = [
+        "filename","TermsofPosition","ComorbidityListDOIDIndex","SampleCollectionDateandTime",
+        "ENVOBroadScale","ENVOLocalScale","ENVOMediumScale","qiita_sample_name","UniqueSubjectID",
+        "UBERONOntologyIndex","DOIDOntologyIndex","ENVOEnvironmentBiomeIndex",
+        "ENVOEnvironmentMaterialIndex","ENVOLocalScaleIndex","ENVOBroadScaleIndex",
+        "ENVOMediumScaleIndex","classification","MS2spectra_count"
+    ]
+    cols = [c for c in redu_columns_list if c not in columns_to_exclude]
+    col_sql = ", ".join([f'"{c}"' for c in cols])
+
+    # count total rows
+    total_rows = int(fetch("SELECT COUNT(*) as n FROM redu_table")["n"].iloc[0])
+
+
+    if os.path.exists("database/redu.feather"):
+        print("Loading ReDU table from feather file...")
+        # First, peek at all available columns without loading everything
+        all_columns = pd.read_feather("database/redu.feather", columns=[]).columns
+
+        # Keep only the ones not excluded
+        columns_to_keep = [c for c in all_columns if c not in columns_to_exclude]
+
+        # Load only the required subset
+        redu_df = pd.read_feather("database/redu.feather", columns=columns_to_keep)
+
+    else:
+        print("Loading ReDU table from database...")
+
+        # function to fetch one page
+        def fetch_page(offset, limit):
+            sql = f"SELECT {col_sql} FROM redu_table LIMIT {limit} OFFSET {offset}"
+            return fetch(sql)
+
+        # loop in batches
+        chunk_size = int(1E5)  # adjust as needed
+        dfs = []
+        for offset in range(0, total_rows, chunk_size):
+            print(f"[PAGE] offset {offset} / {total_rows}")
+            df_chunk = fetch_page(offset, chunk_size)
+            dfs.append(df_chunk)
+
+        # combine
+        redu_df = pd.concat(dfs, ignore_index=True)
+
+
+    TTL_SEC = 60*5-15                 # token freshness time (seconds)
+    MAX_BATCH_REQUESTS = 50           # max new requests per batch
+
+    # 0) build queue of all IDs to request
+    all_ids = list(library_subset['query_spectrum_id'])
+    to_request = deque(all_ids)
+
+    in_flight = {}   # sid -> {"token": str, "submitted_at": float}
+    done = set()
+    responses = []
+
+    while len(done) < len(all_ids):
+        # 1) request up to MAX_BATCH_REQUESTS in one block
+        n_submit = min(MAX_BATCH_REQUESTS, len(to_request))
+        for _ in range(n_submit):
+            sid = to_request.popleft()
+            if sid in done:
+                continue
+            usi_full = make_library_usi(sid)
+            print("submitted", usi_full)
+            token = fasst.query_fasst_api_usi(
+                usi_full, database,
+                host=FASST_API_SERVER_URL,
+                analog=analog,
+                lower_delta=170, upper_delta=170,
+                precursor_mz_tol=precursor_mz_tol,
+                fragment_mz_tol=fragment_mz_tol,
+                min_cos=min_cos,
+                cache=cache,
+                blocking=False
+            )
+            in_flight[sid] = {"token": token, "submitted_at": time.time()}
+
+        # 2) attempt to collect EACH in-flight EXACTLY ONCE
+        for sid, rec in list(in_flight.items()):
+            token = rec["token"]
+            age = time.time() - rec["submitted_at"]
+
+            # if token expired before collection attempt -> do NOT collect; re-request next batch
+            if age >= TTL_SEC:
+                to_request.appendleft(sid)   # prioritize next batch
+                del in_flight[sid]
+                continue
+
+            # single collection attempt
+            df = query_fasst_usi(
+                token,
+                sid,
+                precursor_mz_tol=precursor_mz_tol,
+                analog=analog,
+                matching_peaks=matching_peaks,
+                modimass=modimass,
+                elimination=elimination,
+                addition=addition
+            )
+            print(f"Returned {len(df)} rows for SID {sid}")
+            if not df.empty:
+                responses.append(df)
+            else:
+                # not ready -> re-request next batch with a fresh token
+                to_request.append(sid)
+
+            # remove from in_flight in all cases (never collect twice for same token)
+            done.add(sid)
+            del in_flight[sid]
+
+    # 3) combine and return (keeps your original two-DF shape)
     if not responses:
         print("No raw data matches found.")
         return pd.DataFrame(), pd.DataFrame()
+
     raw_matches = pd.concat(responses, ignore_index=True)
     raw_matches.rename(columns={'GNPSLibraryAccession': 'spectrum_id'}, inplace=True)
 
+    print(f"Retrieved {len(raw_matches)} raw data matches.")
     # 3. If ReDU data provided, merge and return enriched DataFrame
+    print("Checking ReDU DataFrame for enrichment...")
     if redu_df is None or redu_df.empty:
         return raw_matches, pd.DataFrame()
-    
-    redu_enriched = add_redu(raw_matches, redu_df)
+
+    print(f"Enriching {len(raw_matches)} raw matches with ReDU metadata...")
+    redu_enriched = add_redu(raw_matches, redu_df, modification_condition=modification_condition)
     
     # add Smiles column from library_subset to redu_enriched
     if 'Smiles' in library_subset.columns:
         redu_enriched = redu_enriched.merge(
-            library_subset[['query_spectrum_id', 'Smiles', 'Adduct']],
+            library_subset[['query_spectrum_id', 'Smiles', 'Adduct', 'Compound_Name', 'Precursor_MZ']],
             left_on='query_spectrum_id',
             right_on='query_spectrum_id',
             how='left'
         )
         redu_enriched.rename(columns={'Smiles': 'query_smiles'}, inplace=True)
 
+
+    # make library usis for the links
+    redu_enriched["lib_usi"] = redu_enriched["query_spectrum_id"].apply(
+        lambda x: (
+            f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
+            else f"mzspec:MASSBANK::accession:{x}" 
+        )
+    )
+
+    if 'Modified' in redu_enriched.columns:
+        def build_modifinder_link(row):
+            usi1 = quote_plus(f"{row['USI']}")
+            usi2 = quote_plus(row['lib_usi'])
+            return (
+                f"https://modifinder.gnps2.org/"
+                f"?USI1={usi2}"
+                f"&USI2={usi1}"
+                f"&SMILES1={quote_plus(row['query_smiles'])}"
+                f"&SMILES2&Helpers=&adduct={quote_plus(row['Adduct'])}"
+                "&ppm_tolerance=25&filter_peaks_variable=0.01"
+            )
+               
+
+        redu_enriched["modification_site"] = redu_enriched.apply(
+            lambda row: build_modifinder_link(row)
+            if (row["Modified"] != "no" and row["Adduct"] in 
+                ['[M+H]1+', '[M-H]1', '[M+Na]1+', '[M+NH4]1+', '[M+K]1+', '[M+Cl]1-', '[M+Br]1-'])
+            else '',
+            axis=1
+        )
+
+        def build_dashboard_link_modi(row):
+            usi = quote_plus(f"{row['USI']}")
+            mz_modi = str(float(row['Precursor_MZ']) + float(row['Delta Mass']))
+            mz_unmodi = str(f"{row['Precursor_MZ']}")
+            return (
+                f"https://dashboard.gnps2.org//"
+                f"?xic_mz={mz_modi}"
+                f"%3B"
+                f"{mz_unmodi}"
+                f"&xic_formula=&xic_peptide=&"
+                f"xic_tolerance={str(0.01)}"
+                f"&xic_ppm_tolerance=10"
+                f"&xic_tolerance_unit=Da&xic_rt_window=&xic_norm=False&xic_file_grouping=FILE&xic_integration_type=AUC&show_ms2_markers=True&ms2marker_color=blue&ms2marker_size=5&ms2_identifier=MS2%3A1939&show_lcms_2nd_map=False&map_plot_zoom=%7B%7D&polarity_filtering=None&polarity_filtering2=None&tic_option=TIC&overlay_usi=None&overlay_mz=None&overlay_rt=None&overlay_color=&overlay_size=&overlay_hover=&overlay_filter_column=&overlay_filter_value=&feature_finding_type=Off&feature_finding_ppm=10&feature_finding_noise=10000&feature_finding_min_peak_rt=0.05&feature_finding_max_peak_rt=1.5&feature_finding_rt_tolerance=0.3&massql_statement=QUERY+scaninfo%28MS2DATA%29&sychronization_session_id=4843dbcfa45a4411996350ee24062088&chromatogram_options=%5B%5D&comment=&map_plot_color_scale=Hot_r&map_plot_quantization_level=Medium&plot_theme=plotly_white#%7B%22usi%22%3A%20%22"
+                f"{usi}"
+                f"%22%2C%20%22usi2%22%3A%20%22%22%7D"
+            )
+    
+    
+        redu_enriched["Check LC peak"] = redu_enriched.apply(
+            lambda row: build_dashboard_link_modi(row),
+            axis=1
+        )
+
     return raw_matches, redu_enriched
     
 
 def add_redu(
     raw_matches: pd.DataFrame,
-    redu_df: pd.DataFrame
+    redu_df: pd.DataFrame,
+    modification_condition: str = None
 ) -> pd.DataFrame:
     """
     Enrich raw_matches with ReDU metadata from redu_df via the 'mri' key.
@@ -405,30 +293,40 @@ def add_redu(
     6. Inner-merge on 'mri' to retain only matches with ReDU metadata.
     7. Fill any NaNs in ReDU columns (those starting with 'redu_') with 'unknown'.
     """
+    print("Adding ReDU metadata")
     if redu_df.empty:
         print("[add_redu] No ReDU data provided; returning original matches.")
         return raw_matches.copy()
 
     # 1. Prepare and sort raw matches
     df = raw_matches.copy()
+    
+    # 2. Extract 'mri' and 'scan_id' from USI if present
+    if "USI" in df.columns:
+        df[["mri", "scan_id"]] = df["USI"].str.split(":scan:", n=1, expand=True)
+
     df = df.sort_values(
         by=["Cosine", "Matching Peaks"], 
         ascending=[False, False]
     )
 
-    # 2. Extract 'mri' and 'scan_id' from USI if present
-    if "USI" in df.columns:
-        df[["mri", "scan_id"]] = df["USI"].str.split(":scan:", n=1, expand=True)
+    if 'Modified' in df.columns:
+        unique_by_columns = ['mri', 'Delta Mass']
+    else:
+        unique_by_columns = ['mri']
 
     # 3. Keep only the top match per 'mri'
     if "mri" in df.columns:
-        df = df.drop_duplicates(subset=["mri"], keep="first")
+        df = df.drop_duplicates(subset=unique_by_columns, keep="first")
     else:
         print("[add_redu] Warning: 'mri' column not found in matches; merging may fail.")
+
+
 
     # 4. Prepare redu_df for merging
     df_redu = redu_df.copy()
     if "USI" in df_redu.columns and "mri" not in df_redu.columns:
+        print("[add_redu] Renaming 'USI' column to 'mri' in ReDU DataFrame")
         df_redu = df_redu.rename(columns={"USI": "mri"})
 
     # 5. Merge matches with ReDU metadata
@@ -439,6 +337,14 @@ def add_redu(
     redu_cols = [col for col in merged.columns if col.startswith("redu_")]
     if redu_cols:
         merged[redu_cols] = merged[redu_cols].fillna("unknown")
+
+
+    if 'Modified' in merged.columns and modification_condition:
+        if modification_condition == "Raw file":
+            modification_condition = 'mri'
+
+        valid_groups = merged[merged['Modified'] == 'no'][modification_condition].unique()
+        merged = merged[merged[modification_condition].isin(valid_groups)]
 
     return merged
 

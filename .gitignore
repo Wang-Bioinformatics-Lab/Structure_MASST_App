@@ -1,2 +1,14 @@
-database/*
+# Project data/output you don't want in git
+database/
+sessionoutput/
+output/
+yasin
+requirements_disabled.txt
+
+# Python caches / artifacts
+__pycache__/
+**/__pycache__/
 *.pyc
+*.pyo
+*.pyd
+*$py.class
