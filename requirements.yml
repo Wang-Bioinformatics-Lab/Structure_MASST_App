@@ -4,22 +4,33 @@ channels:
   - bioconda
   - defaults
 dependencies:
-  - python=3.12   
-  - pandas
-  - biopython
-  - tqdm
-  - streamlit>=1.45  
-  - ete3
-  - requests
+  # Core
+  - python=3.12
+  - pandas=2.2.*          
+  - numpy>=1.26.4
+  - pyarrow>=15           
+  - requests>=2.31
+  - requests-cache>=1.2
+  - tqdm>=4.66
+  - streamlit>=1.45
+  - lxml>=5.2             
+  - beautifulsoup4>=4.12  
+  - anytree>=2.12
   - matplotlib
-  - upsetplot
+  - networkx
+  - pillow
+  - pyteomics>=4.6
+  - ete3
+  - psycopg2              
+  - black                
+  - pytest                
+
+  # RDKit: prefer conda-forge build (stable & fast)
+  - rdkit=2024.09.6
+
   - pip
   - pip:
-      - rdkit
-      - wikidata-dl
-      - Pillow
-      - networkx
-      - psycopg2
       - formula_validation
+      - wikidata-dl
       - git+https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage.git
       - dash_extensions
