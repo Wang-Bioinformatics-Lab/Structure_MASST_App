@@ -14,6 +14,7 @@ from plotting import raw_data_sankey, export_hits_map
 # Write the page label
 st.set_page_config(
     page_title="MoleculePlanet",
+    page_icon="🌍",
 )
 
 output_folder = st.session_state["_session_output_folder"]

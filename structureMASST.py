@@ -39,7 +39,7 @@ html('<script async defer data-website-id="<your_website_id>" src="https://analy
 st.set_page_config(
     page_title="StructureMASST App", 
     layout="wide",
-    page_icon="👋",
+    page_icon="🔎",
 )
 
 left, right = st.columns([6,1])
