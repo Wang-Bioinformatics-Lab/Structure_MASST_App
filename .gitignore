@@ -1,13 +1,15 @@
-database/*
-# But keep get_data.sh
+# Project data/output you don't want in git
+database/
 !database/get_data.sh
-sessionoutput/*
+sessionoutput/
+output/
 yasin
 requirements_disabled.txt
-bin/__pycache__
-__pycache__
-output
+
+# Python caches / artifacts
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
+*$py.class
