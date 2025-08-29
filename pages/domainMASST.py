@@ -5,6 +5,7 @@ import streamlit.components.v1 as components
 # Write the page label
 st.set_page_config(
     page_title="Domain MASST",
+    page_icon="🧬",
 )
 
 

@@ -31,6 +31,43 @@ import time
 #from streamlit_extras.switch_page_button import switch_page 
 
 
+
+# Add a tracking token
+html('<script async defer data-website-id="<your_website_id>" src="https://analytics.gnps2.org/umami.js"></script>', width=0, height=0)
+
+# Write the page label
+st.set_page_config(
+    page_title="StructureMASST App", 
+    layout="wide",
+    page_icon="🔎",
+)
+
+left, right = st.columns([6,1])
+
+with left:
+    st.title("StructureMASST")
+
+with right:
+    st.markdown(
+        """
+        <div style="
+            border:1px solid #ccc;
+            border-radius:8px;
+            padding:6px 10px;
+            font-size:0.9em;
+            background-color:#f9f9f9;
+            text-align:left;
+        ">
+        <b>Contributors</b><br>
+        Yasin El Abiead (UCSD)<br>
+        Mingxun Wang (UCR)
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+st.write("") 
+
+
 try:
     from rdkit.Chem import Draw
     _RD_DRAW_AVAILABLE = True
@@ -90,40 +127,6 @@ def build_spectraresolver_link(row):
         f"&grid=True&annotate_peaks=%5B%5B%5D%2C%20%5B%5D%5D"
     )
 
-# Add a tracking token
-html('<script async defer data-website-id="<your_website_id>" src="https://analytics.gnps2.org/umami.js"></script>', width=0, height=0)
-
-# Write the page label
-st.set_page_config(
-    page_title="StructureMASST App", 
-    layout="wide",
-    page_icon="👋",
-)
-
-left, right = st.columns([6,1])
-
-with left:
-    st.title("StructureMASST")
-
-with right:
-    st.markdown(
-        """
-        <div style="
-            border:1px solid #ccc;
-            border-radius:8px;
-            padding:6px 10px;
-            font-size:0.9em;
-            background-color:#f9f9f9;
-            text-align:left;
-        ">
-        <b>Contributors</b><br>
-        Yasin El Abiead (UCSD)<br>
-        Mingxun Wang (UCR)
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-st.write("") 
 # — SMILES or CSV input —
 col_name, col_or1, col_smiles, col_or2, col_csv = st.columns([4, 1, 4, 1, 4])
 
