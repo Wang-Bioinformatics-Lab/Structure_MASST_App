@@ -1,4 +1,6 @@
 database/*
+# But keep get_data.sh
+!database/get_data.sh
 sessionoutput/*
 yasin
 requirements_disabled.txt
