@@ -1,5 +1,5 @@
 # Project data/output you don't want in git
-database/
+database/*
 !database/get_data.sh
 sessionoutput/
 output/
