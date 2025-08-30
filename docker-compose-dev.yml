@@ -1,5 +1,5 @@
 version: '3'
 services:
-  template-streamlit:
+  structure-masst-streamlit:
     ports:
     - "5000:5000"
