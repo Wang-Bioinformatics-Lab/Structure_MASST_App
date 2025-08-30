@@ -8,6 +8,7 @@ services:
     volumes:
       - ./logs:/app/logs:rw
       - ./database/:/app/database:ro
+      - ./sessionoutput:/app/sessionoutput:rw
     networks:
       - default
       - nginx-net
