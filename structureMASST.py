@@ -9,7 +9,7 @@ import base64
 import io
 from bin.workflow_stepwise import retrieve_raw_data_matches 
 from bin.run_masstRecords_queries import get_library_table, get_masst_and_redu_tables
-from bin.match_smiles import detect_smiles_or_smarts
+from bin.match_smiles import detect_smiles_or_smarts, neutralize_atoms, tautomerize_smiles
 from bin.pubchem_handling  import pubchem_autocomplete, name_to_cid, cid_to_canonical_smiles
 from bin.plotting import raw_data_sankey, export_hits_map
 import matplotlib.pyplot as plt
@@ -22,6 +22,7 @@ from formula_validation.Formula import Formula
 import requests
 import re
 from urllib.parse import quote_plus
+import urllib.parse as _url
 import hashlib
 from pathlib import Path
 from typing import Iterable, Mapping, Union, List, Dict
@@ -30,7 +31,47 @@ import uuid
 import time
 #from streamlit_extras.switch_page_button import switch_page 
 
+# 1) Inject responsive CSS (vw + clamp)
+st.markdown("""
+<style>
+/* Make the main content truly wide and add fluid side padding */
+.block-container {
+  max-width: 100%;
+  padding-left: 2vw;
+  padding-right: 2vw;
+}
 
+/* Responsive typography scale for buttons */
+:root{
+  /* font-size automatically clamps between 12px and 20px, grows with viewport */
+  --btn-font-size: clamp(12px, 1.2vw, 20px);
+  /* padding grows a bit with viewport */
+  --btn-pad-y: clamp(6px, 0.7vw, 14px);
+  --btn-pad-x: clamp(10px, 1.4vw, 24px);
+  --btn-radius: 14px;
+}
+
+/* Style all Streamlit buttons (works for st.button and st.link_button) */
+.stButton > button, .stDownloadButton > button {
+  width: 100%;               /* fill the column — column defines relative width */
+  font-size: var(--btn-font-size);
+  padding: var(--btn-pad-y) var(--btn-pad-x);
+  border-radius: var(--btn-radius);
+  line-height: 1.2;
+}
+
+/* Optional: make selectboxes/inputs feel consistent */
+.stTextInput input, .stSelectbox > div > div, .stNumberInput input {
+  font-size: clamp(12px, 1.1vw, 18px);
+}
+
+/* Small-screen tweaks */
+@media (max-width: 768px) {
+  .block-container { padding-left: 3vw; padding-right: 3vw; }
+  .stButton > button, .stDownloadButton > button { line-height: 1.25; }
+}
+</style>
+""", unsafe_allow_html=True)
 
 # Add a tracking token
 html('<script async defer data-website-id="<your_website_id>" src="https://analytics.gnps2.org/umami.js"></script>', width=0, height=0)
@@ -151,6 +192,17 @@ def _resolve_name_to_smiles(selected_name: str):
 
     # Rule: must exist and must NOT contain '.'
     if smiles and "." not in smiles:
+
+        try:
+            smiles = tautomerize_smiles(smiles)
+        except Exception as e:
+            print(f"Tautomerization failed: {e}")
+
+        try:
+            smiles = neutralize_atoms(smiles)
+        except Exception as e:
+            print(f"Neutralization failed: {e}")
+
         st.session_state["smiles_input"] = smiles
     else:
         st.session_state["smiles_input"] = ""
@@ -164,7 +216,7 @@ with col_name:
     name_query = st.text_input(
         "Type a chemical name to search PubChem",
         key="name_query",
-        placeholder="e.g., aspirin, caffein",
+        placeholder="e.g., diazepam, 5-Hydroxyindoleacetic Acid, etc.",
     )
 
     # If the query changed (e.g., after Enter), fetch suggestions once
@@ -268,99 +320,100 @@ elif searchtype_option == "tanimoto similarity":
 # — run the search —
 if st.button("Check Available Spectra"):
 
-    # Reset upstream & downstream state
-    for key in [
-        "selected_queries",
-        "df_library_conflicts",
-        "grouped_results",
-        "raw_results",
-        "molecule_overview"
-    ]:
-        st.session_state.pop(key, None)
+    with st.spinner("Finding spectra..."): 
+        # Reset upstream & downstream state
+        for key in [
+            "selected_queries",
+            "df_library_conflicts",
+            "grouped_results",
+            "raw_results",
+            "molecule_overview"
+        ]:
+            st.session_state.pop(key, None)
 
-    # initialize what's needed 
-    st.session_state.selected_queries = {}
-    st.session_state.df_library_conflicts = None
-    st.session_state.grouped_results = {}
-    st.session_state.molecule_overview = {}
+        # initialize what's needed 
+        st.session_state.selected_queries = {}
+        st.session_state.df_library_conflicts = None
+        st.session_state.grouped_results = {}
+        st.session_state.molecule_overview = {}
 
-    # organize input structure queries
-    smiles_list = []
-    if smiles_input:
-        smiles_list = [smiles_input]
-        name_list = ['Input_query']
-    elif uploaded_file is not None:
-        df_in = pd.read_csv(uploaded_file)
-        if "smiles" in df_in.columns and "name" in df_in.columns:
-            smiles_list = df_in["smiles"].dropna().tolist()
-            name_list = df_in["name"].dropna().tolist()
-        else:
-            st.warning("CSV must contain a 'smiles' and 'name' column.")
-            st.stop()
-    else:
-        st.warning("Please enter a SMILES or upload a CSV.")
-        st.stop()
-
-    # process each input structure query separately to retrieve spectra
-    grouped_results = defaultdict(dict)
-    molecule_overview = defaultdict(dict)
-    for smi, name in zip(smiles_list, name_list):
-        try:
-            df_library_structurematch = get_library_table(
-                smiles=smi,
-                searchtype=searchtype_option,
-                sqlite_path=config.PATH_TO_SQLITE,
-                api_endpoint=config.MASSTRECORDS_ENDPOINT,
-                timeout=config.MASSTRECORDS_TIMEOUT
-            )
-            print(f"Retrieved {len(df_library_structurematch)} records from MASSTrecords")
-            if df_library_structurematch.empty:
-                st.info(f"No library entries found for: {smi}")
-                continue
-            # Setup for library conflicts. this is currently not doing anything
-            df_library_conflicts = pd.DataFrame()
-            df_library_conflicts["inchikey_first_block"] = pd.Series(dtype=str)
-        except Exception as e:
-            st.error(f"Error for {smi}: {e}")
-
-        # Setup for library conflicts. this is currently not doing anything
-        print(f"Processing {name} with {len(df_library_structurematch)} matches")
-        overview = []
-        for ik in df_library_structurematch["inchikey_first_block"].unique():
-            sub_struct = df_library_structurematch[df_library_structurematch["inchikey_first_block"] == ik].copy()
-            sub_conf   = df_library_conflicts[df_library_conflicts["inchikey_first_block"] == ik].copy()
-            grouped_results[name][ik] = {"structure": sub_struct, "conflicts": sub_conf}
-            st.session_state.selected_queries[ik] = list(sub_struct["query_spectrum_id"].unique())
-
-
-            # pick most common Compound_Name (tie-break by len≈20 & fewest special chars)
-            names = sub_struct["Compound_Name"].dropna().astype(str)
-            if not names.empty:
-                vc = names.value_counts()
-                top = vc.iloc[0]
-                cands = vc[vc == top].index.tolist()
-                def special_count(s): 
-                    return len(re.findall(r"[^A-Za-z0-9]", s))
-                best_name = min(cands, key=lambda s: (abs(len(s) - 20), special_count(s)))
+        # organize input structure queries
+        smiles_list = []
+        if smiles_input:
+            smiles_list = [smiles_input]
+            name_list = ['Input_query']
+        elif uploaded_file is not None:
+            df_in = pd.read_csv(uploaded_file)
+            if "smiles" in df_in.columns and "name" in df_in.columns:
+                smiles_list = df_in["smiles"].dropna().tolist()
+                name_list = df_in["name"].dropna().tolist()
             else:
-                best_name = ""
+                st.warning("CSV must contain a 'smiles' and 'name' column.")
+                st.stop()
+        else:
+            st.warning("Please enter a SMILES or upload a CSV.")
+            st.stop()
 
-            # grab first SMILES
-            smiles = sub_struct["Smiles"].dropna().astype(str)
-            inchikey_first_block = sub_struct["inchikey_first_block"].dropna().astype(str)
-            first_smi = smiles.iloc[0] if not smiles.empty else ""
-            ikb = inchikey_first_block.iloc[0] if not inchikey_first_block.empty else ""
+        # process each input structure query separately to retrieve spectra
+        grouped_results = defaultdict(dict)
+        molecule_overview = defaultdict(dict)
+        for smi, name in zip(smiles_list, name_list):
+            try:
+                df_library_structurematch = get_library_table(
+                    smiles=smi,
+                    searchtype=searchtype_option,
+                    sqlite_path=config.PATH_TO_SQLITE,
+                    api_endpoint=config.MASSTRECORDS_ENDPOINT,
+                    timeout=config.MASSTRECORDS_TIMEOUT
+                )
+                print(f"Retrieved {len(df_library_structurematch)} records from MASSTrecords")
+                if df_library_structurematch.empty:
+                    st.info(f"No library entries found for: {smi}")
+                    continue
+                # Setup for library conflicts. this is currently not doing anything
+                df_library_conflicts = pd.DataFrame()
+                df_library_conflicts["inchikey_first_block"] = pd.Series(dtype=str)
+            except Exception as e:
+                st.error(f"Error for {smi}: {e}")
 
-            overview.append({
-                "Compound_Name": best_name,
-                "inchikey_first_block": ikb,
-                "Smiles": first_smi
-            })
+            # Setup for library conflicts. this is currently not doing anything
+            print(f"Processing {name} with {len(df_library_structurematch)} matches")
+            overview = []
+            for ik in df_library_structurematch["inchikey_first_block"].unique():
+                sub_struct = df_library_structurematch[df_library_structurematch["inchikey_first_block"] == ik].copy()
+                sub_conf   = df_library_conflicts[df_library_conflicts["inchikey_first_block"] == ik].copy()
+                grouped_results[name][ik] = {"structure": sub_struct, "conflicts": sub_conf}
+                st.session_state.selected_queries[ik] = list(sub_struct["query_spectrum_id"].unique())
 
-        st.session_state.molecule_overview[name] = pd.DataFrame(overview)
 
-    # get results into session state
-    st.session_state.grouped_results = grouped_results
+                # pick most common Compound_Name (tie-break by len≈20 & fewest special chars)
+                names = sub_struct["Compound_Name"].dropna().astype(str)
+                if not names.empty:
+                    vc = names.value_counts()
+                    top = vc.iloc[0]
+                    cands = vc[vc == top].index.tolist()
+                    def special_count(s): 
+                        return len(re.findall(r"[^A-Za-z0-9]", s))
+                    best_name = min(cands, key=lambda s: (abs(len(s) - 20), special_count(s)))
+                else:
+                    best_name = ""
+
+                # grab first SMILES
+                smiles = sub_struct["Smiles"].dropna().astype(str)
+                inchikey_first_block = sub_struct["inchikey_first_block"].dropna().astype(str)
+                first_smi = smiles.iloc[0] if not smiles.empty else ""
+                ikb = inchikey_first_block.iloc[0] if not inchikey_first_block.empty else ""
+
+                overview.append({
+                    "Compound_Name": best_name,
+                    "inchikey_first_block": ikb,
+                    "Smiles": first_smi
+                })
+
+            st.session_state.molecule_overview[name] = pd.DataFrame(overview)
+
+        # get results into session state
+        st.session_state.grouped_results = grouped_results
 
 
 # render outer tabs for each structure query
@@ -511,7 +564,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                 if _RD_DRAW_AVAILABLE:
                     @st.cache_data
-                    def smiles_to_datauri(smi: str, size=(800, 800)) -> str:
+                    def smiles_to_datauri(smi: str, size=(500, 500)) -> str:
                         """Render a SMILES to PNG data URI."""
                         mol = Chem.MolFromSmiles(smi)
                         if not mol:
@@ -525,6 +578,10 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                     molecule_overview_df = molecule_overview_df.copy()
                     molecule_overview_df["structure"] = molecule_overview_df["Smiles"].apply(smiles_to_datauri)
 
+                    # reorder columns to Compound_Name, Structure, others
+                    cols = ["Compound_Name", "structure"] + [col for col in molecule_overview_df.columns if col not in ["Compound_Name", "structure"]]
+                    molecule_overview_df = molecule_overview_df[cols]
+
                     # display it with clickable links   
                     table_mol = st.dataframe(
                         molecule_overview_df,
@@ -535,11 +592,11 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         column_config={
                             "structure": st.column_config.ImageColumn(
                                 "Structure",                     # header label
-                                width=1000                  # 75 px; use "medium" (200 px) or "large" (400 px) as needed
+                                width=300                  # 75 px; use "medium" (200 px) or "large" (400 px) as needed
                             )
                         },
                         key=f"{name}_molecule_table",
-                        row_height=300
+                        row_height=250
                     )
                 else:
                     table_mol = st.dataframe(
@@ -634,7 +691,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             selected = table_evt.selection.rows
 
                             # show buttons with actions for selected spectra
-                            col1, col2, _ = st.columns([2, 2, 6])
+                            col1, col2, col3, _ = st.columns([2, 2, 2, 4])
                             with col1:
                                 if st.button("Remove selected spectra", key=f"{name}_{ik}_remove"):
                                     if selected:
@@ -685,9 +742,9 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
             <strong>FASSTrecords</strong>
         </h4>
         <p style="margin:0; line-height:1.5; font-size:0.95em;">
-            This is <strong>very fast</strong>: obtain distributions of thousands of molecules in seconds,<br/>
-            with substructure‑enabled search.<br/>
-            Based on pre‑computed spectral matching scores of annotated spectra.<br/>
+            This is <strong>very fast</strong> as it relies on precomputed annotations, and therefore especially <br/>
+            recommended for substructure‑enabled search and searches of large<br/>
+            numbers of spectra or molecules expected in large numbers of samples.<br/>
             Last iteration: <strong>{last_iteration}</strong>.
         </p>
         </div>
@@ -706,11 +763,10 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
             <strong>FASST</strong>
         </h4>
         <p style="margin:0; line-height:1.5; font-size:0.95em;">
-            Can be rather slow—a maximum of <strong>10–50 spectra</strong> per query is recommended.<br/>
-            Each search may take a few minutes, depending on traffic.<br/>
-            Allows modification searches.<br/>
-            Always up to date with the latest raw data indexed at
-            <a href="https://fasst.gnps2.org/" target="_blank" style="color:#e76f51;">fasst.gnps2.org</a>.
+            Can be rather slow especially for molecules expected to be present in many datasets<br/>
+            or large numbers of spectra. Searches can even take a few minutes, depending on traffic.<br/>
+            Allows the discovery of unknown chemical analogues through modification search.<br/>
+            Always up to date with the latest raw data indexed at <a href="https://fasst.gnps2.org/" target="_blank" style="color:#e76f51;">fasst.gnps2.org</a>.
         </p>
         </div>
         """, unsafe_allow_html=True)
@@ -757,125 +813,152 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
     # perform the raw data search
     if do_search:
-        new_results = {}
+        with st.spinner("Searching raw data…"): 
 
-        if option == "FASSTrecords":
-            # build each queries aggregated table
-            for name, ik_dict in st.session_state.grouped_results.items():
-                sel_frames = []
-                for ik, data in ik_dict.items():
+            new_results = {}
+
+            if option == "FASSTrecords":
+                # build each queries aggregated table
+                for name, ik_dict in st.session_state.grouped_results.items():
+                    sel_frames = []
+                    for ik, data in ik_dict.items():
+                        
+                        df_struct = data["structure"]
+
+                        # dereplicate spectra
+                        df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
+                        df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
+                        df_struct["similar_library_spectra"] = (
+                            df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
+                                    .transform("size")
+                                    .astype("int64")
+                        )
+                        df_struct = df_struct[df_struct["spectrum_id_int"] == df_struct["representative_spectrum_int"]]
+
+                        if not df_struct.empty:
+                            sel_frames.append(df_struct)
+
+                    if not sel_frames:
+                        st.warning(f"No entries left for **{name}**, skipping.")
+                        continue
+
+                    df_for_name = pd.concat(sel_frames, ignore_index=True)
+
+                    # get raw data from masstrecords
+                    masst_df, redu_df = get_masst_and_redu_tables(df_for_name,
+                                                                cosine_threshold=float(min_cosine),
+                                                                matching_peaks=int(min_peaks),
+                                                                sqlite_path=config.PATH_TO_SQLITE,
+                                                                api_endpoint=config.MASSTRECORDS_ENDPOINT,
+                                                                timeout=config.MASSTRECORDS_TIMEOUT,
+                                                                chunk_size=200)
+
+                    # if cosine not in masst_df.columns return empty dataframes
+                    if "cosine" not in masst_df.columns or "matching_peaks" not in masst_df.columns:
+                        new_results[name] = {"masst": pd.DataFrame(), "redu": pd.DataFrame()}
+                        continue
+
+                    # subset results for sample matches table to best match by sample
+                    df_masst_sorted = masst_df.sort_values(by=["cosine", "matching_peaks"], ascending=[False, False])
+                    df_masst_unique = df_masst_sorted.drop_duplicates(subset="mri_id_int", keep="first")
                     
-                    df_struct = data["structure"]
-                    if not df_struct.empty:
-                        sel_frames.append(df_struct)
+                    if 'mri_id_int' in redu_df.columns:
+                        # add query spectrum ID and scan ID to redu_df //could potentially move this into get_masst_and_redu_tables
+                        redu_df = redu_df.merge(
+                            df_masst_unique[["mri_id_int", "scan_id", "query_spectrum_id", 'matching_peaks', 'cosine', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'inchikey_first_block', 'similar_library_spectra']],
+                            on="mri_id_int",
+                            how="left"
+                            )
 
-                if not sel_frames:
-                    st.warning(f"No entries left for **{name}**, skipping.")
-                    continue
+                        # rename cosine to Cosine and matching_peaks to Matching Peaks
+                        redu_df = redu_df.rename(columns={
+                            "cosine": "Cosine",
+                            "matching_peaks": "Matching Peaks",
+                            "USI": "mri"
+                        })
 
-                df_for_name = pd.concat(sel_frames, ignore_index=True)
+                        redu_df['Delta Mass'] = 0
 
-                # get raw data from masstrecords
-                masst_df, redu_df = get_masst_and_redu_tables(df_for_name,
-                                                            cosine_threshold=float(min_cosine),
-                                                            matching_peaks=int(min_peaks),
-                                                            sqlite_path=config.PATH_TO_SQLITE,
-                                                            api_endpoint=config.MASSTRECORDS_ENDPOINT,
-                                                            timeout=config.MASSTRECORDS_TIMEOUT,
-                                                            chunk_size=200)
+                        # make library usis for the links
+                        redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
+                            lambda x: (
+                                f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
+                                else f"mzspec:MASSBANK::accession:{x}" 
+                            )
+                        )                    
+                        # in every row add USI + :scan: + scan_id (as str)
+                        redu_df["scan_id"] = pd.to_numeric(redu_df["scan_id"], errors="raise").astype(int)
+                        redu_df["USI"] = redu_df["mri"] + ":scan:" + redu_df["scan_id"].astype(str)
+                        redu_df["best_spectral_match"] = redu_df.apply(build_spectraresolver_link, axis=1)
 
-                # if cosine not in masst_df.columns return empty dataframes
-                if "cosine" not in masst_df.columns or "matching_peaks" not in masst_df.columns:
-                    new_results[name] = {"masst": pd.DataFrame(), "redu": pd.DataFrame()}
-                    continue
-
-                # subset results for sample matches table to best match by sample
-                df_masst_sorted = masst_df.sort_values(by=["cosine", "matching_peaks"], ascending=[False, False])
-                df_masst_unique = df_masst_sorted.drop_duplicates(subset="mri_id_int", keep="first")
+                    new_results[name] = {"masst": masst_df, "redu": redu_df}
                 
-                if 'mri_id_int' in redu_df.columns:
-                    # add query spectrum ID and scan ID to redu_df //could potentially move this into get_masst_and_redu_tables
-                    redu_df = redu_df.merge(
-                        df_masst_unique[["mri_id_int", "scan_id", "query_spectrum_id", 'matching_peaks', 'cosine', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'inchikey_first_block', 'mri']],
-                        on="mri_id_int",
-                        how="left"
+            elif option == "FASST":
+
+                # build each queries aggregated table
+                for name, ik_dict in st.session_state.grouped_results.items():
+                    sel_frames = []
+                    for ik, data in ik_dict.items():
+                        df_struct = data["structure"]
+
+                        # dereplicate spectra
+                        df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
+                        df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
+                        df_struct["similar_library_spectra"] = (
+                            df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
+                                    .transform("size")
+                                    .astype("int64")
                         )
+                        df_struct = df_struct[df_struct["spectrum_id_int"] == df_struct["representative_spectrum_int"]]
 
-                    # rename cosine to Cosine and matching_peaks to Matching Peaks
-                    redu_df = redu_df.rename(columns={
-                        "cosine": "Cosine",
-                        "matching_peaks": "Matching Peaks"
-                    })
 
-                    redu_df['Delta Mass'] = 0
+                        if not df_struct.empty:
+                            sel_frames.append(df_struct)
 
-                    # make library usis for the links
-                    redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
-                        lambda x: (
-                            f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
-                            else f"mzspec:MASSBANK::accession:{x}" 
-                        )
-                    )                    
-                    # in every row add USI + :scan: + scan_id (as str)
-                    redu_df["USI"] = redu_df["mri"] + ":scan:" + redu_df["scan_id"].astype(str)
-                    redu_df["best_spectral_match"] = redu_df.apply(build_spectraresolver_link, axis=1)
+                    if not sel_frames:
+                        st.warning(f"No entries left for **{name}**, skipping.")
+                        continue
 
-                new_results[name] = {"masst": masst_df, "redu": redu_df}
-            
-        elif option == "FASST":
+                    df_for_name = pd.concat(sel_frames, ignore_index=True)
 
-            # build each queries aggregated table
-            for name, ik_dict in st.session_state.grouped_results.items():
-                sel_frames = []
-                for ik, data in ik_dict.items():
-                    df_struct = data["structure"]
-                    if not df_struct.empty:
-                        sel_frames.append(df_struct)
+                    # if we do modification and got a molecular formula calculate the monoisotopic mass of the expected mass difference
+                    formulaModi_object = Formula.formula_from_str(modification_formula) if do_modification_search and modification_formula else None
+                    try:
+                        modification_mass = formulaModi_object.get_monoisotopic_mass()
+                    except AttributeError:
+                        modification_mass = modification_mass if 'modification_mass' in locals() else None
 
-                if not sel_frames:
-                    st.warning(f"No entries left for **{name}**, skipping.")
-                    continue
-
-                df_for_name = pd.concat(sel_frames, ignore_index=True)
-
-                # if we do modification and got a molecular formula calculate the monoisotopic mass of the expected mass difference
-                formulaModi_object = Formula.formula_from_str(modification_formula) if do_modification_search and modification_formula else None
-                try:
-                    modification_mass = formulaModi_object.get_monoisotopic_mass()
-                except AttributeError:
-                    modification_mass = modification_mass if 'modification_mass' in locals() else None
-
-                # retrieve raw data matches through MASST
-                masst_df, redu_df = retrieve_raw_data_matches(
-                    df_for_name,
-                    database='metabolomicspanrepo_index_nightly',
-                    precursor_mz_tol=float(prec_tol),
-                    fragment_mz_tol=float(frag_tol),
-                    min_cos=float(min_cosine),
-                    matching_peaks=int(min_peaks),
-                    analog=do_modification_search,
-                    modimass=modification_mass,
-                    elimination=do_elimination if 'do_elimination' in locals() else False,
-                    addition=do_addition if 'do_addition' in locals() else False,
-                    modification_condition=modification_condition if 'modification_condition' in locals() else None,
-                    sqlite_path=config.PATH_TO_SQLITE,
-                    api_endpoint=config.MASSTRECORDS_ENDPOINT,
-                    timeout=config.MASSTRECORDS_TIMEOUT
-                )
-
-                if len(redu_df) > 0:
-                    # make library usis for the links
-                    redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
-                        lambda x: (
-                            f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
-                            else f"mzspec:MASSBANK::accession:{x}" 
-                        )
+                    # retrieve raw data matches through MASST
+                    masst_df, redu_df = retrieve_raw_data_matches(
+                        df_for_name,
+                        database='metabolomicspanrepo_index_nightly',
+                        precursor_mz_tol=float(prec_tol),
+                        fragment_mz_tol=float(frag_tol),
+                        min_cos=float(min_cosine),
+                        matching_peaks=int(min_peaks),
+                        analog=do_modification_search,
+                        modimass=modification_mass,
+                        elimination=do_elimination if 'do_elimination' in locals() else False,
+                        addition=do_addition if 'do_addition' in locals() else False,
+                        modification_condition=modification_condition if 'modification_condition' in locals() else None,
+                        sqlite_path=config.PATH_TO_SQLITE,
+                        api_endpoint=config.MASSTRECORDS_ENDPOINT,
+                        timeout=config.MASSTRECORDS_TIMEOUT
                     )
-                    redu_df["best_spectral_match"] = redu_df.apply(build_spectraresolver_link, axis=1)
-                new_results[name] = {"masst": masst_df, "redu": redu_df}
 
-        # store the results in session state
-        st.session_state.raw_results = new_results
+                    if len(redu_df) > 0:
+                        # make library usis for the links
+                        redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
+                            lambda x: (
+                                f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
+                                else f"mzspec:MASSBANK::accession:{x}" 
+                            )
+                        )
+                        redu_df["best_spectral_match"] = redu_df.apply(build_spectraresolver_link, axis=1)
+                    new_results[name] = {"masst": masst_df, "redu": redu_df}
+
+            # store the results in session state
+            st.session_state.raw_results = new_results
 
     # display results in tabs
     if st.session_state.get("raw_results"):
@@ -909,14 +992,9 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                     with tab:
 
                         # get the results for this query structure
-                        st.markdown(f"##### Retrieved **{len(st.session_state.raw_results[name]['redu'])}** matching samples with ReDU metadata for **{name}**.")
+                        st.markdown(f"Retrieved **{len(st.session_state.raw_results[name]['redu'])}** matching samples with ReDU metadata for **{name}**.")
 
-                        st.markdown(
-                            "<div style='font-size:0.9em;'>"
-                            "Below you can see the the raw data matches available to you. Keep in mind that MS/MS annotations, while often accurate, are not perfect. This is the starting pointing of your analysis, not the end."
-                            "</div>",
-                            unsafe_allow_html=True
-                        )
+
                         df_redu = st.session_state.raw_results[name]["redu"]
 
                         if ('mri_id_int' in df_redu.columns or 'mri' in df_redu.columns) and len(df_redu) > 0:
@@ -924,6 +1002,193 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             column_options = df_redu.columns.tolist()
                             # Make sankey diagram
                             ##########
+
+                            def _def_val(v: str) -> str:
+                                return v if v in column_options else column_options[0]
+
+                            def _apply_vals(vals: list[str]):
+                                for i, v in enumerate(vals, start=1):
+                                    st.session_state[f"{name}_col{i}"] = _def_val(v)
+                                st.rerun()
+
+                            PRESET_MAP = {
+                                            "datasets_bodypart_division_taxa": [
+                                                "ATTRIBUTE_DatasetAccession", "UBERONBodyPartName", "NCBIDivision", "NCBITaxonomy"
+                                            ],
+                                            "query_similar_division_taxa": [
+                                                "query_spectrum_id", "similar_library_spectra", "NCBIDivision", "NCBITaxonomy"
+                                            ],
+                                            "compound_bodypart_division_taxa": [
+                                                "Compound_Name", "UBERONBodyPartName", "NCBIDivision", "NCBITaxonomy"
+                                            ],
+                                            "delta_modified_bodypart_doid": [
+                                                "Delta Mass", "Modified", "UBERONBodyPartName", "DOIDCommonName"
+                                            ],
+                                        }
+
+                            if "default_sankey_vals" not in st.session_state:
+                                st.session_state["default_sankey_vals"] = PRESET_MAP["datasets_bodypart_division_taxa"]
+
+
+
+                            with st.container():
+                                st.markdown(
+                                    """
+                                    <style>
+                                    /* Shared card look */
+                                    .tipbox, .presetbox {
+                                        font-size: 0.95rem;
+                                        line-height: 1.5;
+                                        background: #f6f8fa;
+                                        border: 1px solid #e5e7eb;
+                                        padding: 0.9rem 1rem;
+                                        border-radius: 12px;
+                                        margin-bottom: 0.9rem;
+                                    }
+                                    .tipbox h4, .presetbox h4 {
+                                        margin: 0 0 0.6rem 0;
+                                        font-size: 1rem;
+                                        font-weight: 700;
+                                    }
+                                    .tipbox ul {
+                                        margin: 0.25rem 0 0 1.25rem;
+                                        padding: 0;
+                                        list-style-type: disc;
+                                    }
+                                    .tipbox li { margin: 0.35rem 0; }
+
+                                    /* Rows inside preset panel */
+                                    .preset-row {
+                                        display: flex;
+                                        align-items: flex-start;
+                                        gap: 0.75rem;
+                                        padding: 0.6rem 0.5rem;
+                                        border-radius: 10px;
+                                    }
+                                    .preset-row:not(:last-child) {
+                                        border-bottom: 1px dashed #e5e7eb;
+                                    }
+                                    .preset-text {
+                                        flex: 1;
+                                    }
+                                    .preset-title {
+                                        font-weight: 700;
+                                    }
+                                    .preset-sub {
+                                        display: block;
+                                        margin-top: 0.15rem;
+                                        opacity: 0.9;
+                                    }
+
+                                    /* Make the Streamlit button align nicely & fill the small right column */
+                                    .preset-button .stButton>button {
+                                        width: 100%;
+                                        height: 32px;
+                                        border-radius: 10px;
+                                        border: 1px solid #d1d5db;
+                                        background: white;
+                                    }
+                                    .preset-button .stButton>button:hover {
+                                        background: #f3f4f6;
+                                    }
+                                    </style>
+                                    """,
+                                    unsafe_allow_html=True,
+                                )
+
+                                # Preset panel (everything in one grey card; each preset is a clean row)
+                                st.markdown("##### Suggested views")
+
+
+                                # We render the rows right after the header "card" to look continuous.
+                                # (Streamlit can’t nest Python widgets inside HTML, so we mimic one big panel
+                                #  by matching background/border and removing outer margins between blocks.)
+                                preset_panel = st.container()
+                                with preset_panel:
+                                    # Row 1
+                                    r1c1, r1c2 = st.columns([0.86, 0.14])
+                                    with r1c1:
+                                        st.markdown(
+                                            """
+                                            <div class="preset-row">
+                                            <div class="preset-text">
+                                                <span class="preset-title">ATTRIBUTE_DatasetAccession → UBERONBodyPartName → NCBIDivision → NCBITaxonomy</span>
+                                                <span class="preset-sub">Understand biological distributions at a glance while not losing sight of the number of datasets confirming an observed pattern.</span>
+                                            </div>
+                                            </div>
+                                            """,
+                                            unsafe_allow_html=True,
+                                        )
+                                    with r1c2:
+                                        st.markdown('<div class="preset-button">', unsafe_allow_html=True)
+                                        if st.button("Apply", key=f"{name}_preset_1"):
+                                            _apply_vals(["ATTRIBUTE_DatasetAccession","UBERONBodyPartName","NCBIDivision","NCBITaxonomy"])
+                                        st.markdown('</div>', unsafe_allow_html=True)
+
+                                    # Divider look is handled by CSS (dashed bottom border on each row block).
+                                    # Row 2
+                                    r2c1, r2c2 = st.columns([0.86, 0.14])
+                                    with r2c1:
+                                        st.markdown(
+                                            """
+                                            <div class="preset-row">
+                                            <div class="preset-text">
+                                                <span class="preset-title">query_spectrum_id → similar_library_spectra → NCBIDivision → NCBITaxonomy</span>
+                                                <span class="preset-sub">Explore if matches to suspicious sample types are driven by different <em>query_spectrum_ids</em> than those for expected sample types.</span>
+                                            </div>
+                                            </div>
+                                            """,
+                                            unsafe_allow_html=True,
+                                        )
+                                    with r2c2:
+                                        st.markdown('<div class="preset-button">', unsafe_allow_html=True)
+                                        if st.button("Apply", key=f"{name}_preset_2"):
+                                            _apply_vals(["query_spectrum_id","similar_library_spectra","NCBIDivision","NCBITaxonomy"])
+                                        st.markdown('</div>', unsafe_allow_html=True)
+
+                                    # Row 3
+                                    r3c1, r3c2 = st.columns([0.86, 0.14])
+                                    with r3c1:
+                                        st.markdown(
+                                            """
+                                            <div class="preset-row">
+                                            <div class="preset-text">
+                                                <span class="preset-title">Compound_Name → UBERONBodyPartName → NCBIDivision → NCBITaxonomy</span>
+                                                <span class="preset-sub">After substructure or Tanimoto similarity searches, investigate if molecules differ by sample types.</span>
+                                            </div>
+                                            </div>
+                                            """,
+                                            unsafe_allow_html=True,
+                                        )
+                                    with r3c2:
+                                        st.markdown('<div class="preset-button">', unsafe_allow_html=True)
+                                        if st.button("Apply", key=f"{name}_preset_3"):
+                                            _apply_vals(["Compound_Name","UBERONBodyPartName","NCBIDivision","NCBITaxonomy"])
+                                        st.markdown('</div>', unsafe_allow_html=True)
+
+                                    # Row 4
+                                    r4c1, r4c2 = st.columns([0.86, 0.14])
+                                    with r4c1:
+                                        st.markdown(
+                                            """
+                                            <div class="preset-row">
+                                            <div class="preset-text">
+                                                <span class="preset-title">Delta Mass → Modified → UBERONBodyPartName → DOIDCommonName</span>
+                                                <span class="preset-sub">For modification searches, explore if specific modifications differ by body part and disease (especially interesting for drugs).</span>
+                                            </div>
+                                            </div>
+                                            """,
+                                            unsafe_allow_html=True,
+                                        )
+                                    with r4c2:
+                                        st.markdown('<div class="preset-button">', unsafe_allow_html=True)
+                                        if st.button("Apply", key=f"{name}_preset_4"):
+                                            _apply_vals(["Delta Mass","Modified","UBERONBodyPartName","DOIDCommonName"])
+                                        st.markdown('</div>', unsafe_allow_html=True)
+
+
+
+
 
                             # define defaults
                             default_vals = [
@@ -984,14 +1249,8 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             st.plotly_chart(fig, use_container_width=True, key=f"sankey_{result_fig_id}")
                             # st.plotly_chart(fig_map, use_container_width=True, config={"scrollZoom": True}, key=f"map_{result_fig_id}")
 
-                            # # if folder named output exists
-                            # if os.path.exists("./output"):
-
-                            #     # if tooling for write image exists
-                            #     if "kaleido" in sys.modules:
-                            #         fig.write_image("./output/rawData_sankey.pdf", format="pdf", width=1240, height=400, scale=2)
-                            #     # save table
-                            #     df_redu.to_csv("./output/rawData_table.tsv", sep="\t", index=False)
+                            # if folder named output exists
+                            fig.write_image(f"{output_folder}/rawData_sankey.pdf", format="pdf", width=1240, height=400, scale=2)
 
 
                             raw_data_sankey_triggered = True
@@ -1071,30 +1330,52 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     st.rerun()
 
 
-
-
                             # Make topic MASSTs per query
-                            masst_by_query_button, _ = st.columns([4,4]) 
+
+
+                            st.markdown(f"##### Downstream tooling")
+
+
+                            masst_by_query_button, _ = st.columns([4, 6])
 
                             with masst_by_query_button:
                                 if st.button(f"Populate DomainMASST for {name}", key=f"{name}_topic_masst"):
-
                                     sid = st.session_state["_session_hash"]
 
+                                    # Prepare input
+                                    topic_masst_df = st.session_state.raw_results[name]["redu"].copy()
+                                    topic_masst_df = topic_masst_df[["USI", "Cosine", "Matching Peaks", "Delta Mass"]]
+                                    topic_masst_df["Status"] = 1
 
-                                    topic_masst_df = st.session_state.raw_results[name]["redu"]
+                                    input_path = f"{output_folder}/topicMasst_input_{name}.tsv"
+                                    topic_masst_df.to_csv(input_path, sep="\t", index=False, header=True)
 
-                                    # save only USI column without header
-                                    topic_masst_df = topic_masst_df[["USI", "Cosine", "Matching Peaks", "Delta Mass"]].copy()
-                                    topic_masst_df['Status'] = 1
-                                    
-                                    # write the file
-                                    topic_masst_df.to_csv(f"{output_folder}/topicMasst_input_{name}.tsv", sep="\t", index=False, header=True)
+                                    # Run and report
+                                    with st.spinner("Running DomainMASSTs…"):
+                                        time.sleep(0.5)
+                                        returncode, stdout, stderr = run_topic_MASSTs(input_path, output_folder, name)
 
-                                    returncode, stdout, stderr = run_topic_MASSTs(f"{output_folder}/topicMasst_input_{name}.tsv", output_folder, name)
+                                    if returncode == 0:
+                                        st.session_state["last_topic_masst_name"] = name
+                                        st.session_state["last_topic_masst_output_dir"] = output_folder
+
+                                        st.success(f"DomainMASSTs for **{name}** completed.")
+                                        st.page_link(
+                                            "pages/domainMASST.py",  # adjust to your filename
+                                            label="➡️ Click for DomainMASST Results",
+                                        )
+                                        # If you'd rather jump immediately:
+                                        # st.switch_page("pages/domainMASST.py")
+                                    else:
+                                        st.error("DomainMASSTs failed. See logs below.")
+                                        with st.expander("Show logs"):
+                                            st.code(stdout or "", language="text")
+                                            st.code(stderr or "", language="text")
 
 
-                                    st.rerun()
+
+
+
 
                         else:
                             st.warning("No ReDU metadata matches found.")
@@ -1118,7 +1399,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         # no usable key → empty
                         return pd.Series([], dtype=str)
 
-                masst_by_query_button, message_space_masst_by_query = st.columns([3,7]) 
+                masst_by_query_button, message_space_masst_by_query = st.columns([4,4]) 
 
                 with masst_by_query_button:
                     if st.button(f"Populate DomainMASST with Molecule Co-occurrence", key=f"intersection_topic_masst"):
@@ -1170,10 +1451,25 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     # write the file
                                     topic_masst_df.to_csv(f"{output_folder}/domainMasst_input_moleculeIntersection.tsv", sep="\t", index=False, header=True)
 
-                                    returncode, stdout, stderr = run_topic_MASSTs(f"{output_folder}/domainMasst_input_moleculeIntersection.tsv", output_folder, "moleculeIntersection")
+                                    with st.spinner("Running DomainMASSTs…"): 
+                                        returncode, stdout, stderr = run_topic_MASSTs(f"{output_folder}/domainMasst_input_moleculeIntersection.tsv", output_folder, "moleculeIntersection")
 
-                                    with message_space_masst_by_query:
-                                        files = [f for f in os.listdir(output_folder) if os.path.isfile(os.path.join(output_folder, f)) and f.endswith(".html") and f.startswith("domainMasst_input__moleculeIntersection")]
+                                    if returncode == 0:
+                                        st.session_state["last_topic_masst_name"] = name
+                                        st.session_state["last_topic_masst_output_dir"] = output_folder
+
+                                        st.success(f"DomainMASSTs for Molecule Intersection completed.")
+                                        st.page_link(
+                                            "pages/domainMASST.py", 
+                                            label="➡️ Click for DomainMASST Results",
+                                        )
+                                    else:
+                                        st.error("DomainMASSTs failed. See logs below.")
+                                        with st.expander("Show logs"):
+                                            st.code(stdout or "", language="text")
+                                            st.code(stderr or "", language="text")
+                    
+
 
         else:
             st.warning("No raw data matches found. Please try a different query structure or adjust your search parameters.")
