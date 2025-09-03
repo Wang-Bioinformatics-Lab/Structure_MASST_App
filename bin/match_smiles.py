@@ -5,6 +5,60 @@ import pandas as pd
 import re
 from formula_validation.Formula import Formula
 import argparse
+from rdkit.Chem.MolStandardize import rdMolStandardize
+
+#Credit Michael Strobel with changes
+def neutralize_atoms(smiles):
+    """This function takes in a smiles and verifies that it does not have a charge that can be
+    neutralized by protonation or deprotonation. If it does, it will neutralize the charge and return the mol.
+    Code Source: http://www.rdkit.org/docs/Cookbook.html#neutralizing-molecules
+    Returns:
+        Union[int,bool,int,rdkit.Chem.rdchem.Mol]: The number of charges removed, whether the resulting mol is 
+        both pos and neg charged, the sum of the charges, and the neutralized mol.
+    """    
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    
+    pattern = Chem.MolFromSmarts("[+1!h0!$([*]~[-1,-2,-3,-4]),-1!$([*]~[+1,+2,+3,+4])]")
+    at_matches = mol.GetSubstructMatches(pattern)
+    at_matches_list = [y[0] for y in at_matches]
+    num_removed_charges = len(at_matches_list)
+    if len(at_matches_list) > 0:
+        for at_idx in at_matches_list:
+            atom = mol.GetAtomWithIdx(at_idx)
+            chg = atom.GetFormalCharge()
+            hcount = atom.GetTotalNumHs()
+            atom.SetFormalCharge(0)
+            atom.SetNumExplicitHs(hcount - chg)
+            atom.UpdatePropertyCache()
+    pos = False
+    neg = False
+    sum_of_charges = 0
+    for atom in mol.GetAtoms():
+        charge = atom.GetFormalCharge()
+        if charge < 0:
+            neg = True
+        if charge > 0:
+             pos = True
+        sum_of_charges += charge
+    if pos and neg:
+        pos_and_neg =True
+    else:
+        pos_and_neg = False
+    
+    return Chem.MolToSmiles(mol)
+
+def tautomerize_smiles(smiles):
+    params = rdMolStandardize.CleanupParameters()
+    params.maxTautomers = 100000
+    params.maxTransforms = 100000
+    te = rdMolStandardize.TautomerEnumerator(params)
+    mol = Chem.MolFromSmiles(smiles)
+    mol = te.Canonicalize(mol)
+    standard_smiles = Chem.MolToSmiles(mol)
+    del mol
+    return standard_smiles
 
 def detect_smiles_or_smarts(s):
     """

@@ -43,6 +43,10 @@ def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
                 print(f"Delta Mass filter applied: {precursor_mz_tol}")
 
             elif analog == True:
+                #if in the USI column the first value ends on ".0" remove the last two characters from each entry
+                if df["USI"].iloc[0].endswith(".0"):
+                    df["USI"] = df["USI"].str[:-2]
+
                 df['Delta Mass'] = df['Delta Mass'].astype(float)
                 df['Delta Mass'] = df['Delta Mass'] * -1
                 df = df[(df['Delta Mass'].abs() >= 5) | (df['Delta Mass'].abs() <= precursor_mz_tol)]

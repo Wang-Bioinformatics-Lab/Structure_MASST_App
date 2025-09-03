@@ -212,7 +212,7 @@ def retrieve_raw_data_matches(
     # add Smiles column from library_subset to redu_enriched
     if 'Smiles' in library_subset.columns:
         redu_enriched = redu_enriched.merge(
-            library_subset[['query_spectrum_id', 'Smiles', 'Adduct', 'Compound_Name', 'Precursor_MZ']],
+            library_subset[['query_spectrum_id', 'Smiles', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'similar_library_spectra']],
             left_on='query_spectrum_id',
             right_on='query_spectrum_id',
             how='left'
@@ -304,7 +304,8 @@ def add_redu(
     # 2. Extract 'mri' and 'scan_id' from USI if present
     if "USI" in df.columns:
         df[["mri", "scan_id"]] = df["USI"].str.split(":scan:", n=1, expand=True)
-
+        df["scan_id"] = pd.to_numeric(df["scan_id"], errors="raise").astype(int)
+        
     df = df.sort_values(
         by=["Cosine", "Matching Peaks"], 
         ascending=[False, False]

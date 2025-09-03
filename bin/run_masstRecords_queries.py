@@ -47,17 +47,63 @@ def _get_fetcher(sqlite_path: str, api_endpoint: str, timeout: int):
         return lambda sql: _fetch_csv(sql, api_endpoint, timeout)
 
 def _batched_fetch(template_sql: str,
-                   id_list: list[int],
+                   id_list: list[int] | None,
                    fetch,
                    chunk_size: int,
                    paginate: bool = False,
                    page_size: int = 50000,
                    max_pages: int | None = None) -> pd.DataFrame:
     """
-    When paginate=True, each chunk is fetched in pages using LIMIT/OFFSET with `page_size`.
-    Pagination stops when a page returns < page_size rows (or max_pages is hit).
-    If the SQL already contains LIMIT/OFFSET, pagination is skipped for that chunk.
+    Two modes:
+      1) ID-batched mode: if template_sql contains '{ids}', chunk id_list and format into the SQL.
+      2) Table mode: if no '{ids}' placeholder is present, ignore id_list/chunk_size and (optionally) paginate
+         the whole query with LIMIT/OFFSET until fewer than page_size rows are returned.
     """
+    uses_ids = "{ids}" in template_sql
+
+    # -------- Table mode (no {ids} in template_sql)
+    if not uses_ids:
+        if not paginate or _has_limit_or_offset(template_sql):
+            df = fetch(template_sql)
+            print(f"[BATCH] table-mode: returned {len(df)} rows (single fetch)")
+            return df
+
+        dfs = []
+        offset = 0
+        pages = 0
+        total_rows = 0
+        print("[BATCH] table-mode: pagination enabled")
+        while True:
+            pages += 1
+            if (max_pages is not None) and (pages > max_pages):
+                print(f"[BATCH] table-mode: reached max_pages={max_pages}, stopping")
+                break
+
+            paged_sql = _append_limit_offset(template_sql, page_size, offset)
+            df_page = fetch(paged_sql)
+            n_rows = len(df_page)
+            total_rows += n_rows
+            print(f"[BATCH] table-mode page {pages}: offset={offset} limit={page_size} -> {n_rows} rows")
+
+            if n_rows == 0:
+                break
+
+            dfs.append(df_page)
+
+            if n_rows < page_size:
+                break
+
+            offset += page_size
+
+        if dfs:
+            result = pd.concat(dfs, ignore_index=True)
+            print(f"[BATCH] table-mode total returned {len(result)} rows across {pages} page(s)")
+            return result
+        else:
+            print("[BATCH] table-mode returned 0 rows")
+            return pd.DataFrame()
+
+    # -------- ID-batched mode (has {ids} in template_sql)
     if not id_list:
         print("[BATCH] No IDs to fetch.")
         return pd.DataFrame()
@@ -70,7 +116,7 @@ def _batched_fetch(template_sql: str,
 
         sql = template_sql.format(ids=",".join(map(str, chunk)))
 
-        # If the user already specified LIMIT/OFFSET, do a single fetch.
+        # If LIMIT/OFFSET already present or pagination disabled, single fetch
         if not paginate or _has_limit_or_offset(sql):
             df = fetch(sql)
             if not df.empty:
@@ -78,7 +124,7 @@ def _batched_fetch(template_sql: str,
                 dfs.append(df)
             continue
 
-        # Paginate with LIMIT/OFFSET
+        # Paginate with LIMIT/OFFSET per chunk
         offset = 0
         pages = 0
         total_rows_this_chunk = 0
@@ -101,7 +147,6 @@ def _batched_fetch(template_sql: str,
             dfs.append(df_page)
 
             if n_rows < page_size:
-                # Last page for this chunk
                 break
 
             offset += page_size
@@ -279,27 +324,29 @@ def get_masst_and_redu_tables(
         print("[STEP 2] no masst hits → exiting part 2")
         return pd.DataFrame(), pd.DataFrame()
 
-    # — add MRI strings —
-    mids = masst_df['mri_id_int'].dropna().unique().tolist()
-    if mids:
-        print(f"[STEP 3a] fetching mri strings for {len(mids)} mri_id_ints")
-        mri_sql   = "SELECT mri_id_int, mri FROM mri_table WHERE mri_id_int IN ({ids})"
-        mri_map   = _batched_fetch(mri_sql, mids, fetch, 500)
-        if not mri_map.empty:
-            masst_df = masst_df.merge(mri_map, on='mri_id_int', how='left')
-        else:
-            masst_df['mri'] = None
-    else:
-        masst_df['mri'] = None
+    # # — add MRI strings —
+    # mids = masst_df['mri_id_int'].dropna().unique().tolist()
+    # if mids:
+    #     print(f"[STEP 3a] fetching mri strings for {len(mids)} mri_id_ints")
+    #     mri_sql   = "SELECT mri_id_int, mri FROM mri_table WHERE mri_id_int IN ({ids})"
+    #     mri_map   = _batched_fetch(mri_sql, mids, fetch, 500)
+    #     if not mri_map.empty:
+    #         masst_df = masst_df.merge(mri_map, on='mri_id_int', how='left')
+    #     else:
+    #         masst_df['mri'] = None
+    # else:
+    #     masst_df['mri'] = None
 
     # — add spectrum_id strings —
     print(f"[STEP 3b] merging spectrum_id for {len(sids)} spectrum_id_ints")
-    spec_map = library_df[['spectrum_id_int', 'query_spectrum_id', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'inchikey_first_block']].drop_duplicates()
+    spec_map = library_df[['spectrum_id_int', 'query_spectrum_id', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'inchikey_first_block', 'similar_library_spectra']].drop_duplicates()
     # make sure we match on same datatype
     spec_map['spectrum_id_int'] = spec_map['spectrum_id_int'].astype('Int64')
     masst_df['spectrum_id_int'] = masst_df['spectrum_id_int'].astype('Int64')
 
     masst_df = masst_df.merge(spec_map, on='spectrum_id_int', how='left')
+
+    mids = masst_df['mri_id_int'].dropna().unique().tolist()
 
     # — ReDU table —
     if not mids:
@@ -315,11 +362,38 @@ def get_masst_and_redu_tables(
     redu_columns_list = redu_columns['name'].tolist()
     columns_to_exclude = ['filename', 'TermsofPosition', 'ComorbidityListDOIDIndex', 'SampleCollectionDateandTime', 'ENVOBroadScale', 'ENVOLocalScale', 'ENVOMediumScale', 'qiita_sample_name',
                           'UniqueSubjectID', 'UBERONOntologyIndex', 'DOIDOntologyIndex', 'ENVOEnvironmentBiomeIndex', 'ENVOEnvironmentMaterialIndex', 'ENVOLocalScaleIndex', 'ENVOBroadScaleIndex',
-                          'ENVOMediumScaleIndex', 'classification', 'MS2spectra_count']
+                          'ENVOMediumScaleIndex', 'classification', 'MS2spectra_count', 'InternalStandardsUsed', 'HumanPopulationDensity']
     redu_columns_list = [col for col in redu_columns_list if col not in columns_to_exclude]
 
-    redu_sql_tmpl = f"SELECT {', '.join(redu_columns_list)} FROM redu_table WHERE mri_id_int IN ({{ids}})"
+    MAX_IDS_FOR_IN = 5000
 
-    redu_df = _batched_fetch(redu_sql_tmpl, mids, fetch, 500)
+    if len(mids) <= MAX_IDS_FOR_IN:
+        redu_sql_tmpl = f"SELECT {', '.join(redu_columns_list)} FROM redu_table WHERE mri_id_int IN ({{ids}})"
+        redu_df = _batched_fetch(
+            redu_sql_tmpl,
+            mids,
+            fetch,
+            chunk_size=500,   # adjust as needed
+            paginate=True,
+            page_size=500000,
+            max_pages=None
+        )
+    else:
+        print(f"[STEP 4] >{MAX_IDS_FOR_IN} mri_id_ints → full-table scan with pagination, then local filter")
+        usi_filter = "(LOWER(TRIM(USI)) LIKE '%.mzml' OR LOWER(TRIM(USI)) LIKE '%.mzxml')"
+        redu_sql_all = f"SELECT {', '.join(redu_columns_list)} FROM redu_table WHERE {usi_filter}"
+        redu_df = _batched_fetch(
+            redu_sql_all,
+            None,             # table-mode: ignore IDs
+            fetch,
+            chunk_size=0,     # ignored in table-mode
+            paginate=True,
+            page_size=50000,
+            max_pages=None
+        )
+        # Filter locally (ensure type alignment)
+        mids_str = list(map(str, mids))
+        redu_df = redu_df[redu_df['mri_id_int'].isin(mids_str)]
+
 
     return masst_df, redu_df
