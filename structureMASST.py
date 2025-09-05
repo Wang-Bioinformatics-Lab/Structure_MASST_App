@@ -1052,7 +1052,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                                 "ATTRIBUTE_DatasetAccession", "UBERONBodyPartName", "NCBIDivision", "NCBITaxonomy"
                                             ],
                                             "query_similar_division_taxa": [
-                                                "query_spectrum_id", "similar_library_spectra", "NCBIDivision", "NCBITaxonomy"
+                                                "similar_library_spectra", "query_spectrum_id", "NCBIDivision", "NCBITaxonomy"
                                             ],
                                             "compound_bodypart_division_taxa": [
                                                 "inchikey_first_block", "Compound_Name", "UBERONBodyPartName", "NCBITaxonomy"
@@ -1158,7 +1158,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     with r1c2:
                                         st.markdown('<div class="preset-button">', unsafe_allow_html=True)
                                         if st.button("Apply", key=f"{name}_preset_1"):
-                                            _apply_vals(["ATTRIBUTE_DatasetAccession","UBERONBodyPartName","NCBIDivision","NCBITaxonomy"])
+                                            _apply_vals(PRESET_MAP["datasets_bodypart_division_taxa"])
                                         st.markdown('</div>', unsafe_allow_html=True)
 
                                     # Divider look is handled by CSS (dashed bottom border on each row block).
@@ -1169,7 +1169,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                             """
                                             <div class="preset-row">
                                             <div class="preset-text">
-                                                <span class="preset-title">query_spectrum_id → similar_library_spectra → NCBIDivision → NCBITaxonomy</span>
+                                                <span class="preset-title">similar_library_spectra → query_spectrum_id → NCBIDivision → NCBITaxonomy</span>
                                                 <span class="preset-sub">Explore if matches to suspicious sample types are driven by different <em>query_spectrum_ids</em> than those for expected sample types.</span>
                                             </div>
                                             </div>
@@ -1179,7 +1179,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     with r2c2:
                                         st.markdown('<div class="preset-button">', unsafe_allow_html=True)
                                         if st.button("Apply", key=f"{name}_preset_2"):
-                                            _apply_vals(["query_spectrum_id","similar_library_spectra","NCBIDivision","NCBITaxonomy"])
+                                            _apply_vals(PRESET_MAP["query_similar_division_taxa"])
                                         st.markdown('</div>', unsafe_allow_html=True)
 
                                     # Row 3
@@ -1199,7 +1199,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     with r3c2:
                                         st.markdown('<div class="preset-button">', unsafe_allow_html=True)
                                         if st.button("Apply", key=f"{name}_preset_3"):
-                                            _apply_vals(["Compound_Name","UBERONBodyPartName","NCBIDivision","NCBITaxonomy"])
+                                            _apply_vals(PRESET_MAP["compound_bodypart_division_taxa"])
                                         st.markdown('</div>', unsafe_allow_html=True)
 
                                     # Row 4
@@ -1219,24 +1219,15 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     with r4c2:
                                         st.markdown('<div class="preset-button">', unsafe_allow_html=True)
                                         if st.button("Apply", key=f"{name}_preset_4"):
-                                            _apply_vals(["Delta Mass","Modified","UBERONBodyPartName","DOIDCommonName"])
+                                            _apply_vals(PRESET_MAP["delta_modified_bodypart_doid"])
                                         st.markdown('</div>', unsafe_allow_html=True)
 
 
 
-
-
-                            # define defaults
-                            default_vals = [
-                                "ATTRIBUTE_DatasetAccession",
-                                "UBERONBodyPartName",
-                                "NCBIDivision",
-                                "NCBITaxonomy",
-                            ]
                             def_val = lambda v: v if v in column_options else column_options[0]
 
                             # initialize session_state defaults 
-                            for i, default in enumerate(default_vals, start=1):
+                            for i, default in enumerate(st.session_state["default_sankey_vals"], start=1):
                                 key = f"{name}_col{i}"
                                 if key not in st.session_state:
                                     st.session_state[key] = def_val(default)
