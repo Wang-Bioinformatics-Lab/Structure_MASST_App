@@ -15,6 +15,7 @@ import sqlite3
 from urllib.parse import quote_plus
 import sys
 import time
+import numpy as np
 
 HERE = os.path.dirname(__file__)  
 PKG_PATH = os.path.abspath(os.path.join(HERE, '..', 'external', 'GNPSDataPackage'))
@@ -212,13 +213,23 @@ def retrieve_raw_data_matches(
     # add Smiles column from library_subset to redu_enriched
     if 'Smiles' in library_subset.columns:
         redu_enriched = redu_enriched.merge(
-            library_subset[['query_spectrum_id', 'Smiles', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'similar_library_spectra']],
+            library_subset[['query_spectrum_id', 'Smiles', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'similar_library_spectra', 'inchikey_first_block']],
             left_on='query_spectrum_id',
             right_on='query_spectrum_id',
             how='left'
         )
         redu_enriched.rename(columns={'Smiles': 'query_smiles'}, inplace=True)
 
+
+        redu_enriched['similar_library_spectra'] = redu_enriched['similar_library_spectra'] + redu_enriched['unique_spectra_in_mri'] - 2
+        
+        # make integer
+        redu_enriched['similar_library_spectra'] = redu_enriched['similar_library_spectra'].astype('Int64')
+
+        # make character values from 0 to "9+"
+        s = redu_enriched["similar_library_spectra"].astype("Int64")
+        b = s.clip(upper=9)
+        redu_enriched["similar_library_spectra"] = b.astype("string").where(b < 9, "9+")
 
     # make library usis for the links
     redu_enriched["lib_usi"] = redu_enriched["query_spectrum_id"].apply(
@@ -312,13 +323,22 @@ def add_redu(
     )
 
     if 'Modified' in df.columns:
-        unique_by_columns = ['mri', 'Delta Mass']
+        grp_cols = ['mri', 'Delta Mass']
     else:
-        unique_by_columns = ['mri']
+        grp_cols = ['mri']
+
+
+    print(f"Current columns in matches: {df.columns.tolist()}")
 
     # 3. Keep only the top match per 'mri'
     if "mri" in df.columns:
-        df = df.drop_duplicates(subset=unique_by_columns, keep="first")
+        df["unique_spectra_in_mri"] = (
+            df.groupby(grp_cols)["query_spectrum_id"]
+            .transform(lambda s: s.dropna().nunique())
+            .astype("Int64")
+        )
+        df = df.drop_duplicates(subset=grp_cols, keep="first")
+
     else:
         print("[add_redu] Warning: 'mri' column not found in matches; merging may fail.")
 
