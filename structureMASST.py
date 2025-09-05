@@ -29,6 +29,8 @@ from typing import Iterable, Mapping, Union, List, Dict
 import subprocess
 import uuid
 import time
+import numpy as np
+
 #from streamlit_extras.switch_page_button import switch_page 
 
 # 1) Inject responsive CSS (vw + clamp)
@@ -216,7 +218,7 @@ with col_name:
     name_query = st.text_input(
         "Type a chemical name to search PubChem",
         key="name_query",
-        placeholder="e.g., diazepam, 5-Hydroxyindoleacetic Acid, etc.",
+        placeholder="e.g., diazepam, caffeine, etc.",
     )
 
     # If the query changed (e.g., after Enter), fetch suggestions once
@@ -826,6 +828,8 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         df_struct = data["structure"]
 
                         # dereplicate spectra
+                        print(f"the df_struct has {len(df_struct)} rows and columns: {df_struct.columns.tolist()}")
+
                         df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
                         df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
                         df_struct["similar_library_spectra"] = (
@@ -865,10 +869,22 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                     if 'mri_id_int' in redu_df.columns:
                         # add query spectrum ID and scan ID to redu_df //could potentially move this into get_masst_and_redu_tables
                         redu_df = redu_df.merge(
-                            df_masst_unique[["mri_id_int", "scan_id", "query_spectrum_id", 'matching_peaks', 'cosine', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'inchikey_first_block', 'similar_library_spectra']],
+                            df_masst_unique[["mri_id_int", "scan_id", "query_spectrum_id", 'matching_peaks', 'cosine', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'inchikey_first_block', 'similar_library_spectra', 'unique_spectra_in_mri']],
                             on="mri_id_int",
                             how="left"
                             )
+
+                        redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'] + redu_df['unique_spectra_in_mri'] - 2
+
+                        # make integer
+                        redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'].astype('Int64')
+
+                        # make character values from 0 to "9+"
+                        # Bucket 0–8 as strings, and 9 or more as "9+"
+                        s = redu_df["similar_library_spectra"].astype("Int64")       # keep NA-friendly int
+                        b = s.clip(upper=9)                                          # cap at 9
+                        redu_df["similar_library_spectra"] = b.astype("string").where(b < 9, "9+")
+
 
                         # rename cosine to Cosine and matching_peaks to Matching Peaks
                         redu_df = redu_df.rename(columns={
@@ -999,7 +1015,16 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                         if ('mri_id_int' in df_redu.columns or 'mri' in df_redu.columns) and len(df_redu) > 0:
 
-                            column_options = df_redu.columns.tolist()
+                            # Build & persist a stable options list per query tab (never shrinks on rerun)
+                            opts_key = f"{name}_sankey_options"
+                            new_cols = df_redu.columns.tolist()
+                            if opts_key not in st.session_state:
+                                st.session_state[opts_key] = new_cols[:]
+                            else:
+                                # allow growth but keep prior entries (preserve order, dedupe)
+                                st.session_state[opts_key] = list(dict.fromkeys(st.session_state[opts_key] + new_cols))
+
+                            column_options = st.session_state[opts_key]
                             # Make sankey diagram
                             ##########
 
@@ -1011,6 +1036,17 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     st.session_state[f"{name}_col{i}"] = _def_val(v)
                                 st.rerun()
 
+                            def sticky_selectbox(label: str, options: list[str], key: str):
+                                """Render a selectbox that keeps the user's selection across reruns."""
+                                cur = st.session_state.get(key, None)
+                                if cur in options:
+                                    # Use existing session value; DON'T pass index (prevents Streamlit reset)
+                                    return st.selectbox(label, options, key=key)
+                                else:
+                                    # First time / invalid value -> choose the first option
+                                    return st.selectbox(label, options, index=0, key=key)
+
+
                             PRESET_MAP = {
                                             "datasets_bodypart_division_taxa": [
                                                 "ATTRIBUTE_DatasetAccession", "UBERONBodyPartName", "NCBIDivision", "NCBITaxonomy"
@@ -1019,7 +1055,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                                 "query_spectrum_id", "similar_library_spectra", "NCBIDivision", "NCBITaxonomy"
                                             ],
                                             "compound_bodypart_division_taxa": [
-                                                "Compound_Name", "UBERONBodyPartName", "NCBIDivision", "NCBITaxonomy"
+                                                "inchikey_first_block", "Compound_Name", "UBERONBodyPartName", "NCBITaxonomy"
                                             ],
                                             "delta_modified_bodypart_doid": [
                                                 "Delta Mass", "Modified", "UBERONBodyPartName", "DOIDCommonName"
@@ -1153,7 +1189,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                             """
                                             <div class="preset-row">
                                             <div class="preset-text">
-                                                <span class="preset-title">Compound_Name → UBERONBodyPartName → NCBIDivision → NCBITaxonomy</span>
+                                                <span class="preset-title">inchikey_first_block → Compound_Name → UBERONBodyPartName → NCBITaxonomy</span>
                                                 <span class="preset-sub">After substructure or Tanimoto similarity searches, investigate if molecules differ by sample types.</span>
                                             </div>
                                             </div>
@@ -1205,36 +1241,17 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 if key not in st.session_state:
                                     st.session_state[key] = def_val(default)
 
-                            # make four selectboxes 
+                            # make four sticky selectboxes (won't reset after buttons/reruns)
                             col1_c, col2_c, col3_c, col4_c = st.columns(4)
                             with col1_c:
-                                st.selectbox(
-                                    "Column 1",
-                                    column_options,
-                                    index=column_options.index(st.session_state[f"{name}_col1"]),
-                                    key=f"{name}_col1"
-                                )
+                                sticky_selectbox("Column 1", column_options, key=f"{name}_col1")
                             with col2_c:
-                                st.selectbox(
-                                    "Column 2",
-                                    column_options,
-                                    index=column_options.index(st.session_state[f"{name}_col2"]),
-                                    key=f"{name}_col2"
-                                )
+                                sticky_selectbox("Column 2", column_options, key=f"{name}_col2")
                             with col3_c:
-                                st.selectbox(
-                                    "Column 3",
-                                    column_options,
-                                    index=column_options.index(st.session_state[f"{name}_col3"]),
-                                    key=f"{name}_col3"
-                                )
+                                sticky_selectbox("Column 3", column_options, key=f"{name}_col3")
                             with col4_c:
-                                st.selectbox(
-                                    "Column 4",
-                                    column_options,
-                                    index=column_options.index(st.session_state[f"{name}_col4"]),
-                                    key=f"{name}_col4"
-                                )
+                                sticky_selectbox("Column 4", column_options, key=f"{name}_col4")
+
 
                             # pull the latest values and build your Sankey immediately
                             col1 = st.session_state[f"{name}_col1"]
@@ -1242,18 +1259,14 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             col3 = st.session_state[f"{name}_col3"]
                             col4 = st.session_state[f"{name}_col4"]
 
-                            fig = raw_data_sankey(df_redu, col1, col2, col3, col4)
+                            # if any two cols have the same value give warning
+                            if len({col1, col2, col3, col4}) == 4:
+                                fig = raw_data_sankey(df_redu, col1, col2, col3, col4)
+                                st.plotly_chart(fig, use_container_width=True, key=f"sankey_{result_fig_id}")
+                                fig.write_image(f"{output_folder}/rawData_sankey_{name}.pdf", format="pdf", width=1240, height=400, scale=2)
+                            else:
+                                st.warning("Warning: Some selected columns have the same value.")
 
-                            # fig_map, _ = export_hits_map(df_redu, engine="mapbox", hover_mri="count", map_style='carto-positron')
-
-                            st.plotly_chart(fig, use_container_width=True, key=f"sankey_{result_fig_id}")
-                            # st.plotly_chart(fig_map, use_container_width=True, config={"scrollZoom": True}, key=f"map_{result_fig_id}")
-
-                            # if folder named output exists
-                            fig.write_image(f"{output_folder}/rawData_sankey.pdf", format="pdf", width=1240, height=400, scale=2)
-
-
-                            raw_data_sankey_triggered = True
 
                             # sample matches tab
                             #########

@@ -243,7 +243,7 @@ def get_library_table(
 
         lib_sql_template = (
             "SELECT spectrum_id_int, spectrum_id, Compound_Name, Ion_Mode, collision_energy, Precursor_MZ, Adduct, "
-            "msManufacturer, msMassAnalyzer, GNPS_library_membership "
+            "msManufacturer, msMassAnalyzer, GNPS_library_membership, representative_spectrum_int "
             "FROM library_table WHERE spectrum_id_int IN ({ids})"
         )
 
@@ -299,16 +299,39 @@ def get_masst_and_redu_tables(
     print(f"[STEP 2] masst_table for {len(sids)} spectrum_id_ints")
     if not sids:
         return pd.DataFrame(), pd.DataFrame()
+    # masst_sql_tmpl = (
+    #     "SELECT * FROM ("
+    #     "  SELECT *, "
+    #     "         ROW_NUMBER() OVER (PARTITION BY mri_id_int ORDER BY cosine DESC) AS rn "
+    #     "  FROM masst_table "
+    #     "  WHERE spectrum_id_int IN ({ids}) "
+    #     f"    AND cosine >= {cosine_threshold} "
+    #     f"    AND matching_peaks >= {matching_peaks}"
+    #     ") t "
+    #     "WHERE rn = 1"
+    # )
+
     masst_sql_tmpl = (
-        "SELECT * FROM ("
-        "  SELECT *, "
-        "         ROW_NUMBER() OVER (PARTITION BY mri_id_int ORDER BY cosine DESC) AS rn "
+        "WITH filtered AS ("
+        "  SELECT * "
         "  FROM masst_table "
         "  WHERE spectrum_id_int IN ({ids}) "
         f"    AND cosine >= {cosine_threshold} "
         f"    AND matching_peaks >= {matching_peaks}"
-        ") t "
-        "WHERE rn = 1"
+        "), ranked AS ("
+        "  SELECT f.*, "
+        "         ROW_NUMBER() OVER (PARTITION BY mri_id_int ORDER BY cosine DESC) AS rn "
+        "  FROM filtered f"
+        "), uniq_counts AS ("
+        "  SELECT mri_id_int, "
+        "         COUNT(DISTINCT spectrum_id_int) AS unique_spectra_in_mri "
+        "  FROM filtered "
+        "  GROUP BY mri_id_int"
+        ") "
+        "SELECT r.*, u.unique_spectra_in_mri "
+        "FROM ranked r "
+        "JOIN uniq_counts u USING (mri_id_int) "
+        "WHERE r.rn = 1"
     )
 
     masst_df = _batched_fetch(
@@ -323,6 +346,9 @@ def get_masst_and_redu_tables(
     if masst_df.empty:
         print("[STEP 2] no masst hits → exiting part 2")
         return pd.DataFrame(), pd.DataFrame()
+
+    #adjust datatypes
+    masst_df['unique_spectra_in_mri'] = masst_df['unique_spectra_in_mri'].astype('int64')
 
     # # — add MRI strings —
     # mids = masst_df['mri_id_int'].dropna().unique().tolist()
