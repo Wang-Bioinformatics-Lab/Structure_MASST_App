@@ -426,6 +426,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
     with st.expander("Available Library Entries", expanded=True):
         st.markdown("### Available Library Entries")
         name_tabs = st.tabs(list(st.session_state.grouped_results.keys()))
+
         for fig_id, (name, name_tab) in enumerate(zip(st.session_state.grouped_results.keys(), name_tabs)):
             with name_tab:
 
@@ -653,10 +654,17 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                 # display each query structures available spectra as table
                 with st.expander("Molecules by InChIKey", expanded=True):
+                    # grab the keys
+                    keys = list(st.session_state.grouped_results[name].keys())
 
-                    # create a tab for each 2d InChIKey
-                    ik_tabs = st.tabs(list(st.session_state.grouped_results[name].keys()))
-                    for ik, ik_tab in zip(st.session_state.grouped_results[name].keys(), ik_tabs):
+                    max_tabs = 100
+                    if len(keys) > max_tabs:
+                        st.warning(f"⚠️ Too many InChIKeys ({len(keys)}). Showing only the first {max_tabs}.")
+                        keys = keys[:max_tabs]
+
+                    # create a tab for each 2D InChIKey (max 100)
+                    ik_tabs = st.tabs(keys)
+                    for ik, ik_tab in zip(keys, ik_tabs):
                         with ik_tab:
 
                             data = st.session_state.grouped_results[name][ik]
@@ -1311,18 +1319,55 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 key=f"{name}_redu_table",
                             )
                             # grab the selected row positions
-                            selected = table_evt.selection.rows
-                            # buttons for selected rows
-                            btn_col1, btn_col2, _ = st.columns([2,2,6])
+                            ui_selected = st.session_state.get(f"{name}_redu_table", {}).get("selection", {}).get("rows", [])
+
+                            # grab the selected row positions from UI
+                            ui_selected = st.session_state.get(f"{name}_redu_table", {}).get("selection", {}).get("rows", [])
+
+                            # dropdowns
+                            btn_col3, btn_col4, _ = st.columns([2,3,5])
+
+                            with btn_col3:
+                                column_options = ["None"] + list(df_redu.columns)
+                                sel_col = st.selectbox("Column", column_options, index=0, key=f"{name}_redu_selcol")
+
+                            dropdown_selected = []
+
+                            sel_vals = []
+
+                            with btn_col4:
+                                if sel_col != "None":
+                                    disp_col = df_redu[sel_col].astype("string").fillna("<NA>")
+                                    #most_common = disp_col.value_counts(dropna=False).index[0]
+                                    value_options = sorted(disp_col.unique().tolist())
+                                    sel_vals = st.multiselect(
+                                        "Value(s)",
+                                        value_options,
+                                        #default=[most_common],
+                                        key=f"{name}_redu_selvals",
+                                    )
+                                    disp = df_redu[sel_col].astype("string").fillna("<NA>")
+                                    dropdown_selected = [i for i, ok in enumerate(disp.isin(sel_vals).to_numpy()) if ok]
+                                else:
+                                    st.multiselect("Value(s)", [], key=f"{name}_redu_selvals_disabled", disabled=True)
+
+                            # --- FINAL SELECTION ---
+                            use_dropdown = (sel_col != "None" and bool(sel_vals))   # <-- only override when values exist
+                            selected = dropdown_selected if use_dropdown else ui_selected
+
+                            btn_col1, btn_col2, _ = st.columns([2,2, 6])
+
+                            # buttons for selected rows  (MOVED BELOW)
                             with btn_col1:
                                 if st.button("Remove selected rows", key=f"{name}_redu_remove"):
                                     if selected:
                                         st.session_state.raw_results[name]["redu"] = (
-                                            df_redu.drop(df_redu.index[selected])
+                                            df_redu.drop(df_redu.index[selected]).reset_index(drop=True)
                                         )
                                     else:
                                         st.warning("No rows selected!")
                                     st.rerun()
+
                             with btn_col2:
                                 if st.button("Keep only selected rows", key=f"{name}_redu_keep"):
                                     if selected:

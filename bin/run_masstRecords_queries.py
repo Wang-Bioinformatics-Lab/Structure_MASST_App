@@ -247,7 +247,7 @@ def get_library_table(
             "FROM library_table WHERE spectrum_id_int IN ({ids})"
         )
 
-        df_metadata = _batched_fetch(lib_sql_template, matched_ids, fetch, chunk_size=100)
+        df_metadata = _batched_fetch(lib_sql_template, matched_ids, fetch, chunk_size=500)
 
         # join and return
         df_final = library_df_minimal.merge(df_metadata, on='spectrum_id_int', how='left')
