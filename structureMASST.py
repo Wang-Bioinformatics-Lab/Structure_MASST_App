@@ -720,7 +720,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
     with col_b:
         st.empty()
 
-    last_iteration = "<DATE>"  # need to get version into sql table
+    last_iteration = "08/2025"  # need to get version into sql table
 
     col1, col2 = st.columns(2)
 
