@@ -12,6 +12,7 @@ from bin.run_masstRecords_queries import get_library_table, get_masst_and_redu_t
 from bin.match_smiles import detect_smiles_or_smarts, neutralize_atoms, tautomerize_smiles
 from bin.pubchem_handling  import pubchem_autocomplete, name_to_cid, cid_to_canonical_smiles
 from bin.plotting import raw_data_sankey, export_hits_map
+from bin.linkouts import build_dashboard_eic_url, build_spectraresolver_link
 import matplotlib.pyplot as plt
 import matplotlib
 from collections import defaultdict
@@ -21,7 +22,6 @@ import plotly.colors as pc
 from formula_validation.Formula import Formula
 import requests
 import re
-from urllib.parse import quote_plus
 import urllib.parse as _url
 import hashlib
 from pathlib import Path
@@ -154,21 +154,6 @@ def run_topic_MASSTs(input_tsv, output_folder, query_indicator):
 
     return proc.returncode, proc.stdout, proc.stderr
 
-
-
-# build links for best spectral match and modification site
-def build_spectraresolver_link(row):
-    usi1 = quote_plus(f"{row['USI']}")
-    usi2 = quote_plus(row['lib_usi'])
-    return (
-        f"http://metabolomics-usi.gnps2.org/dashinterface"
-        f"?usi1={usi1}"
-        f"&usi2={usi2}"
-        f"&width=10.0&height=6.0&mz_min=None&mz_max=None"
-        f"&max_intensity=125&annotate_precision=4&annotation_rotation=90"
-        f"&cosine=standard&fragment_mz_tolerance=0.05"
-        f"&grid=True&annotate_peaks=%5B%5B%5D%2C%20%5B%5D%5D"
-    )
 
 # — SMILES or CSV input —
 col_name, col_or1, col_smiles, col_or2, col_csv = st.columns([4, 1, 4, 1, 4])
@@ -913,7 +898,28 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         # in every row add USI + :scan: + scan_id (as str)
                         redu_df["scan_id"] = pd.to_numeric(redu_df["scan_id"], errors="raise").astype(int)
                         redu_df["USI"] = redu_df["mri"] + ":scan:" + redu_df["scan_id"].astype(str)
-                        redu_df["best_spectral_match"] = redu_df.apply(build_spectraresolver_link, axis=1)
+                        redu_df["best_spectral_match"] = redu_df.apply(
+                            lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]),
+                            axis=1
+                            )
+
+
+                        
+                        if "Check LC peak" not in redu_df.columns:
+                            redu_df["Check LC peak"] = np.nan
+
+                        # Fill only missing values
+                        mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
+                        redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
+                            lambda row: build_dashboard_eic_url(
+                                usi=row['USI'],
+                                xic_mz=row['Precursor_MZ'],
+                                xic_tolerance=0.05
+                            ),
+                            axis=1
+                        )            
+
+
 
                     new_results[name] = {"masst": masst_df, "redu": redu_df}
                 
@@ -978,7 +984,28 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 else f"mzspec:MASSBANK::accession:{x}" 
                             )
                         )
-                        redu_df["best_spectral_match"] = redu_df.apply(build_spectraresolver_link, axis=1)
+
+                        redu_df["best_spectral_match"] = redu_df.apply(
+                            lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]), 
+                            axis=1
+                            )
+
+
+                        if "Check LC peak" not in redu_df.columns:
+                            redu_df["Check LC peak"] = np.nan
+
+                        # Fill only missing values
+                        mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
+                        redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
+                            lambda row: build_dashboard_eic_url(
+                                usi=row['USI'],
+                                xic_mz=row['Precursor_MZ'],
+                                xic_tolerance=float(prec_tol)
+                            ),
+                            axis=1
+                        )            
+
+
                     new_results[name] = {"masst": masst_df, "redu": redu_df}
 
             # store the results in session state
@@ -1303,6 +1330,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     label="Modification Site",
                                     display_text="View Modification Site"
                                 )
+
                             if 'Check LC peak' in df_redu.columns:
                                 column_config["Check LC peak"] = st.column_config.LinkColumn(
                                     label="Check LC peak",
@@ -1420,12 +1448,6 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                         with st.expander("Show logs"):
                                             st.code(stdout or "", language="text")
                                             st.code(stderr or "", language="text")
-
-
-
-
-
-
                         else:
                             st.warning("No ReDU metadata matches found.")
 
