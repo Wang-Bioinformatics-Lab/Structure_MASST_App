@@ -1307,7 +1307,19 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             if len({col1, col2, col3, col4}) == 4:
                                 fig = raw_data_sankey(df_redu, col1, col2, col3, col4)
                                 st.plotly_chart(fig, use_container_width=True, key=f"sankey_{result_fig_id}")
-                                fig.write_image(f"{output_folder}/rawData_sankey_{name}.pdf", format="pdf", width=1240, height=400, scale=2)
+                                try:
+                                    fig.write_image(
+                                        f"{output_folder}/rawData_sankey_{name}.pdf", 
+                                        format="pdf", 
+                                        width=1240, 
+                                        height=400, 
+                                        scale=2
+                                    )
+                                except RuntimeError as e:
+                                    if "Kaleido requires Google Chrome to be installed" in str(e):
+                                        print("⚠️ Skipping PDF export: Chrome not available for Kaleido.")
+                                    else:
+                                        raise
                             else:
                                 st.warning("Warning: Some selected columns have the same value.")
 
