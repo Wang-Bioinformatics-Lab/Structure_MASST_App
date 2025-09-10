@@ -830,7 +830,18 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     .transform("size")
                                     .astype("int64")
                         )
-                        df_struct = df_struct[df_struct["spectrum_id_int"] == df_struct["representative_spectrum_int"]]
+
+                        # add column with difference between spectrum_id_int and representative_spectrum_int
+                        df_struct["spectrum_difference"] = df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
+
+                        #sort so that smallest difference is kept by falcon_cluster (closest to representative spectrum)
+                        df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
+
+                        #keep first per falcon cluster
+                        df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
+
+                        # set spectrum_id_int value to representative_spectrum_int value
+                        df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
 
                         if not df_struct.empty:
                             sel_frames.append(df_struct)
@@ -903,12 +914,12 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             axis=1
                             )
 
-
-                        
                         if "Check LC peak" not in redu_df.columns:
                             redu_df["Check LC peak"] = np.nan
 
-                        # Fill only missing values
+                        # Make sure the destination column can hold strings
+                        redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  
+
                         mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
                         redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
                             lambda row: build_dashboard_eic_url(
@@ -917,9 +928,8 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 xic_tolerance=0.05
                             ),
                             axis=1
-                        )            
-
-
+                        )
+      
 
                     new_results[name] = {"masst": masst_df, "redu": redu_df}
                 
@@ -939,8 +949,17 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     .transform("size")
                                     .astype("int64")
                         )
-                        df_struct = df_struct[df_struct["spectrum_id_int"] == df_struct["representative_spectrum_int"]]
+                        # add column with difference between spectrum_id_int and representative_spectrum_int
+                        df_struct["spectrum_difference"] = df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
 
+                        #sort so that smallest difference is kept by falcon_cluster (closest to representative spectrum)
+                        df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
+
+                        #keep first per falcon cluster
+                        df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
+
+                        # set spectrum_id_int value to representative_spectrum_int value
+                        df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
 
                         if not df_struct.empty:
                             sel_frames.append(df_struct)
@@ -994,18 +1013,19 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         if "Check LC peak" not in redu_df.columns:
                             redu_df["Check LC peak"] = np.nan
 
-                        # Fill only missing values
+                        # Make sure the destination column can hold strings
+                        redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  # or .astype("string") if you prefer
+
                         mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
                         redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
                             lambda row: build_dashboard_eic_url(
                                 usi=row['USI'],
                                 xic_mz=row['Precursor_MZ'],
-                                xic_tolerance=float(prec_tol)
+                                xic_tolerance=0.05
                             ),
                             axis=1
-                        )            
-
-
+                        )
+         
                     new_results[name] = {"masst": masst_df, "redu": redu_df}
 
             # store the results in session state
@@ -1025,8 +1045,6 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                 num_unique_mri = df_pair['redu']['mri'].dropna().nunique()
             else:
                 num_unique_mri = 0
-
-
 
         has_valid_results = any(
             not df_pair["masst"].empty or not df_pair["redu"].empty
@@ -1540,8 +1558,6 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                             st.code(stdout or "", language="text")
                                             st.code(stderr or "", language="text")
                     
-
-
         else:
             st.warning("No raw data matches found. Please try a different query structure or adjust your search parameters.")
     else:
