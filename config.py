@@ -1,3 +1,4 @@
-MASSTRECORDS_ENDPOINT =  "https://masst-records.gnps2.org/masst_records"
+PATH_TO_SQLITE = ""
+MASSTRECORDS_ENDPOINT =  "https://masst-records.gnps2.org/masst_records" 
 MASSTRECORDS_TIMEOUT = 1000
 MASSTRECORDS_ROWLIMIT = 1000000
