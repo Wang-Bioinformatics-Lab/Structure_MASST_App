@@ -19,15 +19,12 @@ def build_dashboard_eic_url(usi: str, xic_mz, xic_tolerance, xic_rt_window=None)
     - xic_tolerance: numeric or string (passed through)
     - xic_rt_window: numeric or string; omitted if not numeric
     """
-    # Extract scan
     m = re.search(r":scan:(\d+)$", str(usi))
     ms2_identifier = f"MS2:{m.group(1)}" if m else "None"
 
-    # Coerce numerics safely
     xmz = _safe_float(xic_mz)
     rt  = _safe_float(xic_rt_window)
 
-    # Base query params
     params = {
         "xic_mz": f"{xmz:.6f}" if xmz is not None else "",
         "xic_formula": "",
@@ -44,7 +41,6 @@ def build_dashboard_eic_url(usi: str, xic_mz, xic_tolerance, xic_rt_window=None)
         "ms2marker_size": 5,
         "ms2_identifier": ms2_identifier,
         "show_lcms_2nd_map": "False",
-        # map_plot_zoom added below only if we can compute it
         "polarity_filtering": "None",
         "polarity_filtering2": "None",
         "tic_option": "TIC",
@@ -80,13 +76,18 @@ def build_dashboard_eic_url(usi: str, xic_mz, xic_tolerance, xic_rt_window=None)
             "yaxis.range[0]": y_min,
             "yaxis.range[1]": y_max,
         }
-        params["map_plot_zoom"] = urllib.parse.quote(json.dumps(map_zoom))
+        # let urlencode handle encoding; do NOT pre-quote
+        params["map_plot_zoom"] = json.dumps(map_zoom)
 
-    # Build the base URL
     base = "https://dashboard.gnps2.org//?"
-    query = urllib.parse.urlencode(params, doseq=False)
+    # force %20 instead of +
+    query = urllib.parse.urlencode(
+        params,
+        doseq=False,
+        quote_via=urllib.parse.quote
+    )
 
-    # Fragment (USI state)
+    # Fragment (USI state) — spaces will be %20 here
     fragment_obj = {"usi": usi, "usi_select": usi, "usi2": ""}
     fragment = urllib.parse.quote(json.dumps(fragment_obj))
 

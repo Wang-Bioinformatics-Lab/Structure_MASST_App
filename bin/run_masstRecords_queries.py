@@ -405,9 +405,8 @@ def get_masst_and_redu_tables(
             max_pages=None
         )
     else:
-        print(f"[STEP 4] >{MAX_IDS_FOR_IN} mri_id_ints → full-table scan with pagination, then local filter")
-        usi_filter = "(LOWER(TRIM(USI)) LIKE '%.mzml' OR LOWER(TRIM(USI)) LIKE '%.mzxml')"
-        redu_sql_all = f"SELECT {', '.join(redu_columns_list)} FROM redu_table WHERE {usi_filter}"
+        print(f"[STEP 4] >{MAX_IDS_FOR_IN} mri_id_ints → full-table scan with pagination")
+        redu_sql_all = f"SELECT {', '.join(redu_columns_list)} FROM redu_table"
         redu_df = _batched_fetch(
             redu_sql_all,
             None,             # table-mode: ignore IDs

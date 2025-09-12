@@ -80,15 +80,44 @@ html('<script async defer data-website-id="<your_website_id>" src="https://analy
 
 # Write the page label
 st.set_page_config(
-    page_title="StructureMASST App", 
+    page_title="StructureMASST", 
     layout="wide",
     page_icon="🔎",
 )
 
-left, right = st.columns([6,1])
+st.logo("logo.png", icon_image="logo.png")
 
-with left:
-    st.title("StructureMASST")
+st.markdown("""
+<style>
+/* Make the sidebar header area taller so the logo has room */
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] {
+  height: 140px;              /* adjust as needed */
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+/* Enlarge the logo image in the sidebar header */
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] img {
+  height: 120px !important;   /* main control: set the target height */
+  width: auto !important;     /* keep aspect ratio */
+  display: block;
+  margin: 0 auto;             /* center horizontally */
+}
+
+/* (Optional) control the tiny icon when the sidebar is collapsed */
+[data-testid="stSidebarCollapsedControl"] img {
+  height: 28px !important;
+  width: auto !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+left, _, right = st.columns([2,8, 2])
+
+#with left:
+    #st.image("logo.png", use_container_width=True)
+    #st.title("StructureMASST")
 
 with right:
     st.markdown(
@@ -547,6 +576,20 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         )
                     # update layout
                     st.plotly_chart(fig, use_container_width=True, key=f"plot_{fig_id}")
+
+                    try:
+                        fig.write_image(
+                            f"{output_folder}/library_sankey_{name}.pdf", 
+                            format="pdf", 
+                            width=1240, 
+                            height=400, 
+                            scale=2
+                        )
+                    except RuntimeError as e:
+                        if "Kaleido requires Google Chrome to be installed" in str(e):
+                            print("⚠️ Skipping PDF export: Chrome not available for Kaleido.")
+                        else:
+                            raise
 
                 molecule_overview_df = st.session_state.molecule_overview[name]
 
@@ -1468,7 +1511,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                                         st.success(f"DomainMASSTs for **{name}** completed.")
                                         st.page_link(
-                                            "pages/domainMASST.py",  # adjust to your filename
+                                            "pages/domainMASST (under construction).py",  # adjust to your filename
                                             label="➡️ Click for DomainMASST Results",
                                         )
                                         # If you'd rather jump immediately:
