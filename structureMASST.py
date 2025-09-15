@@ -31,9 +31,7 @@ import uuid
 import time
 import numpy as np
 
-#from streamlit_extras.switch_page_button import switch_page 
 
-# 1) Inject responsive CSS (vw + clamp)
 st.markdown("""
 <style>
 /* Make the main content truly wide and add fluid side padding */
@@ -115,9 +113,6 @@ section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] img {
 
 left, _, right = st.columns([2,8, 2])
 
-#with left:
-    #st.image("logo.png", use_container_width=True)
-    #st.title("StructureMASST")
 
 with right:
     st.markdown(
@@ -434,8 +429,6 @@ if st.button("Check Available Spectra"):
 
 # render outer tabs for each structure query
 if "grouped_results" in st.session_state and st.session_state["grouped_results"]:
-
-    #name_tabs = st.tabs(list(st.session_state.grouped_results.keys()))
     
     with st.expander("Available Library Entries", expanded=True):
         st.markdown("### Available Library Entries")
@@ -619,11 +612,11 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         hide_index=True,
                         on_select="rerun",
                         selection_mode="multi-row",
-                        use_container_width=True,                # controls overall table width
+                        use_container_width=True,                
                         column_config={
                             "structure": st.column_config.ImageColumn(
-                                "Structure",                     # header label
-                                width=300                  # 75 px; use "medium" (200 px) or "large" (400 px) as needed
+                                "Structure",                     
+                                width=300                  
                             )
                         },
                         key=f"{name}_molecule_table",
@@ -650,7 +643,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             molecule_overview_df = molecule_overview_df.drop(molecule_overview_df.index[selected])
                             st.session_state.molecule_overview[name] = molecule_overview_df
                             unique_inchikeys = molecule_overview_df["inchikey_first_block"].unique().tolist()
-                            # also remove from grouped_results from same name
+                            
                             st.session_state.grouped_results[name] = {
                                 ik: data
                                 for ik, data in st.session_state.grouped_results[name].items()
@@ -927,9 +920,8 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'].astype('Int64')
 
                         # make character values from 0 to "9+"
-                        # Bucket 0–8 as strings, and 9 or more as "9+"
-                        s = redu_df["similar_library_spectra"].astype("Int64")       # keep NA-friendly int
-                        b = s.clip(upper=9)                                          # cap at 9
+                        s = redu_df["similar_library_spectra"].astype("Int64")       
+                        b = s.clip(upper=9)                                          
                         redu_df["similar_library_spectra"] = b.astype("string").where(b < 9, "9+")
 
 
@@ -1057,7 +1049,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             redu_df["Check LC peak"] = np.nan
 
                         # Make sure the destination column can hold strings
-                        redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  # or .astype("string") if you prefer
+                        redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  
 
                         mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
                         redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
@@ -1111,13 +1103,13 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                         if ('mri_id_int' in df_redu.columns or 'mri' in df_redu.columns) and len(df_redu) > 0:
 
-                            # Build & persist a stable options list per query tab (never shrinks on rerun)
+                            
                             opts_key = f"{name}_sankey_options"
                             new_cols = df_redu.columns.tolist()
                             if opts_key not in st.session_state:
                                 st.session_state[opts_key] = new_cols[:]
                             else:
-                                # allow growth but keep prior entries (preserve order, dedupe)
+                                
                                 st.session_state[opts_key] = list(dict.fromkeys(st.session_state[opts_key] + new_cols))
 
                             column_options = st.session_state[opts_key]
@@ -1233,8 +1225,6 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
 
                                 # We render the rows right after the header "card" to look continuous.
-                                # (Streamlit can’t nest Python widgets inside HTML, so we mimic one big panel
-                                #  by matching background/border and removing outer margins between blocks.)
                                 preset_panel = st.container()
                                 with preset_panel:
                                     # Row 1
@@ -1258,7 +1248,6 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                         st.markdown('</div>', unsafe_allow_html=True)
 
                                     # Divider look is handled by CSS (dashed bottom border on each row block).
-                                    # Row 2
                                     r2c1, r2c2 = st.columns([0.86, 0.14])
                                     with r2c1:
                                         st.markdown(
@@ -1439,12 +1428,10 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             with btn_col4:
                                 if sel_col != "None":
                                     disp_col = df_redu[sel_col].astype("string").fillna("<NA>")
-                                    #most_common = disp_col.value_counts(dropna=False).index[0]
                                     value_options = sorted(disp_col.unique().tolist())
                                     sel_vals = st.multiselect(
                                         "Value(s)",
                                         value_options,
-                                        #default=[most_common],
                                         key=f"{name}_redu_selvals",
                                     )
                                     disp = df_redu[sel_col].astype("string").fillna("<NA>")
@@ -1453,12 +1440,12 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     st.multiselect("Value(s)", [], key=f"{name}_redu_selvals_disabled", disabled=True)
 
                             # --- FINAL SELECTION ---
-                            use_dropdown = (sel_col != "None" and bool(sel_vals))   # <-- only override when values exist
+                            use_dropdown = (sel_col != "None" and bool(sel_vals))  
                             selected = dropdown_selected if use_dropdown else ui_selected
 
                             btn_col1, btn_col2, _ = st.columns([2,2, 6])
 
-                            # buttons for selected rows  (MOVED BELOW)
+                            # buttons for selected rows  
                             with btn_col1:
                                 if st.button("Remove selected rows", key=f"{name}_redu_remove"):
                                     if selected:
@@ -1511,11 +1498,9 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                                         st.success(f"DomainMASSTs for **{name}** completed.")
                                         st.page_link(
-                                            "pages/domainMASST (under construction).py",  # adjust to your filename
+                                            "pages/domainMASST (under construction).py", 
                                             label="➡️ Click for DomainMASST Results",
                                         )
-                                        # If you'd rather jump immediately:
-                                        # st.switch_page("pages/domainMASST.py")
                                     else:
                                         st.error("DomainMASSTs failed. See logs below.")
                                         with st.expander("Show logs"):
@@ -1530,7 +1515,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                 if isinstance(pair.get("redu"), pd.DataFrame)
             }
 
-            # require >1 ReDU table AND each must have >1 row
+            
             if len(redu_tables) > 1 and all(len(df) > 1 for df in redu_tables.values()):
 
                 # helper: build a unified MRI key
@@ -1576,7 +1561,6 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 cooccurrence_df = pd.concat(filtered_frames, ignore_index=True)
 
                                 # pick one row per MRI with highest Cosine
-                                # (handle missing/str Cosine gracefully)
                                 cos_series = pd.to_numeric(cooccurrence_df.get("Cosine", pd.Series([-1] * len(cooccurrence_df))), errors="coerce").fillna(-1)
                                 cooccurrence_df["__cos_num"] = cos_series
 
