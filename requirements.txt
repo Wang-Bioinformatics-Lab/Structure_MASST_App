@@ -19,3 +19,5 @@ formula_validation
 git+https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage.git
 dash_extensions
 rdkit
+
+python-dotenv
