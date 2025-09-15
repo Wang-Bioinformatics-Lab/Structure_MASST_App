@@ -30,7 +30,11 @@ import subprocess
 import uuid
 import time
 import numpy as np
+from dotenv import load_dotenv
 
+# Load .env file
+load_dotenv()
+SMARTS_API_KEY = os.getenv("SMARTS_API_KEY", "")
 
 st.markdown("""
 <style>
@@ -296,15 +300,29 @@ except ImportError:
 
 # --- render logic ---
 if smiles_input:
-    mol = Chem.MolFromSmiles(smiles_input) or Chem.MolFromSmarts(smiles_input)
-    if mol:
-        if mol_to_base64_img:
-            st.markdown(mol_to_base64_img(mol), unsafe_allow_html=True)
+    smiles_input = smiles_input.strip()
+    smiles_type = detect_smiles_or_smarts(smiles_input)
+    if smiles_type == "smiles":
+        from streamlit_ketcher import st_ketcher
+        with st.expander("Structure Editor"):
+            st.info(f"You can edit the structure below and click Apply to update the {smiles_type}.")
+            smile_code = st_ketcher(smiles_input)
+    elif smiles_type == "smarts":
+        from bin.smarts_api import query_smarts
+        job_id = str(uuid.uuid4())
+        response = query_smarts(smiles_input,api_key=SMARTS_API_KEY, job_id=job_id, file_format="png")
+        if response and 'result' in response and 'image' in response['result']:
+            image_data = base64.b64decode(response['result']['image'])
+            bytes_io = io.BytesIO(image_data)
+            img_col,_ , _ = st.columns([1, 1, 1])
+            with img_col:
+                with st.expander("SMARTS Structure"):
+                    st.info(f"This is a SMARTS pattern, which may represent multiple structures.")
+                    st.image(bytes_io)
         else:
-            st.info(f"SMILES: {smiles_input}")
+            st.warning("Failed to retrieve SMARTS image from the API. Please try again.")
     else:
         st.warning("Not a valid SMILES/SMARTS")
-
 
 # — mode selection UI —
 col_a1, col_b2, _ = st.columns([2,1,2])
