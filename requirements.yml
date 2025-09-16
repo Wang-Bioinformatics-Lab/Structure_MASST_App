@@ -34,3 +34,5 @@ dependencies:
       - wikidata-dl
       - git+https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage.git
       - dash_extensions
+      - python-dotenv
+      - streamlit_ketcher
