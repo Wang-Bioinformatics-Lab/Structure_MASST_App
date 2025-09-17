@@ -13,6 +13,7 @@ from bin.match_smiles import detect_smiles_or_smarts, neutralize_atoms, tautomer
 from bin.pubchem_handling  import pubchem_autocomplete, name_to_cid, cid_to_canonical_smiles
 from bin.plotting import raw_data_sankey, export_hits_map
 from bin.linkouts import build_dashboard_eic_url, build_spectraresolver_link
+from bin.smarts_api import query_smarts
 import matplotlib.pyplot as plt
 import matplotlib
 from collections import defaultdict
@@ -31,6 +32,7 @@ import uuid
 import time
 import numpy as np
 from dotenv import load_dotenv
+from streamlit_ketcher import st_ketcher
 
 # Load .env file
 load_dotenv()
@@ -43,6 +45,7 @@ st.markdown("""
   max-width: 100%;
   padding-left: 2vw;
   padding-right: 2vw;
+  padding-top: 1rem;
 }
 
 /* Responsive typography scale for buttons */
@@ -194,8 +197,23 @@ for k, v in [
     ("name_choice", None),
     ("smiles_input", ""),
     ("name_warning", None),
+    ("structure_editor_open", False),
+    ("new_smiles", ""),
 ]:
     st.session_state.setdefault(k, v)
+
+def tautomerize_neutralize_smiles(smiles: str) -> str:
+    """Tautomerize and neutralize a SMILES string."""
+    try:
+        smi = tautomerize_smiles(smiles)
+    except Exception as e:
+        print(f"Tautomerization failed: {e}")
+        smi = smiles
+    try:
+        smi = neutralize_atoms(smi)
+    except Exception as e:
+        print(f"Neutralization failed: {e}")
+    return smi
 
 def _resolve_name_to_smiles(selected_name: str):
     """Resolve name → CID → Canonical SMILES, enforce single-component rule."""
@@ -207,17 +225,6 @@ def _resolve_name_to_smiles(selected_name: str):
 
     # Rule: must exist and must NOT contain '.'
     if smiles and "." not in smiles:
-
-        try:
-            smiles = tautomerize_smiles(smiles)
-        except Exception as e:
-            print(f"Tautomerization failed: {e}")
-
-        try:
-            smiles = neutralize_atoms(smiles)
-        except Exception as e:
-            print(f"Neutralization failed: {e}")
-
         st.session_state["smiles_input"] = smiles
     else:
         st.session_state["smiles_input"] = ""
@@ -299,18 +306,37 @@ except ImportError:
 
 
 # --- render logic ---
+smiles_type = None  # Ensure smiles_type is always defined
 if smiles_input:
     smiles_input = smiles_input.strip()
-    smiles_type = detect_smiles_or_smarts(smiles_input)
+    # Use effective SMILES (from editor if available) for type detection
+    effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
+    smiles_type = detect_smiles_or_smarts(effective_smiles)
+
     if smiles_type == "smiles":
-        from streamlit_ketcher import st_ketcher
-        with st.expander("Structure Editor"):
-            st.info(f"You can edit the structure below and click Apply to update the {smiles_type}.")
-            smile_code = st_ketcher(smiles_input)
+        edit_button = st.button("Edit Structure")
+        if edit_button:
+            st.session_state['structure_editor_open'] = True
+
+        if edit_button or st.session_state['structure_editor_open']:
+            with st.expander("Structure Editor", expanded=True):
+                st.info(f"You can edit the structure below and click Apply to update the {smiles_type}.")
+
+                # Add a close button for persistent editor
+                if st.session_state['structure_editor_open']:
+                    if st.button("Close Structure Editor"):
+                        st.session_state['structure_editor_open'] = False
+                        st.rerun()
+
+                # Use existing SMILES if available, otherwise use input
+                current_smiles = st.session_state.get('new_smiles', '') or smiles_input
+                new_smiles = st_ketcher(current_smiles)
+                st.session_state['new_smiles'] = new_smiles
+                print(new_smiles)
     elif smiles_type == "smarts":
-        from bin.smarts_api import query_smarts
         job_id = str(uuid.uuid4())
-        response = query_smarts(smiles_input,api_key=SMARTS_API_KEY, job_id=job_id, file_format="png")
+        # For SMARTS, use the effective SMILES
+        response = query_smarts(effective_smiles, api_key=SMARTS_API_KEY, job_id=job_id, file_format="png")
         if response and 'result' in response and 'image' in response['result']:
             image_data = base64.b64decode(response['result']['image'])
             bytes_io = io.BytesIO(image_data)
@@ -326,6 +352,8 @@ if smiles_input:
 
 # — mode selection UI —
 col_a1, col_b2, _ = st.columns([2,1,2])
+if smiles_type and smiles_type == 'smarts':
+    st.warning("SMARTS input detected. Use 'substructure match' for search.")
 with col_a1:
     searchtype_option = st.radio(
         "Find available MS/MS spectra", 
@@ -348,6 +376,16 @@ elif searchtype_option == "tanimoto similarity":
 
 # — run the search —
 if st.button("Check Available Spectra"):
+    # Use new_smiles from structure editor if available, otherwise use original input
+    effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
+    if smiles_type == "smiles":
+        effective_smiles = tautomerize_neutralize_smiles(effective_smiles)
+
+    # if st.session_state.get('new_smiles', False):
+    #     st.write("Note: Using SMILES from Structure Editor.")
+    # else:
+    #     st.write("Note: Using original SMILES input.")
+    st.write(f"Using SMILES: {effective_smiles}")
 
     with st.spinner("Finding spectra..."): 
         # Reset upstream & downstream state
@@ -369,7 +407,10 @@ if st.button("Check Available Spectra"):
         # organize input structure queries
         smiles_list = []
         if smiles_input:
-            smiles_list = [smiles_input]
+            # Use new_smiles from structure editor if available, otherwise use original input
+            effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
+
+            smiles_list = [effective_smiles]
             name_list = ['Input_query']
         elif uploaded_file is not None:
             df_in = pd.read_csv(uploaded_file)
@@ -718,7 +759,8 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             )  
 
                             # Make the spectrum column the first column
-                            df0 = df0[["spectrum_link"] + [col for col in df0.columns if col != "spectrum_link"]]
+                            col_order = ['spectrum_link', 'Compound_Name', 'Precursor_MZ']
+                            df0 = df0[col_order + [col for col in df0.columns if col not in col_order]]
 
                             # display it with clickable links 
                             table_evt = st.dataframe(
@@ -1619,5 +1661,3 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
             st.warning("No raw data matches found. Please try a different query structure or adjust your search parameters.")
     else:
         st.markdown("")
-            
-
