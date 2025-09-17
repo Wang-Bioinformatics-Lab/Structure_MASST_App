@@ -312,7 +312,7 @@ if smiles_input:
     # Use effective SMILES (from editor if available) for type detection
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
     smiles_type = detect_smiles_or_smarts(effective_smiles)
-
+    
     if smiles_type == "smiles":
         edit_button = st.button("Edit Structure")
         if edit_button:
@@ -321,13 +321,13 @@ if smiles_input:
         if edit_button or st.session_state['structure_editor_open']:
             with st.expander("Structure Editor", expanded=True):
                 st.info(f"You can edit the structure below and click Apply to update the {smiles_type}.")
-
+                
                 # Add a close button for persistent editor
                 if st.session_state['structure_editor_open']:
                     if st.button("Close Structure Editor"):
                         st.session_state['structure_editor_open'] = False
                         st.rerun()
-
+                
                 # Use existing SMILES if available, otherwise use input
                 current_smiles = st.session_state.get('new_smiles', '') or smiles_input
                 new_smiles = st_ketcher(current_smiles)
@@ -380,7 +380,7 @@ if st.button("Check Available Spectra"):
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
     if smiles_type == "smiles":
         effective_smiles = tautomerize_neutralize_smiles(effective_smiles)
-
+    
     # if st.session_state.get('new_smiles', False):
     #     st.write("Note: Using SMILES from Structure Editor.")
     # else:
@@ -409,7 +409,7 @@ if st.button("Check Available Spectra"):
         if smiles_input:
             # Use new_smiles from structure editor if available, otherwise use original input
             effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
-
+            
             smiles_list = [effective_smiles]
             name_list = ['Input_query']
         elif uploaded_file is not None:
@@ -1398,7 +1398,13 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             # if any two cols have the same value give warning
                             if len({col1, col2, col3, col4}) == 4:
                                 fig = raw_data_sankey(df_redu, col1, col2, col3, col4)
+<<<<<<< HEAD
                                 st.plotly_chart(fig, width='stretch', key=f"sankey_{result_fig_id}")
+||||||| parent of 1a6147e (refactoring structure editor logic)
+                                st.plotly_chart(fig, use_container_width=True, key=f"sankey_{result_fig_id}")
+=======
+                                st.plotly_chart(fig, width="stretch", key=f"sankey_{result_fig_id}")
+>>>>>>> 1a6147e (refactoring structure editor logic)
                                 try:
                                     fig.write_image(
                                         f"{output_folder}/rawData_sankey_{name}.pdf", 
@@ -1463,7 +1469,13 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 df_redu,
                                 column_config=column_config,
                                 hide_index=True,
+<<<<<<< HEAD
                                 width='stretch',
+||||||| parent of 1a6147e (refactoring structure editor logic)
+                                use_container_width=True,
+=======
+                                width="stretch",
+>>>>>>> 1a6147e (refactoring structure editor logic)
                                 on_select="rerun",
                                 selection_mode="multi-row",
                                 key=f"{name}_redu_table",

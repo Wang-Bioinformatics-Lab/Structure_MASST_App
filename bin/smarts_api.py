@@ -30,7 +30,7 @@ def query_smarts(smarts, api_key, job_id="default_job", file_format="png"):
     }
     headers = {"Content-Type": "application/json",
                "X-API-Key": api_key}
-
+    
     response = requests.post(url, headers=headers, data=json.dumps(data))
     if response.status_code != 200:
         print(f"Initial SMARTSPlus request failed with status code {response.status_code}. Retrying...")
