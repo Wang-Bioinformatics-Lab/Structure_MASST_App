@@ -568,7 +568,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             xanchor=xanchor
                         )
                     # update layout
-                    st.plotly_chart(fig, use_container_width=True, key=f"plot_{fig_id}")
+                    st.plotly_chart(fig, width='stretch', key=f"plot_{fig_id}")
 
                     try:
                         fig.write_image(
@@ -612,7 +612,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         hide_index=True,
                         on_select="rerun",
                         selection_mode="multi-row",
-                        use_container_width=True,                
+                        width='stretch',                
                         column_config={
                             "structure": st.column_config.ImageColumn(
                                 "Structure",                     
@@ -628,7 +628,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         hide_index=True,
                         on_select="rerun",
                         selection_mode="multi-row",
-                        use_container_width=True,
+                        width='stretch',
                         key=f"{name}_molecule_table"
                     )
 
@@ -714,7 +714,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 hide_index=True,
                                 on_select="rerun",
                                 selection_mode="multi-row",
-                                use_container_width=True,
+                                width='stretch',
                                 key=f"{name}_{ik}_table"
                             )
 
@@ -1338,7 +1338,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             # if any two cols have the same value give warning
                             if len({col1, col2, col3, col4}) == 4:
                                 fig = raw_data_sankey(df_redu, col1, col2, col3, col4)
-                                st.plotly_chart(fig, use_container_width=True, key=f"sankey_{result_fig_id}")
+                                st.plotly_chart(fig, width='stretch', key=f"sankey_{result_fig_id}")
                                 try:
                                     fig.write_image(
                                         f"{output_folder}/rawData_sankey_{name}.pdf", 
@@ -1403,7 +1403,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 df_redu,
                                 column_config=column_config,
                                 hide_index=True,
-                                use_container_width=True,
+                                width='stretch',
                                 on_select="rerun",
                                 selection_mode="multi-row",
                                 key=f"{name}_redu_table",
