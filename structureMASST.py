@@ -124,7 +124,7 @@ st.sidebar.markdown(
     <span style="font-size:0.85em;">
     <strong>Contributors</strong><br>
     Yasin El Abiead (UCSD)<br>
-    Wilhan Nunes (UCSC)<br>
+    Wilhan Nunes (UCSD)<br>
     Mingxun Wang (UCR)<br>
     </span>
     """,
@@ -314,6 +314,14 @@ except ImportError:
 smiles_type = None  # Ensure smiles_type is always defined
 default_search_index = 0 # default to exact match search
 
+# Reset structure editor and new_smiles if molecule name is changed
+if st.session_state.get("name_query") and st.session_state.get("name_choice"):
+    # If the SMILES input was updated via name selection, reset editor state
+    if st.session_state["smiles_input"] != st.session_state.get("new_smiles", ""):
+        st.session_state["structure_editor_open"] = False
+        st.session_state["new_smiles"] = ""
+
+
 if smiles_input:
     smiles_input = smiles_input.strip()
     # Use effective SMILES (from editor if available) for type detection
@@ -331,7 +339,7 @@ if smiles_input:
                 
                 # Add a close button for persistent editor
                 if st.session_state['structure_editor_open']:
-                    if st.button("Close Structure Editor"):
+                    if st.button("Close Structure Editor", icon=":material/close:"):
                         st.session_state['structure_editor_open'] = False
                         st.rerun()
                 
