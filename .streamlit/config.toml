@@ -1,2 +1,21 @@
 [theme]
-base="light"
+base = "light"
+
+[server]
+fileWatcherType = "poll"      # or "none" in prod
+folderWatchBlacklist = [
+  "^\\.git($|/)",
+  "^__pycache__($|/)",
+  "^node_modules($|/)",
+  "^build($|/)",
+  "^dist($|/)",
+  "^logs($|/)",
+  "^database($|/)",
+  "^output($|/)",
+  "^sessionoutput($|/)",
+  "^external/GNPSDataPackage/.*",
+  "^bin($|/)",
+  "^\\.venv($|/)",
+  "^env($|/)",
+  "^\\.mamba($|/)",
+]
