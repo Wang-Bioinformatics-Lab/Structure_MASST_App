@@ -118,29 +118,18 @@ section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] img {
 """, unsafe_allow_html=True)
 
 
-left, _, right = st.columns([2,8, 2])
-
-
-with right:
-    st.markdown(
-        """
-        <div style="
-            border:1px solid #ccc;
-            border-radius:8px;
-            padding:6px 10px;
-            font-size:0.9em;
-            background-color:#f9f9f9;
-            text-align:left;
-        ">
-        <b>Contributors</b><br>
-        Yasin El Abiead (UCSD)<br>
-        Mingxun Wang (UCR)
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-st.write("") 
-
+# This will have to be added to every page, or imported from a common module
+st.sidebar.markdown(
+    """
+    <span style="font-size:0.85em;">
+    <strong>Contributors</strong><br>
+    Yasin El Abiead (UCSD)<br>
+    Wilhan Nunes (UCSD)<br>
+    Mingxun Wang (UCR)<br>
+    </span>
+    """,
+    unsafe_allow_html=True
+)
 
 try:
     from rdkit.Chem import Draw
@@ -257,6 +246,8 @@ with col_name:
     if suggestions:
         def _on_choice_change():
             _resolve_name_to_smiles(st.session_state["name_choice"])
+            st.session_state["structure_editor_open"] = False
+            st.session_state["new_smiles"] = smiles_input
 
         st.selectbox(
             "Suggestions",
@@ -281,15 +272,31 @@ with col_smiles:
         "SMILES/SMARTS",
         key="smiles_input",  # gets auto-populated only if single-component
         placeholder="Enter SMILES or SMARTS",
+        help="Enter a valid SMILES or SMARTS string. For SMARTS string creation, you can use third-party tools like SMARTSPlus https://smarts.plus/create"
     )
 
 with col_or2:
     st.markdown("<div style='text-align:center; margin-top:2.5em;'>or</div>", unsafe_allow_html=True)
 
 with col_csv:
-    uploaded_file = st.file_uploader("Drop CSV file for batch search (smiles and name columns)", type=["csv"])
+    #add spacer to align widgets
+    st.markdown("<div style='height: 1.5em;'></div>", unsafe_allow_html=True)
+    # if st.checkbox("Upload Batch file", key="batch_search"):
+    with st.popover("Add batch file", icon=":material/file_upload:"):
+        uploaded_file = st.file_uploader("Drop CSV file for batch search (smiles and name columns)", type=["csv"])
 
 # — Display molecule if valid SMILES/SMARTS —
+@st.dialog("Visualize Structure")
+def show_structure_dialog(mol):
+    # If input is a BytesIO (image), show it directly; else, use RDKit rendering
+    if isinstance(mol, io.BytesIO):
+        st.info("This is a SMARTS pattern, which may represent multiple structures.")
+        st.image(mol)
+    elif mol_to_base64_img:
+        st.markdown(mol_to_base64_img(mol), unsafe_allow_html=True)
+    else:
+        st.info("RDKit not available, cannot render structure.")
+
 try:
     from rdkit.Chem import Draw
     def mol_to_base64_img(mol, size=(300, 300)):
@@ -307,44 +314,58 @@ except ImportError:
 
 # --- render logic ---
 smiles_type = None  # Ensure smiles_type is always defined
+default_search_index = 0 # default to exact match search
+
+
+
 if smiles_input:
     smiles_input = smiles_input.strip()
     # Use effective SMILES (from editor if available) for type detection
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
     smiles_type = detect_smiles_or_smarts(effective_smiles)
-
+    
     if smiles_type == "smiles":
-        edit_button = st.button("Edit Structure")
+        edit_button = st.button("Edit Structure", icon=":material/edit:")
         if edit_button:
             st.session_state['structure_editor_open'] = True
 
         if edit_button or st.session_state['structure_editor_open']:
             with st.expander("Structure Editor", expanded=True):
-                st.info(f"You can edit the structure below and click Apply to update the {smiles_type}.")
-
+                st.info(f"You can edit the structure below and click Apply to update it.")
+                
                 # Add a close button for persistent editor
                 if st.session_state['structure_editor_open']:
-                    if st.button("Close Structure Editor"):
+                    if st.button("Close Structure Editor", icon=":material/close:", help="Warning: You will :red-badge[lose your changes]"):
                         st.session_state['structure_editor_open'] = False
                         st.rerun()
-
+                
                 # Use existing SMILES if available, otherwise use input
-                current_smiles = st.session_state.get('new_smiles', '') or smiles_input
-                new_smiles = st_ketcher(current_smiles)
-                st.session_state['new_smiles'] = new_smiles
-                print(new_smiles)
+                new_smiles = st_ketcher(effective_smiles)
+
+        else:
+            new_smiles = smiles_input
+
+        st.session_state['new_smiles'] = new_smiles
+
+
+        # Structure rendering with RDKit
+        if _RD_DRAW_AVAILABLE and new_smiles:
+            mol = Chem.MolFromSmiles(new_smiles)
+            if mol:
+                st.markdown(mol_to_base64_img(mol), unsafe_allow_html=True)
+            else:
+                st.warning("Could not parse SMILES for rendering.")
+
     elif smiles_type == "smarts":
+        default_search_index = 1 # defaults to substructure search for SMARTS
         job_id = str(uuid.uuid4())
         # For SMARTS, use the effective SMILES
         response = query_smarts(effective_smiles, api_key=SMARTS_API_KEY, job_id=job_id, file_format="png")
         if response and 'result' in response and 'image' in response['result']:
             image_data = base64.b64decode(response['result']['image'])
             bytes_io = io.BytesIO(image_data)
-            img_col,_ , _ = st.columns([1, 1, 1])
-            with img_col:
-                with st.expander("SMARTS Structure"):
-                    st.info(f"This is a SMARTS pattern, which may represent multiple structures.")
-                    st.image(bytes_io)
+            if st.button("View SMARTS", icon=":material/visibility:"):
+                show_structure_dialog(bytes_io)
         else:
             st.warning("Failed to retrieve SMARTS image from the API. Please try again.")
     else:
@@ -353,38 +374,34 @@ if smiles_input:
 # — mode selection UI —
 col_a1, col_b2, _ = st.columns([2,1,2])
 if smiles_type and smiles_type == 'smarts':
-    st.warning("SMARTS input detected. Use 'substructure match' for search.")
+    st.info("SMARTS input detected. Use 'Substructure match' for search.", icon=':material/info:')
 with col_a1:
     searchtype_option = st.radio(
         "Find available MS/MS spectra", 
-        ["exact structure match", "substructure match", "tanimoto similarity"], 
-        horizontal=True
+        ["Exact structure match", "Substructure match", "Tanimoto similarity"], 
+        horizontal=True, index=default_search_index
     )
 
-if searchtype_option == "tanimoto similarity":
+if searchtype_option == "Tanimoto similarity":
     with col_b2:
         st.text_input("Tanimoto threshold", value="0.8", key="tanimoto_threshold")
 
 # Map UI option to backend value
-if searchtype_option == "exact structure match":
+if searchtype_option == "Exact structure match":
     searchtype_option = "exact"
-elif searchtype_option == "substructure match":
+elif searchtype_option == "Substructure match":
     searchtype_option = "substructure"
-elif searchtype_option == "tanimoto similarity":
+elif searchtype_option == "Tanimoto similarity":
     searchtype_option = "tanimoto"
 
 
 # — run the search —
-if st.button("Check Available Spectra"):
+if st.button("Check Available Spectra", icon=':material/search:'):
     # Use new_smiles from structure editor if available, otherwise use original input
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
     if smiles_type == "smiles":
         effective_smiles = tautomerize_neutralize_smiles(effective_smiles)
-
-    # if st.session_state.get('new_smiles', False):
-    #     st.write("Note: Using SMILES from Structure Editor.")
-    # else:
-    #     st.write("Note: Using original SMILES input.")
+    
     st.write(f"Using SMILES: {effective_smiles}")
 
     with st.spinner("Finding spectra..."): 
@@ -409,7 +426,7 @@ if st.button("Check Available Spectra"):
         if smiles_input:
             # Use new_smiles from structure editor if available, otherwise use original input
             effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
-
+            
             smiles_list = [effective_smiles]
             name_list = ['Input_query']
         elif uploaded_file is not None:
