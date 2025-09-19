@@ -1415,13 +1415,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             # if any two cols have the same value give warning
                             if len({col1, col2, col3, col4}) == 4:
                                 fig = raw_data_sankey(df_redu, col1, col2, col3, col4)
-<<<<<<< HEAD
                                 st.plotly_chart(fig, width='stretch', key=f"sankey_{result_fig_id}")
-||||||| parent of 1a6147e (refactoring structure editor logic)
-                                st.plotly_chart(fig, use_container_width=True, key=f"sankey_{result_fig_id}")
-=======
-                                st.plotly_chart(fig, width="stretch", key=f"sankey_{result_fig_id}")
->>>>>>> 1a6147e (refactoring structure editor logic)
                                 try:
                                     fig.write_image(
                                         f"{output_folder}/rawData_sankey_{name}.pdf", 
@@ -1486,13 +1480,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 df_redu,
                                 column_config=column_config,
                                 hide_index=True,
-<<<<<<< HEAD
                                 width='stretch',
-||||||| parent of 1a6147e (refactoring structure editor logic)
-                                use_container_width=True,
-=======
-                                width="stretch",
->>>>>>> 1a6147e (refactoring structure editor logic)
                                 on_select="rerun",
                                 selection_mode="multi-row",
                                 key=f"{name}_redu_table",

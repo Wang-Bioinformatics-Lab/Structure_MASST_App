@@ -5,6 +5,7 @@ sessionoutput/
 output/
 yasin
 requirements_disabled.txt
+keys.env
 
 # Python caches / artifacts
 __pycache__/
