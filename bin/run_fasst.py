@@ -38,6 +38,11 @@ def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
         if len(response_list) > 0:
             df = pd.DataFrame(response_list)
 
+            # If column "Charge" present make sure it is integeter and absolute value <= 1
+            if 'Charge' in df.columns:
+                df['Charge'] = pd.to_numeric(df['Charge'], errors='coerce').fillna(0).astype(int)
+                df = df[df['Charge'].abs() <= 1]
+
             if analog == False:
                 df = df[df['Delta Mass'].abs() <= precursor_mz_tol]
                 print(f"Delta Mass filter applied: {precursor_mz_tol}")
@@ -49,6 +54,7 @@ def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
 
                 df['Delta Mass'] = df['Delta Mass'].astype(float)
                 df['Delta Mass'] = df['Delta Mass'] * -1
+                df['Unit Delta Mass'] = df['Delta Mass'].round(0).astype(int)
                 df = df[(df['Delta Mass'].abs() >= 5) | (df['Delta Mass'].abs() <= precursor_mz_tol)]
                 df.loc[df['Delta Mass'].abs() <= precursor_mz_tol, 'Modified'] = 'no'
                 df.loc[df['Delta Mass'] > precursor_mz_tol, 'Modified'] = 'addition'
