@@ -164,7 +164,7 @@ def export_hits_map(
             hit_mris = set(df["mri"].astype(str))
             df_redu = df_redu[~df_redu["mri"].astype(str).isin(hit_mris)].copy()
     else:
-        df_redu = pd.DataFrame("https://redu.gnps2.org/dump", sep = '\t')
+        df_redu = pd.read_csv("https://redu.gnps2.org/dump", sep = '\t')
         if "USI" in df_redu.columns:
             df_redu = df_redu.rename(columns={"USI": "mri"})
         # Remove any we actually hit (by MRI)

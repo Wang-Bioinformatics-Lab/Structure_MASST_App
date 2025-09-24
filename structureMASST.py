@@ -378,7 +378,7 @@ if smiles_type and smiles_type == 'smarts':
 with col_a1:
     searchtype_option = st.radio(
         "Find available MS/MS spectra", 
-        ["Exact structure match", "Substructure match (1-3 min)", "Tanimoto similarity (1-3 min)"], 
+        ["Exact structure match", "Substructure match (up to 5 min)", "Tanimoto similarity (up to 5 min)"], 
         horizontal=True, index=default_search_index
     )
 
@@ -389,9 +389,9 @@ if searchtype_option == "Tanimoto similarity":
 # Map UI option to backend value
 if searchtype_option == "Exact structure match":
     searchtype_option = "exact"
-elif searchtype_option == "Substructure match (1-3 min)":
+elif searchtype_option == "Substructure match (up to 5 min)":
     searchtype_option = "substructure"
-elif searchtype_option == "Tanimoto similarity (1-3 min)":
+elif searchtype_option == "Tanimoto similarity (up to 5 min)":
     searchtype_option = "tanimoto"
 
 
