@@ -378,20 +378,20 @@ if smiles_type and smiles_type == 'smarts':
 with col_a1:
     searchtype_option = st.radio(
         "Find available MS/MS spectra", 
-        ["Exact structure match", "Substructure match (up to 5 min)", "Tanimoto similarity (up to 5 min)"], 
+        ["Exact structure match", "Substructure match", "Tanimoto similarity"], 
         horizontal=True, index=default_search_index
     )
 
 if searchtype_option == "Tanimoto similarity":
     with col_b2:
-        st.text_input("Tanimoto threshold", value="0.8", key="tanimoto_threshold")
+        tanimoto_cutoff = st.text_input("Tanimoto threshold", value="0.8", key="tanimoto_threshold")
 
 # Map UI option to backend value
 if searchtype_option == "Exact structure match":
     searchtype_option = "exact"
-elif searchtype_option == "Substructure match (up to 5 min)":
+elif searchtype_option == "Substructure match":
     searchtype_option = "substructure"
-elif searchtype_option == "Tanimoto similarity (up to 5 min)":
+elif searchtype_option == "Tanimoto similarity":
     searchtype_option = "tanimoto"
 
 
@@ -449,6 +449,7 @@ if st.button("Check Available Spectra", icon=':material/search:'):
                 df_library_structurematch = get_library_table(
                     smiles=smi,
                     searchtype=searchtype_option,
+                    tanimoto_threshold=tanimoto_cutoff if searchtype_option == "tanimoto" else None,
                     sqlite_path=config.PATH_TO_SQLITE,
                     api_endpoint=config.MASSTRECORDS_ENDPOINT,
                     timeout=config.MASSTRECORDS_TIMEOUT
@@ -644,7 +645,11 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             xanchor=xanchor
                         )
                     # update layout
-                    st.plotly_chart(fig, width='stretch', key=f"plot_{fig_id}")
+                    config_sankey_download = {
+                        "toImageButtonOptions": {"format": "svg", "filename": f"plot_{fig_id}"},
+                        "displaylogo": False,
+                    }
+                    st.plotly_chart(fig, width='stretch', key=f"plot_{fig_id}", config=config_sankey_download)
 
                     try:
                         fig.write_image(
@@ -1043,7 +1048,6 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             ),
                             axis=1
                         )
-      
 
                     new_results[name] = {"masst": masst_df, "redu": redu_df}
                 
@@ -1386,8 +1390,6 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                             _apply_vals(PRESET_MAP["delta_modified_bodypart_doid"])
                                         st.markdown('</div>', unsafe_allow_html=True)
 
-
-
                             def_val = lambda v: v if v in column_options else column_options[0]
 
                             # initialize session_state defaults 
@@ -1417,7 +1419,13 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             # if any two cols have the same value give warning
                             if len({col1, col2, col3, col4}) == 4:
                                 fig = raw_data_sankey(df_redu, col1, col2, col3, col4)
-                                st.plotly_chart(fig, width='stretch', key=f"sankey_{result_fig_id}")
+
+                                config_sankey_download = {
+                                    "toImageButtonOptions": {"format": "svg", "filename": f"plot_{fig_id}"},
+                                    "displaylogo": False,
+                                }
+
+                                st.plotly_chart(fig, width='stretch', key=f"sankey_{result_fig_id}", config=config_sankey_download)
                                 try:
                                     fig.write_image(
                                         f"{output_folder}/rawData_sankey_{name}.pdf", 

@@ -298,7 +298,7 @@ def export_hits_map(
                 lat=poss["lat"], lon=poss["lon"],
                 mode="markers",
                 marker=dict(
-                    size=(poss["n"] / poss["n"].max() * 20).clip(lower=6),  # size by available MRIs
+                    size=(poss["n"] / poss["n"].max() * 20).clip(lower=6),  
                     symbol="circle-open",
                     line=dict(width=2, color=[color_map[e] for e in poss[env_col]]),
                     opacity=0.85,
@@ -312,7 +312,7 @@ def export_hits_map(
         else:
             # Mapbox: possible hits = faint grey circles (behind hits)
             max_n = float(poss["n"].max())
-            alpha = 0.5  # more transparent
+            alpha = 0.5  
 
             # One combined trace for all possible hits (grey)
             sizes = (poss["n"] / max_n * 22).clip(lower=6)
@@ -322,17 +322,17 @@ def export_hits_map(
                 mode="markers",
                 marker=dict(
                     size=sizes,
-                    color="grey",      # all grey
+                    color="grey",     
                     opacity=alpha,
                     symbol="circle",
                 ),
                 customdata=poss[[env_col, "n"]].to_numpy(),
                 hovertemplate=(
-                    "<b>%{customdata[0]}</b>"      # env_col
+                    "<b>%{customdata[0]}</b>"      
                     "<br>Possible MRIs: %{customdata[1]}"
                     "<br>Lat: %{lat:.5f}<br>Lon: %{lon:.5f}<extra></extra>"
                 ),
-                name="Possible (unhit)",   # single legend entry
+                name="Possible (unhit)",   
                 legendgroup="possible-",
                 showlegend=True,
             ))

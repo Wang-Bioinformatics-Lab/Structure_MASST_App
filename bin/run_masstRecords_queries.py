@@ -15,6 +15,7 @@ from rdkit.Chem import inchi
 from io import StringIO
 import sqlite3
 import re
+from typing import Iterable, Optional, Tuple
 
 # ——— Shared helpers ———
 def _append_limit_offset(sql: str, limit: int, offset: int) -> str:
@@ -24,27 +25,98 @@ def _append_limit_offset(sql: str, limit: int, offset: int) -> str:
 def _has_limit_or_offset(sql: str) -> bool:
     return re.search(r'(?i)\b(LIMIT|OFFSET)\b', sql) is not None
 
-def _fetch_csv(sql: str, api_endpoint: str, timeout: int) -> pd.DataFrame:
+import os
+import sqlite3
+import pandas as pd
+from io import StringIO
+from typing import Iterable, Optional, Tuple
+
+# --- internal helper ---------------------------------------------------------
+def _coerce_types_except_blobs(
+    df: pd.DataFrame,
+    blob_cols: Tuple[str, ...] = ("fp_pattern", "fp_morgan",),
+    normalize_types: bool = True,
+) -> pd.DataFrame:
+    """
+    Make all columns 'str' like the old behavior, EXCEPT columns in blob_cols,
+    which are left as bytes (if present).
+    If a blob col accidentally arrived as str, convert it back to bytes via latin1.
+    """
+    if df is None or df.empty:
+        return df
+
+    blob_cols = tuple(c for c in blob_cols if c in df.columns)
+
+    # Fix blob columns first: ensure bytes dtype
+    for c in blob_cols:
+        # If values came in as str (e.g., because a client decoded), re-encode losslessly
+        if pd.api.types.is_string_dtype(df[c]) or df[c].dtype == object:
+            # convert any str -> bytes (latin1 is a reversible 1:1 mapping)
+            df[c] = df[c].apply(lambda v: v.encode("latin1") if isinstance(v, str) else v)
+
+    if normalize_types:
+        # Cast everything else to str (preserve previous behavior that used dtype=str)
+        for c in df.columns:
+            if c in blob_cols:
+                continue
+            df[c] = df[c].astype(str)
+
+    return df
+
+# --- existing public helpers (updated) ---------------------------------------
+def _fetch_csv(sql: str, api_endpoint: str, timeout: int,
+               blob_cols: Optional[Iterable[str]] = ("fp_pattern","fp_morgan",),
+               normalize_types: bool = True) -> pd.DataFrame:
+    """
+    Fetch via HTTP CSV. Note: CSV generally cannot carry raw bytes safely.
+    If a blob column appears as text, we leave it as text (or try latin1 -> bytes),
+    but in most cases your API shouldn't include fp_pattern in CSV responses.
+    """
     print(f"[API ] Querying with SQL: {sql}")
     resp = requests.get(f"{api_endpoint}.csv", params={"sql": sql, "_stream": "on"}, timeout=timeout)
     resp.raise_for_status()
     df = pd.read_csv(StringIO(resp.text), dtype=str)
     print(f"[API ] returned {len(df)} rows")
+
+    # Try to coerce blob cols back to bytes if they appear
+    if blob_cols:
+        df = _coerce_types_except_blobs(df, tuple(blob_cols), normalize_types=normalize_types)
     return df
 
-def _fetch_sqlite(sql: str, sqlite_path: str) -> pd.DataFrame:
+
+def _fetch_sqlite(sql: str, sqlite_path: str,
+                  blob_cols: Optional[Iterable[str]] = ("fp_pattern","fp_morgan",),
+                  normalize_types: bool = True) -> pd.DataFrame:
+    """
+    Fetch from SQLite and ensure BLOB columns (e.g., fp_pattern) come back as raw bytes,
+    while other columns are cast to str to match previous behavior.
+    """
     print(f"[SQL ] Querying with SQL: {sql}")
     with sqlite3.connect(sqlite_path) as conn:
-        df = pd.read_sql(sql, conn, dtype=str)
+        # Critical: keep blobs as bytes
+        conn.text_factory = bytes
+        # Avoid dtype=str here (it would coerce BLOBs into text).
+        df = pd.read_sql_query(sql, conn)
     print(f"[SQL ] returned {len(df)} rows")
+
+    if blob_cols:
+        df = _coerce_types_except_blobs(df, tuple(blob_cols), normalize_types=normalize_types)
     return df
 
-def _get_fetcher(sqlite_path: str, api_endpoint: str, timeout: int):
+
+def _get_fetcher(sqlite_path: str, api_endpoint: str, timeout: int,
+                 blob_cols: Optional[Iterable[str]] = ("fp_pattern", "fp_morgan", ),
+                 normalize_types: bool = True):
+    """
+    Returns a single-arg callable(sql) that fetches a DataFrame.
+    Keeps previous behavior (strings everywhere) but preserves bytes for blob_cols.
+    """
     use_sqlite = bool(sqlite_path and os.path.isfile(sqlite_path))
     if use_sqlite:
-        return lambda sql: _fetch_sqlite(sql, sqlite_path)
+        return lambda sql: _fetch_sqlite(sql, sqlite_path, blob_cols=blob_cols, normalize_types=normalize_types)
     else:
-        return lambda sql: _fetch_csv(sql, api_endpoint, timeout)
+        return lambda sql: _fetch_csv(sql, api_endpoint, timeout, blob_cols=blob_cols, normalize_types=normalize_types)
+
 
 def _batched_fetch(template_sql: str,
                    id_list: list[int] | None,
@@ -219,13 +291,14 @@ def get_library_table(
 
         fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
         lib_sql_minimal = (
-            "SELECT spectrum_id_int, Smiles, InChIKey_smiles FROM library_table "
+            "SELECT spectrum_id_int, Smiles, InChIKey_smiles, fp_pattern, fp_morgan, fp_morgan_popcnt FROM library_table "
             "WHERE ppmBetweenExpAndThMass <= 20 "
             "AND (msMassAnalyzer NOT IN ('quadrupole', 'ion trap') OR msMassAnalyzer IS NULL) "
             "AND Smiles IS NOT NULL "
             "AND Smiles != '' "
             "AND Smiles != 'NaN'"
         )
+
         library_df_minimal = fetch(lib_sql_minimal)
 
         library_df_minimal = fetch_and_match_smiles(library_df_minimal, smiles, match_type=searchtype, smiles_name='only',
@@ -261,6 +334,10 @@ def get_library_table(
             ['collision_energy', 'Adduct', 'msManufacturer', 'msMassAnalyzer', 'GNPS_library_membership']
         ].fillna('unknown')
 
+        # drop fingerprint columns if they exist
+        for col in ['fp_pattern', 'fp_morgan', 'fp_morgan_popcnt']:
+            if col in df_final.columns:
+                df_final.drop(columns=[col], inplace=True)
 
 
         df_final.rename(columns={'spectrum_id': 'query_spectrum_id'}, inplace=True)

@@ -1,11 +1,67 @@
 from rdkit import Chem, DataStructs
 from tqdm import tqdm
-from rdkit.Chem import rdMolDescriptors, rdFingerprintGenerator
+from rdkit.Chem import rdMolDescriptors, rdFingerprintGenerator, rdmolops, DataStructs
 import pandas as pd
 import re
 from formula_validation.Formula import Formula
 import argparse
+import numpy as np
 from rdkit.Chem.MolStandardize import rdMolStandardize
+
+def tanimoto_match_using_stored_morgan(df, target_mol, tanimoto_threshold: float):
+    """
+    Requires columns: ['Smiles','inchikey_first_block','fp_morgan','fp_morgan_popcnt'].
+    Assumes fp_morgan is a BLOB of bytes produced by DataStructs.BitVectToBinaryText.
+    """
+
+    # 1) Build the query Morgan FP once (same params you stored)
+    gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+    qfp = gen.GetFingerprint(target_mol)
+    qa = int(qfp.GetNumOnBits())
+
+    # 2) Optional necessary popcount bounds to prune (no false negatives)
+    t = float(tanimoto_threshold)
+    bmin = int(np.floor(t * qa))        # necessary: b >= t * a
+    bmax = int(np.ceil(qa / max(t, 1e-9)))  # necessary: b <= a / t
+
+    # 3) Keep rows with a stored Morgan FP and plausible popcount
+    cand = df.loc[
+        df["fp_morgan"].notna()
+        & df["fp_morgan_popcnt"].notna()
+        & (df["fp_morgan_popcnt"].astype(int) >= bmin)
+        & (df["fp_morgan_popcnt"].astype(int) <= bmax)
+    ].copy()
+
+    if cand.empty:
+        return df.iloc[0:0].copy()
+
+    # 4) De-dup (your original logic) then take one FP per unique SMILES
+    uniq_smiles = (
+        cand.groupby("inchikey_first_block")["Smiles"]
+        .first().dropna().unique().tolist()
+    )
+
+    # Build a lookup: SMILES -> bytes (ensure bytes, not str)
+    # (We select first non-null fp_morgan per SMILES)
+    sub = cand[["Smiles", "fp_morgan"]].dropna().drop_duplicates("Smiles")
+    def _as_bytes(v):
+        return v.encode("latin1") if isinstance(v, str) else (bytes(v) if not isinstance(v, (bytes, bytearray)) else v)
+    fp_bytes_map = {row.Smiles: _as_bytes(row.fp_morgan) for row in sub.itertuples(index=False)}
+
+    # 5) Confirm by Tanimoto using stored bytes (no MolFromSmiles here)
+    hits = []
+    for s in tqdm(uniq_smiles, desc=f"Tanimoto ≥ {t:.2f} (stored Morgan)"):
+        b = fp_bytes_map.get(s)
+        if not b:
+            continue
+        tfp = DataStructs.CreateFromBinaryText(b)
+        if DataStructs.TanimotoSimilarity(qfp, tfp) >= t:
+            hits.append(s)
+
+    # 6) Return all rows matching those SMILES
+    if not hits:
+        return df.iloc[0:0].copy()
+    return df[df["Smiles"].isin(set(hits))]
 
 #Credit Michael Strobel with changes
 def neutralize_atoms(smiles):
@@ -125,60 +181,85 @@ def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='o
         df_matched = df[df['inchikey_first_block'] == target_inchi_key]
     elif match_type == 'substructure':
         # Perform substructure matching
-        unique_smiles = df.groupby('inchikey_first_block')['Smiles'].first().dropna().reset_index()
-        unique_smiles = unique_smiles['Smiles'].dropna().unique()
+        # unique_smiles = df.groupby('inchikey_first_block')['Smiles'].first().dropna().reset_index()
+        # unique_smiles = unique_smiles['Smiles'].dropna().unique()
 
-        smiles_to_mol = {smiles: Chem.MolFromSmiles(smiles) for smiles in unique_smiles if Chem.MolFromSmiles(smiles) is not None}
+        # smiles_to_mol = {smiles: Chem.MolFromSmiles(smiles) for smiles in unique_smiles if Chem.MolFromSmiles(smiles) is not None}
 
-        matching_smiles = []
-        for smiles, mol in tqdm(smiles_to_mol.items(), desc="Substructure Matching", total=len(smiles_to_mol)):
-            if mol.HasSubstructMatch(target_mol):
-                # Formula difference matching
-                if formula_base != 'any':
-                    formula_candidate = rdMolDescriptors.CalcMolFormula(mol)
-                    formula_candidate = Formula.formula_from_str(formula_candidate)
+        # matching_smiles = []
+        # for smiles, mol in tqdm(smiles_to_mol.items(), desc="Substructure Matching", total=len(smiles_to_mol)):
+        #     if mol.HasSubstructMatch(target_mol):
+        #         # Formula difference matching
+        #         if formula_base != 'any':
+        #             formula_candidate = rdMolDescriptors.CalcMolFormula(mol)
+        #             formula_candidate = Formula.formula_from_str(formula_candidate)
 
-                    try:
-                        formula_diff_here = formula_candidate - formula_base
-                    except:
-                        continue
+        #             try:
+        #                 formula_diff_here = formula_candidate - formula_base
+        #             except:
+        #                 continue
 
-                    diff_comparison = None
-                    try:
-                        diff_comparison = formula_diff_here - element_diff
-                    except:
-                        try:
-                            diff_comparison = element_diff - formula_diff_here
-                        except:
-                            diff_comparison = None
+        #             diff_comparison = None
+        #             try:
+        #                 diff_comparison = formula_diff_here - element_diff
+        #             except:
+        #                 try:
+        #                     diff_comparison = element_diff - formula_diff_here
+        #                 except:
+        #                     diff_comparison = None
 
-                    match_is = (diff_comparison is None) or (set(re.sub(r'\d', '', str(diff_comparison))) == {"H"})
+        #             match_is = (diff_comparison is None) or (set(re.sub(r'\d', '', str(diff_comparison))) == {"H"})
 
-                    if not match_is:
-                        continue
+        #             if not match_is:
+        #                 continue
 
-                matching_smiles.append(smiles)
+        #         matching_smiles.append(smiles)
 
-        df_matched = df[df['Smiles'].isin(matching_smiles)]
+        # df_matched = df[df['Smiles'].isin(matching_smiles)]
+
+        # Example with a phenol SMARTS
+
+        # 1) Build query fingerprint once from your existing target_mol
+        qfp = rdmolops.PatternFingerprint(target_mol, fpSize=2048)
+
+        # 2) Prescreen via fingerprint subset (no false negatives)
+        keep = []
+        for b in df['fp_pattern'].values:
+            if b is None:
+                keep.append(False)  # set to True if you want to fall back when fp missing
+            else:
+                tfp = DataStructs.CreateFromBinaryText(b)
+                keep.append(DataStructs.AllProbeBitsMatch(qfp, tfp))
+
+        df_screened = df.loc[np.array(keep)]
+        if df_screened.empty:
+            df_matched = df_screened
+        else:
+            # 3) De-dup by first InChIKey block (as before) but only among screened rows
+            unique_smiles = (
+                df_screened.groupby('inchikey_first_block')['Smiles']
+                .first().dropna().unique().tolist()
+            )
+
+            # 4) Confirm true hits with RDKit only on screened uniques
+            smiles_to_mol = {}
+            for s in unique_smiles:
+                m = Chem.MolFromSmiles(s)
+                if m is not None:
+                    smiles_to_mol[s] = m
+
+            matching_smiles = []
+            for s, m in tqdm(smiles_to_mol.items(),
+                            desc=f"Confirming substructure on {len(smiles_to_mol)} candidates"):
+                if m.HasSubstructMatch(target_mol):
+                    matching_smiles.append(s)
+
+            df_matched = df[df['Smiles'].isin(matching_smiles)]
+
+
+
     elif match_type == 'tanimoto':
-        generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
-
-        target_fp = generator.GetFingerprint(target_mol)
-
-        unique_smiles = df.groupby('inchikey_first_block')['Smiles'].first().dropna().reset_index()
-        unique_smiles = unique_smiles['Smiles'].dropna().unique()
-
-        matching_smiles = []
-        for smiles in tqdm(unique_smiles, desc="Tanimoto Matching"):
-            mol = Chem.MolFromSmiles(smiles)
-            if mol is None:
-                continue
-            fp = generator.GetFingerprint(mol)
-            sim = DataStructs.TanimotoSimilarity(target_fp, fp)
-            if sim >= tanimoto_threshold:
-                matching_smiles.append(smiles)
-
-        df_matched = df[df['Smiles'].isin(matching_smiles)]
+        df_matched = tanimoto_match_using_stored_morgan(df, target_mol, tanimoto_threshold)
 
     # If no matching SMILES were found, return an empty list
     if df_matched.empty:
