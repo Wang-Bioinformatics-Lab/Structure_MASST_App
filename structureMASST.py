@@ -378,7 +378,7 @@ if smiles_type and smiles_type == 'smarts':
 with col_a1:
     searchtype_option = st.radio(
         "Find available MS/MS spectra", 
-        ["Exact structure match", "Substructure match", "Tanimoto similarity"], 
+        ["Exact structure match", "Substructure match (1-3 min)", "Tanimoto similarity (1-3 min)"], 
         horizontal=True, index=default_search_index
     )
 
@@ -389,9 +389,9 @@ if searchtype_option == "Tanimoto similarity":
 # Map UI option to backend value
 if searchtype_option == "Exact structure match":
     searchtype_option = "exact"
-elif searchtype_option == "Substructure match":
+elif searchtype_option == "Substructure match (1-3 min)":
     searchtype_option = "substructure"
-elif searchtype_option == "Tanimoto similarity":
+elif searchtype_option == "Tanimoto similarity (1-3 min)":
     searchtype_option = "tanimoto"
 
 
@@ -919,8 +919,10 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
     with ctrl1:
         do_search = st.button("Search Raw Data")
 
+
     # perform the raw data search
     if do_search:
+        time.sleep(2)
         with st.spinner("Searching raw data…"): 
 
             new_results = {}
@@ -1566,7 +1568,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                                     # Run and report
                                     with st.spinner("Running DomainMASSTs…"):
-                                        time.sleep(0.5)
+                                        time.sleep(2)
                                         returncode, stdout, stderr = run_topic_MASSTs(input_path, output_folder, name)
 
                                     if returncode == 0:
