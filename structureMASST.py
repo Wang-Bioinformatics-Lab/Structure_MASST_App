@@ -651,7 +651,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         "toImageButtonOptions": {"format": "svg", "filename": f"plot_{fig_id}"},
                         "displaylogo": False,
                     }
-                    st.plotly_chart(fig, width='stretch', key=f"plot_{fig_id}", config=config_sankey_download)
+                    st.plotly_chart(fig, use_container_width=True, key=f"plot_{fig_id}", config=config_sankey_download)
 
                     try:
                         fig.write_image(
@@ -840,52 +840,59 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
     with col_b:
         st.empty()
 
-    last_iteration = "08/2025"  # need to get version into sql table
+    last_iteration = "09/2025"  # need to get version into sql table
 
-    col1, col2 = st.columns(2)
+    info_row = st.empty()  # single, stable placeholder
 
-    with col1:
-        st.markdown(f"""
-        <div style="
-            border-left: 4px solid #2c7be5;
-            padding: 1em;
-            margin: 0.5em 0;
-            background-color: #f0f8ff;
-            border-radius: 4px;
-        ">
-        <h4 style="margin:0 0 0.5em;">
-            <strong>FASSTrecords</strong>
-        </h4>
-        <p style="margin:0; line-height:1.5; font-size:0.95em;">
-            This is <strong>very fast</strong> as it relies on precomputed annotations, and therefore especially <br/>
-            recommended for substructure‑enabled search and searches of large<br/>
-            numbers of spectra or molecules expected in large numbers of samples.<br/>
-            Last iteration: <strong>{last_iteration}</strong>.
-        </p>
-        </div>
-        """, unsafe_allow_html=True)
+    def render_info_panels(last_iteration: str):
+        with info_row.container():  # render both columns atomically
+            col1, col2 = st.columns(2)
 
-    with col2:
-        st.markdown(f"""
-        <div style="
-            border-left: 4px solid #e76f51;
-            padding: 1em;
-            margin: 0.5em 0;
-            background-color: #fff5f0;
-            border-radius: 4px;
-        ">
-        <h4 style="margin:0 0 0.5em;">
-            <strong>FASST</strong>
-        </h4>
-        <p style="margin:0; line-height:1.5; font-size:0.95em;">
-            Can be rather slow especially for molecules expected to be present in many datasets<br/>
-            or large numbers of spectra. Searches can even take a few minutes, depending on traffic.<br/>
-            Allows the discovery of unknown chemical analogues through modification search.<br/>
-            Always up to date with the latest raw data indexed at <a href="https://fasst.gnps2.org/" target="_blank" style="color:#e76f51;">fasst.gnps2.org</a>.
-        </p>
-        </div>
-        """, unsafe_allow_html=True)
-    
+            with col1:
+                st.markdown(f"""
+                <div style="
+                    border-left: 4px solid #2c7be5;
+                    padding: 1em;
+                    margin: 0.5em 0;
+                    background-color: #f0f8ff;
+                    border-radius: 4px;
+                ">
+                <h4 style="margin:0 0 0.5em;">
+                    <strong>FASSTrecords</strong>
+                </h4>
+                <p style="margin:0; line-height:1.5; font-size:0.95em;">
+                    This is <strong>very fast</strong> as it relies on precomputed annotations, and therefore especially <br/>
+                    recommended for substructure-enabled search and searches of large<br/>
+                    numbers of spectra or molecules expected in large numbers of samples.<br/>
+                    Last iteration: <strong>{last_iteration}</strong>.
+                </p>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with col2:
+                st.markdown("""
+                <div style="
+                    border-left: 4px solid #e76f51;
+                    padding: 1em;
+                    margin: 0.5em 0;
+                    background-color: #fff5f0;
+                    border-radius: 4px;
+                ">
+                <h4 style="margin:0 0 0.5em;">
+                    <strong>FASST</strong>
+                </h4>
+                <p style="margin:0; line-height:1.5; font-size:0.95em;">
+                    Can be rather slow especially for molecules expected to be present in many datasets<br/>
+                    or large numbers of spectra. Searches can even take a few minutes, depending on traffic.<br/>
+                    Allows the discovery of unknown chemical analogues through modification search.<br/>
+                    Always up to date with the latest raw data indexed at <a href="https://fasst.gnps2.org/" target="_blank" style="color:#e76f51;">fasst.gnps2.org</a>.
+                </p>
+                </div>
+                """, unsafe_allow_html=True)
+
+    # ---- Call exactly once per run, before any button/long work branches ----
+    render_info_panels(last_iteration)
+
     # Cosine and Matching Peaks input 
     col3, col4, _, _ = st.columns(4)
     with col3:
@@ -1427,7 +1434,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     "displaylogo": False,
                                 }
 
-                                st.plotly_chart(fig, width='stretch', key=f"sankey_{result_fig_id}", config=config_sankey_download)
+                                st.plotly_chart(fig, use_container_width=True, key=f"sankey_{result_fig_id}", config=config_sankey_download)
                                 try:
                                     fig.write_image(
                                         f"{output_folder}/rawData_sankey_{name}.pdf", 
