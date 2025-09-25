@@ -35,7 +35,7 @@ from dotenv import load_dotenv
 from streamlit_ketcher import st_ketcher
 
 # Load .env file
-load_dotenv()
+load_dotenv("keys.env")
 SMARTS_API_KEY = os.getenv("SMARTS_API_KEY", "")
 
 st.markdown("""
@@ -286,12 +286,12 @@ with col_csv:
         uploaded_file = st.file_uploader("Drop CSV file for batch search (smiles and name columns)", type=["csv"])
 
 # — Display molecule if valid SMILES/SMARTS —
-@st.dialog("Visualize Structure")
+#@st.dialog("Visualize Structure")
 def show_structure_dialog(mol):
     # If input is a BytesIO (image), show it directly; else, use RDKit rendering
     if isinstance(mol, io.BytesIO):
-        st.info("This is a SMARTS pattern, which may represent multiple structures.")
-        st.image(mol)
+        #st.info("This is a SMARTS pattern, which may represent multiple structures.")
+        st.image(mol, width=500)
     elif mol_to_base64_img:
         st.markdown(mol_to_base64_img(mol), unsafe_allow_html=True)
     else:
@@ -357,28 +357,30 @@ if smiles_input:
                 st.warning("Could not parse SMILES for rendering.")
 
     elif smiles_type == "smarts":
-        default_search_index = 1 # defaults to substructure search for SMARTS
         job_id = str(uuid.uuid4())
         # For SMARTS, use the effective SMILES
         response = query_smarts(effective_smiles, api_key=SMARTS_API_KEY, job_id=job_id, file_format="png")
         if response and 'result' in response and 'image' in response['result']:
             image_data = base64.b64decode(response['result']['image'])
             bytes_io = io.BytesIO(image_data)
-            if st.button("View SMARTS", icon=":material/visibility:"):
-                show_structure_dialog(bytes_io)
+            #if st.button("View SMARTS", icon=":material/visibility:"):
+            show_structure_dialog(bytes_io)
         else:
             st.warning("Failed to retrieve SMARTS image from the API. Please try again.")
     else:
         st.warning("Not a valid SMILES/SMARTS")
 
 # — mode selection UI —
+search_options = ["Exact structure match", "Substructure match", "Tanimoto similarity"]
+default_search_index = 0 
 col_a1, col_b2, _ = st.columns([2,1,2])
 if smiles_type and smiles_type == 'smarts':
-    st.info("SMARTS input detected. Use 'Substructure match' for search.", icon=':material/info:')
+    #st.info("SMARTS input detected. Use 'Substructure match' for search.", icon=':material/info:')
+    search_options = ["Substructure match"]
 with col_a1:
     searchtype_option = st.radio(
         "Find available MS/MS spectra", 
-        ["Exact structure match", "Substructure match", "Tanimoto similarity"], 
+        search_options, 
         horizontal=True, index=default_search_index
     )
 
@@ -396,7 +398,7 @@ elif searchtype_option == "Tanimoto similarity":
 
 
 # — run the search —
-if st.button("Check Available Spectra", icon=':material/search:'):
+if st.button("Get Available Spectra", icon=':material/search:'):
     # Use new_smiles from structure editor if available, otherwise use original input
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
     if smiles_type == "smiles":
