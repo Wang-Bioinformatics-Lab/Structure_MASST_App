@@ -288,7 +288,10 @@ with col_csv:
     st.markdown("<div style='height: 1.5em;'></div>", unsafe_allow_html=True)
     # if st.checkbox("Upload Batch file", key="batch_search"):
     with st.popover("Add batch file", icon=":material/file_upload:"):
-        uploaded_file = st.file_uploader("Drop CSV file for batch search (smiles and name columns)", type=["csv"])
+        uploaded_file = st.file_uploader(
+            """Drop CSV file for batch search (smiles and name columns). We recommend to stay below 100 molecules or reach out to us to run locally.""",
+            type=["csv"]
+        )
 
 # — Display molecule if valid SMILES/SMARTS —
 #@st.dialog("Visualize Structure")
