@@ -955,9 +955,6 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         
                         df_struct = data["structure"]
 
-                        # dereplicate spectra
-                        print(f"the df_struct has {len(df_struct)} rows and columns: {df_struct.columns.tolist()}")
-
                         df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
                         df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
                         df_struct["similar_library_spectra"] = (
