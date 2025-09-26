@@ -23,6 +23,7 @@ from bin.pubchem_handling  import pubchem_autocomplete, name_to_cid, cid_to_cano
 from bin.plotting import raw_data_sankey, export_hits_map
 from bin.linkouts import build_dashboard_eic_url, build_spectraresolver_link
 from bin.smarts_api import query_smarts
+from bin.streamlit_fragment_domainMASST import domainmasst_fragment, domainmasst_intersection_fragment
 import matplotlib.pyplot as plt
 import matplotlib
 from collections import defaultdict
@@ -164,19 +165,6 @@ output_folder = f"sessionoutput/{sid}"
 os.makedirs(output_folder, exist_ok=True)
 
 st.session_state["_session_output_folder"] = output_folder
-
-def run_topic_MASSTs(input_tsv, output_folder, query_indicator):
-    workdir = Path("external/microbe_masst/code")
-    cmd = ["python", "masst_client.py", 
-    "--mode", "draw", 
-    "--out_file", f"../../../{output_folder}/topic_masst_",
-    "--input_usi_results_file", f"../../../{input_tsv}",
-    "--usi_or_lib_id", " ",
-    "--compound_name", f"{query_indicator}"]
-
-    proc = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
-
-    return proc.returncode, proc.stdout, proc.stderr
 
 
 # — SMILES or CSV input —
@@ -1581,36 +1569,8 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 masst_by_query_button, _ = st.columns([4, 6])
 
                                 with masst_by_query_button:
-                                    if st.button(f"Populate DomainMASST for {name}", key=f"{name}_topic_masst"):
-                                        sid = st.session_state["_session_hash"]
-
-                                        # Prepare input
-                                        topic_masst_df = st.session_state.raw_results[name]["redu"].copy()
-                                        topic_masst_df = topic_masst_df[["USI", "Cosine", "Matching Peaks", "Delta Mass"]]
-                                        topic_masst_df["Status"] = 1
-
-                                        input_path = f"{output_folder}/topicMasst_input_{name}.tsv"
-                                        topic_masst_df.to_csv(input_path, sep="\t", index=False, header=True)
-
-                                        # Run and report
-                                        with st.spinner("Running DomainMASSTs…"):
-                                            time.sleep(2)
-                                            returncode, stdout, stderr = run_topic_MASSTs(input_path, output_folder, name)
-
-                                        if returncode == 0:
-                                            st.session_state["last_topic_masst_name"] = name
-                                            st.session_state["last_topic_masst_output_dir"] = output_folder
-
-                                            st.success(f"DomainMASSTs for **{name}** completed.")
-                                            st.page_link(
-                                                "pages/domainMASST (under construction).py", 
-                                                label="➡️ Click for DomainMASST Results",
-                                            )
-                                        else:
-                                            st.error("DomainMASSTs failed. See logs below.")
-                                            with st.expander("Show logs"):
-                                                st.code(stdout or "", language="text")
-                                                st.code(stderr or "", language="text")
+                                    df_redu_current = st.session_state.raw_results[name]["redu"]
+                                    domainmasst_fragment(name=name, output_folder=output_folder, df_redu=df_redu_current)
                             else:
                                 st.warning("No ReDU metadata matches found.")
 
@@ -1636,71 +1596,13 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                     masst_by_query_button, message_space_masst_by_query = st.columns([4,4]) 
 
                     with masst_by_query_button:
-                        if st.button(f"Populate DomainMASST with Molecule Co-occurrence", key=f"intersection_topic_masst"):
-
-                            # intersection of MRIs across all ReDU tables
-                            mri_sets = [set(_mri_key(df).dropna().unique()) for df in redu_tables.values()]
-                            common_mris = set.intersection(*mri_sets) if mri_sets else set()
-
-                            if common_mris:
-                                # keep only rows whose MRI is present in ALL tables
-                                filtered_frames = []
-                                for df in redu_tables.values():
-                                    dfx = df.copy()
-
-                                    # unify cosine column name
-                                    if "Cosine" not in dfx.columns and "cosine" in dfx.columns:
-                                        dfx = dfx.rename(columns={"cosine": "Cosine"})
-
-                                    # create standardized key column
-                                    if "mri" in dfx.columns:
-                                        dfx["mri_key"] = dfx["mri"].astype(str)
-                                    elif "mri_id_int" in dfx.columns:
-                                        dfx["mri_key"] = dfx["mri_id_int"].astype(str)
-                                    else:
-                                        continue
-
-                                    filtered_frames.append(dfx[dfx["mri_key"].isin(common_mris)])
-
-                                if filtered_frames:
-                                    cooccurrence_df = pd.concat(filtered_frames, ignore_index=True)
-
-                                    # pick one row per MRI with highest Cosine
-                                    cos_series = pd.to_numeric(cooccurrence_df.get("Cosine", pd.Series([-1] * len(cooccurrence_df))), errors="coerce").fillna(-1)
-                                    cooccurrence_df["__cos_num"] = cos_series
-
-                                    idxmax = cooccurrence_df.groupby("mri_key")["__cos_num"].idxmax()
-                                    cooccurrence_df = cooccurrence_df.loc[idxmax].drop(columns="__cos_num").reset_index(drop=True)
-
-                                    # optional: sort by Cosine desc if present
-                                    if "Cosine" in cooccurrence_df.columns:
-                                        topic_masst_df = cooccurrence_df.sort_values("Cosine", ascending=False, na_position="last")
-                                        sid = st.session_state["_session_hash"]
-
-                                        # save only USI column without header
-                                        topic_masst_df = topic_masst_df[["USI", "Cosine", "Matching Peaks", "Delta Mass"]].copy()
-                                        topic_masst_df['Status'] = 1
-                                        
-                                        # write the file
-                                        topic_masst_df.to_csv(f"{output_folder}/domainMasst_input_moleculeIntersection.tsv", sep="\t", index=False, header=True)
-
-                                        with st.spinner("Running DomainMASSTs…"): 
-                                            returncode, stdout, stderr = run_topic_MASSTs(f"{output_folder}/domainMasst_input_moleculeIntersection.tsv", output_folder, "moleculeIntersection")
-
-                                        if returncode == 0:
-                                            st.session_state["last_topic_masst_name"] = name
-                                            st.session_state["last_topic_masst_output_dir"] = output_folder
-
-                                            st.success(f"DomainMASSTs for Molecule Intersection completed.")
-                                            st.page_link(
-                                                "pages/domainMASST.py", 
-                                                label="➡️ Click for DomainMASST Results",
-                                            )
-                                        else:
-                                            st.error("DomainMASSTs failed. See logs below.")
-                                            with st.expander("Show logs"):
-                                                st.code(stdout or "", language="text")
-                                                st.code(stderr or "", language="text")
+                        domainmasst_intersection_fragment(
+                            redu_tables=redu_tables,
+                            output_folder=output_folder,
+                            # Optional overrides:
+                            button_label="Populate DomainMASST with Molecule Co-occurrence",
+                            job_name="moleculeIntersection",
+                        )
                         
             else:
                 st.warning("No raw data matches found. Please try a different query structure or adjust your search parameters.")
