@@ -1195,10 +1195,18 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 
                                 opts_key = f"{name}_sankey_options"
                                 new_cols = df_redu.columns.tolist()
+
+                                remove_cols = [
+                                    "best_spectral_match", "lib_usi", "USI", "scan_id",
+                                    "spectrum_id_int", "representative_spectrum_int",
+                                    "spectrum_difference", "unique_spectra_in_mri",
+                                    "Check LC peak", "mri", "mri_id_int"
+                                ]
+                                new_cols = [col for col in new_cols if col not in remove_cols]
+
                                 if opts_key not in st.session_state:
                                     st.session_state[opts_key] = new_cols[:]
                                 else:
-                                    
                                     st.session_state[opts_key] = list(dict.fromkeys(st.session_state[opts_key] + new_cols))
 
                                 column_options = st.session_state[opts_key]
