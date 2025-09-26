@@ -20,8 +20,11 @@ st.set_page_config(
 left, right = st.columns([6,1])
 
 with left:
-    st.title("under construction")
-    
+    st.title("GeoMASST (preview)")
+    st.write("""
+            This page lets you further explore your StructureMASST results in the context of environmental distributions across our plants. 
+    """)
+
 output_folder = st.session_state["_session_output_folder"]
 
 if st.session_state.get("raw_results"):
@@ -35,7 +38,7 @@ if st.session_state.get("raw_results"):
     st.plotly_chart(fig_map, use_container_width=True, config={"scrollZoom": True}, key=f"map_{names}")
 
 else:
-    st.warning("Nothing to show here yet.")
+    st.warning("This is a downstream tool. Run StructureMASST first to generate GeoMASST results.")
 
 
 

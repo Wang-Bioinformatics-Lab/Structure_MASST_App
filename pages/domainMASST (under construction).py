@@ -11,7 +11,11 @@ st.set_page_config(
 left, right = st.columns([6,1])
 
 with left:
-    st.title("under construction")
+    st.title("Domain MASST (preview)")
+    st.write("""
+            This page lets you further explore your StructureMASST results in the context of different DomainMASST analyses. 
+            You can compare and contextualize findings across plants, microbes, human and mouse tissues, foods, and other domains of interest.
+    """)
 
 
 output_folder = st.session_state["_session_output_folder"]
@@ -32,7 +36,7 @@ if files:
     components.html(html_content, height=1000, width=None, scrolling=True)
 
 else:
-    st.warning("Nothing to show here yet.")
+    st.warning("This is a downstream tool. Run StructureMASST first and press the populate DomainMASST button to generate DomainMASST results.")
 
 
 
