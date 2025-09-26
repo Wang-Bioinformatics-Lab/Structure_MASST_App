@@ -1,5 +1,14 @@
 import os
 import streamlit as st
+
+# Write the page label
+st.set_page_config(
+    page_title="StructureMASST", 
+    layout="wide",
+    page_icon="🔎",
+)
+
+
 from streamlit.components.v1 import html
 import pandas as pd
 import importlib.util
@@ -83,12 +92,7 @@ st.markdown("""
 # Add a tracking token
 html('<script async defer data-website-id="<your_website_id>" src="https://analytics.gnps2.org/umami.js"></script>', width=0, height=0)
 
-# Write the page label
-st.set_page_config(
-    page_title="StructureMASST", 
-    layout="wide",
-    page_icon="🔎",
-)
+
 
 st.logo("logo.png", icon_image="logo.png")
 
@@ -835,868 +839,871 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             st.session_state.grouped_results[name][ik]["structure"] = df0
     
     # selection menu for raw data search
-    col_a, col_b = st.columns(2)
-    with col_a:
-        option = st.radio(
-            "Mode",
-            ["FASSTrecords", "FASST"],
-            horizontal=True,
-            key="mode"
-        )
-    with col_b:
-        st.empty()
-
-    last_iteration = "09/2025"  # need to get version into sql table
-
-    info_row = st.empty()  # single, stable placeholder
-
-    def render_info_panels(last_iteration: str):
-        with info_row.container():  # render both columns atomically
-            col1, col2 = st.columns(2)
-
-            with col1:
-                st.markdown(f"""
-                <div style="
-                    border-left: 4px solid #2c7be5;
-                    padding: 1em;
-                    margin: 0.5em 0;
-                    background-color: #f0f8ff;
-                    border-radius: 4px;
-                ">
-                <h4 style="margin:0 0 0.5em;">
-                    <strong>FASSTrecords</strong>
-                </h4>
-                <p style="margin:0; line-height:1.5; font-size:0.95em;">
-                    This is <strong>very fast</strong> as it relies on precomputed annotations, and therefore especially <br/>
-                    recommended for substructure-enabled search and searches of large<br/>
-                    numbers of spectra or molecules expected in large numbers of samples.<br/>
-                    Last iteration: <strong>{last_iteration}</strong>.
-                </p>
-                </div>
-                """, unsafe_allow_html=True)
-
-            with col2:
-                st.markdown("""
-                <div style="
-                    border-left: 4px solid #e76f51;
-                    padding: 1em;
-                    margin: 0.5em 0;
-                    background-color: #fff5f0;
-                    border-radius: 4px;
-                ">
-                <h4 style="margin:0 0 0.5em;">
-                    <strong>FASST</strong>
-                </h4>
-                <p style="margin:0; line-height:1.5; font-size:0.95em;">
-                    Can be rather slow especially for molecules expected to be present in many datasets<br/>
-                    or large numbers of spectra. Searches can even take a few minutes, depending on traffic.<br/>
-                    Allows the discovery of unknown chemical analogues through modification search.<br/>
-                    Always up to date with the latest raw data indexed at <a href="https://fasst.gnps2.org/" target="_blank" style="color:#e76f51;">fasst.gnps2.org</a>.
-                </p>
-                </div>
-                """, unsafe_allow_html=True)
-
-    # ---- Call exactly once per run, before any button/long work branches ----
-    render_info_panels(last_iteration)
-
-    # Cosine and Matching Peaks input 
-    col3, col4, _, _ = st.columns(4)
-    with col3:
-        min_cosine = st.text_input("Minimum Cosine", value="0.7")
-    with col4:
-        min_peaks = st.text_input("Minimum Matching Peaks", value="5")
-
-    # Conditional input for FASST 
-    if option == "FASST":
-        col5, col6, _, _ = st.columns(4)
-        with col6:
-            prec_tol = st.text_input("Precursor Tolerance (Da)", value="0.02")
-            do_modification_search = st.checkbox("Modification search", value=False)
-
-
-        with col5:
-            frag_tol = st.text_input("Fragment Tolerance (Da)", value="0.02")
-            if do_modification_search:
-                col_elim, col_add = st.columns(2)
-                with col_elim:
-                    do_elimination = st.checkbox("Elimination search", value=True)
-                with col_add:
-                    do_addition = st.checkbox("Addition search", value=True)
-                sub_col1, col_or, sub_col2 = st.columns([2,0.5,2])
-                with sub_col1:
-                    modification_formula = st.text_input("Modification formula", placeholder="O for hydroxylation")
-                with col_or:
-                    st.markdown("<div style='text-align:center; margin-top:2.5em;'>or</div>", unsafe_allow_html=True)
-                with sub_col2:
-                    modification_mass = st.text_input("Modification mass (Da)", placeholder="15.9949 for O")
-                do_subsetModificationSearch = st.checkbox("Only report modified molecules if <condition>", value=False)
-
-                if do_subsetModificationSearch:
-                    list_of_values = ["Raw file", "ATTRIBUTE_DatasetAccession", "NCBITaxonomy"]
-                    modification_condition = st.selectbox("Unmodified found in same", options=list_of_values)
-
-    ctrl1, ctrl2, _ = st.columns([1,1,7])
-    with ctrl1:
-        do_search = st.button("Search Raw Data", key="run_rawdata_search_button")
-
-
-    # perform the raw data search
-    if do_search:
-        time.sleep(2)
-        with st.spinner("Searching raw data…"): 
-
-            new_results = {}
-
-            if option == "FASSTrecords":
-                # build each queries aggregated table
-                for name, ik_dict in st.session_state.grouped_results.items():
-                    sel_frames = []
-                    for ik, data in ik_dict.items():
-                        
-                        df_struct = data["structure"]
-
-                        df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
-                        df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
-                        df_struct["similar_library_spectra"] = (
-                            df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
-                                    .transform("size")
-                                    .astype("int64")
-                        )
-
-                        # add column with difference between spectrum_id_int and representative_spectrum_int
-                        df_struct["spectrum_difference"] = df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
-
-                        #sort so that smallest difference is kept by falcon_cluster (closest to representative spectrum)
-                        df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
-
-                        #keep first per falcon cluster
-                        df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
-
-                        # set spectrum_id_int value to representative_spectrum_int value
-                        df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
-
-                        if not df_struct.empty:
-                            sel_frames.append(df_struct)
-
-                    if not sel_frames:
-                        st.warning(f"No entries left for **{name}**, skipping.")
-                        continue
-
-                    df_for_name = pd.concat(sel_frames, ignore_index=True)
-
-                    # get raw data from masstrecords
-                    masst_df, redu_df = get_masst_and_redu_tables(df_for_name,
-                                                                cosine_threshold=float(min_cosine),
-                                                                matching_peaks=int(min_peaks),
-                                                                sqlite_path=config.PATH_TO_SQLITE,
-                                                                api_endpoint=config.MASSTRECORDS_ENDPOINT,
-                                                                timeout=config.MASSTRECORDS_TIMEOUT,
-                                                                chunk_size=200)
-
-                    # if cosine not in masst_df.columns return empty dataframes
-                    if "cosine" not in masst_df.columns or "matching_peaks" not in masst_df.columns:
-                        new_results[name] = {"masst": pd.DataFrame(), "redu": pd.DataFrame()}
-                        continue
-
-                    # subset results for sample matches table to best match by sample
-                    df_masst_sorted = masst_df.sort_values(by=["cosine", "matching_peaks"], ascending=[False, False])
-                    df_masst_unique = df_masst_sorted.drop_duplicates(subset="mri_id_int", keep="first")
-                    
-                    if 'mri_id_int' in redu_df.columns:
-                        # add query spectrum ID and scan ID to redu_df //could potentially move this into get_masst_and_redu_tables
-                        redu_df = redu_df.merge(
-                            df_masst_unique[["mri_id_int", "scan_id", "query_spectrum_id", 'matching_peaks', 'cosine', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'inchikey_first_block', 'similar_library_spectra', 'unique_spectra_in_mri']],
-                            on="mri_id_int",
-                            how="left"
-                            )
-
-                        redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'] + redu_df['unique_spectra_in_mri'] - 2
-
-                        # make integer
-                        redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'].astype('Int64')
-
-                        # make character values from 0 to "9+"
-                        s = redu_df["similar_library_spectra"].astype("Int64")       
-                        b = s.clip(upper=9)                                          
-                        redu_df["similar_library_spectra"] = b.astype("string").where(b < 9, "9+")
-
-
-                        # rename cosine to Cosine and matching_peaks to Matching Peaks
-                        redu_df = redu_df.rename(columns={
-                            "cosine": "Cosine",
-                            "matching_peaks": "Matching Peaks",
-                            "USI": "mri"
-                        })
-
-                        redu_df['Delta Mass'] = 0
-
-                        # make library usis for the links
-                        redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
-                            lambda x: (
-                                f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
-                                else f"mzspec:MASSBANK::accession:{x}" 
-                            )
-                        )                    
-                        # in every row add USI + :scan: + scan_id (as str)
-                        redu_df["scan_id"] = pd.to_numeric(redu_df["scan_id"], errors="raise").astype(int)
-                        redu_df["USI"] = redu_df["mri"] + ":scan:" + redu_df["scan_id"].astype(str)
-                        redu_df["best_spectral_match"] = redu_df.apply(
-                            lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]),
-                            axis=1
-                            )
-
-                        if "Check LC peak" not in redu_df.columns:
-                            redu_df["Check LC peak"] = np.nan
-
-                        # Make sure the destination column can hold strings
-                        redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  
-
-                        mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
-                        redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
-                            lambda row: build_dashboard_eic_url(
-                                usi=row['USI'],
-                                xic_mz=row['Precursor_MZ'],
-                                xic_tolerance=0.05
-                            ),
-                            axis=1
-                        )
-
-                    new_results[name] = {"masst": masst_df, "redu": redu_df}
-                
-            elif option == "FASST":
-
-                # build each queries aggregated table
-                for name, ik_dict in st.session_state.grouped_results.items():
-                    sel_frames = []
-                    for ik, data in ik_dict.items():
-                        df_struct = data["structure"]
-
-                        # dereplicate spectra
-                        df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
-                        df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
-                        df_struct["similar_library_spectra"] = (
-                            df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
-                                    .transform("size")
-                                    .astype("int64")
-                        )
-                        # add column with difference between spectrum_id_int and representative_spectrum_int
-                        df_struct["spectrum_difference"] = df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
-
-                        #sort so that smallest difference is kept by falcon_cluster (closest to representative spectrum)
-                        df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
-
-                        #keep first per falcon cluster
-                        df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
-
-                        # set spectrum_id_int value to representative_spectrum_int value
-                        df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
-
-                        if not df_struct.empty:
-                            sel_frames.append(df_struct)
-
-                    if not sel_frames:
-                        st.warning(f"No entries left for **{name}**, skipping.")
-                        continue
-
-                    df_for_name = pd.concat(sel_frames, ignore_index=True)
-
-                    # if we do modification and got a molecular formula calculate the monoisotopic mass of the expected mass difference
-                    formulaModi_object = Formula.formula_from_str(modification_formula) if do_modification_search and modification_formula else None
-                    try:
-                        modification_mass = formulaModi_object.get_monoisotopic_mass()
-                    except AttributeError:
-                        modification_mass = modification_mass if 'modification_mass' in locals() else None
-
-                    # retrieve raw data matches through MASST
-                    masst_df, redu_df = retrieve_raw_data_matches(
-                        df_for_name,
-                        database='metabolomicspanrepo_index_nightly',
-                        precursor_mz_tol=float(prec_tol),
-                        fragment_mz_tol=float(frag_tol),
-                        min_cos=float(min_cosine),
-                        matching_peaks=int(min_peaks),
-                        analog=do_modification_search,
-                        modimass=modification_mass,
-                        elimination=do_elimination if 'do_elimination' in locals() else False,
-                        addition=do_addition if 'do_addition' in locals() else False,
-                        modification_condition=modification_condition if 'modification_condition' in locals() else None,
-                        sqlite_path=config.PATH_TO_SQLITE,
-                        api_endpoint=config.MASSTRECORDS_ENDPOINT,
-                        timeout=config.MASSTRECORDS_TIMEOUT
-                    )
-
-                    if len(redu_df) > 0:
-                        # make library usis for the links
-                        redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
-                            lambda x: (
-                                f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
-                                else f"mzspec:MASSBANK::accession:{x}" 
-                            )
-                        )
-
-                        redu_df["best_spectral_match"] = redu_df.apply(
-                            lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]), 
-                            axis=1
-                            )
-
-
-                        if "Check LC peak" not in redu_df.columns:
-                            redu_df["Check LC peak"] = np.nan
-
-                        # Make sure the destination column can hold strings
-                        redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  
-
-                        mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
-                        redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
-                            lambda row: build_dashboard_eic_url(
-                                usi=row['USI'],
-                                xic_mz=row['Precursor_MZ'],
-                                xic_tolerance=0.05
-                            ),
-                            axis=1
-                        )
-         
-                    new_results[name] = {"masst": masst_df, "redu": redu_df}
-
-            # store the results in session state
-            st.session_state.raw_results = new_results
-
-    # display results in tabs
-    if st.session_state.get("raw_results"):
-        raw_results = st.session_state.get("raw_results", {})
-
-        # print lens of what has been found
-        for name, df_pair in raw_results.items():
-            # count unique MRI IDs in the 'redu' dataframe
-
-            if 'mri_id_int' in df_pair['redu'].columns:
-                num_unique_mri = df_pair['redu']['mri_id_int'].dropna().nunique()
-            elif 'mri' in df_pair['redu'].columns:
-                num_unique_mri = df_pair['redu']['mri'].dropna().nunique()
-            else:
-                num_unique_mri = 0
-
-        has_valid_results = any(
-            not df_pair["masst"].empty or not df_pair["redu"].empty
-            for df_pair in raw_results.values()
-        )
-
-        if has_valid_results:
-            with st.expander("Metabolomics Raw Data Matches", expanded=True):
-                st.markdown("### Metabolomics Raw Data Matches")
-
-                # create tabs for each query structure
-                result_tabs = st.tabs(list(st.session_state.raw_results.keys()))
-                for result_fig_id, (name, tab) in enumerate(zip(st.session_state.raw_results.keys(), result_tabs)):
-                    with tab:
-
-                        # get the results for this query structure
-                        st.markdown(f"Retrieved **{len(st.session_state.raw_results[name]['redu'])}** matching samples with ReDU metadata for **{name}**.")
-
-
-                        df_redu = st.session_state.raw_results[name]["redu"]
-
-                        if ('mri_id_int' in df_redu.columns or 'mri' in df_redu.columns) and len(df_redu) > 0:
+    @st.fragment
+    def raw_data_search_panel():
+        col_a, col_b = st.columns(2)
+        with col_a:
+            option = st.radio(
+                "Mode",
+                ["FASSTrecords", "FASST"],
+                horizontal=True,
+                key="mode"
+            )
+        with col_b:
+            st.empty()
+
+        last_iteration = "09/2025"  # need to get version into sql table
+
+        info_row = st.empty()  # single, stable placeholder
+
+        def render_info_panels(last_iteration: str):
+            with info_row.container():  # render both columns atomically
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.markdown(f"""
+                    <div style="
+                        border-left: 4px solid #2c7be5;
+                        padding: 1em;
+                        margin: 0.5em 0;
+                        background-color: #f0f8ff;
+                        border-radius: 4px;
+                    ">
+                    <h4 style="margin:0 0 0.5em;">
+                        <strong>FASSTrecords</strong>
+                    </h4>
+                    <p style="margin:0; line-height:1.5; font-size:0.95em;">
+                        This is <strong>very fast</strong> as it relies on precomputed annotations, and therefore especially <br/>
+                        recommended for substructure-enabled search and searches of large<br/>
+                        numbers of spectra or molecules expected in large numbers of samples.<br/>
+                        Last iteration: <strong>{last_iteration}</strong>.
+                    </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with col2:
+                    st.markdown("""
+                    <div style="
+                        border-left: 4px solid #e76f51;
+                        padding: 1em;
+                        margin: 0.5em 0;
+                        background-color: #fff5f0;
+                        border-radius: 4px;
+                    ">
+                    <h4 style="margin:0 0 0.5em;">
+                        <strong>FASST</strong>
+                    </h4>
+                    <p style="margin:0; line-height:1.5; font-size:0.95em;">
+                        Can be rather slow especially for molecules expected to be present in many datasets<br/>
+                        or large numbers of spectra. Searches can even take a few minutes, depending on traffic.<br/>
+                        Allows the discovery of unknown chemical analogues through modification search.<br/>
+                        Always up to date with the latest raw data indexed at <a href="https://fasst.gnps2.org/" target="_blank" style="color:#e76f51;">fasst.gnps2.org</a>.
+                    </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+        # ---- Call exactly once per run, before any button/long work branches ----
+        render_info_panels(last_iteration)
+
+        # Cosine and Matching Peaks input 
+        col3, col4, _, _ = st.columns(4)
+        with col3:
+            min_cosine = st.text_input("Minimum Cosine", value="0.7", key="min_cosine")
+        with col4:
+            min_peaks = st.text_input("Minimum Matching Peaks", value="5", key="min_peaks")
+
+        # Conditional input for FASST 
+        if option == "FASST":
+            col5, col6, _, _ = st.columns(4)
+            with col6:
+                prec_tol = st.text_input("Precursor Tolerance (Da)", value="0.02", key="prec_tol")
+                do_modification_search = st.checkbox("Modification search", value=False, key="do_modification_search")
+
+
+            with col5:
+                frag_tol = st.text_input("Fragment Tolerance (Da)", value="0.02", key="frag_tol")
+                if do_modification_search:
+                    col_elim, col_add = st.columns(2)
+                    with col_elim:
+                        do_elimination = st.checkbox("Elimination search", value=True, key="do_elimination")
+                    with col_add:
+                        do_addition = st.checkbox("Addition search", value=True, key="do_addition")
+                    sub_col1, col_or, sub_col2 = st.columns([2,0.5,2])
+                    with sub_col1:
+                        modification_formula = st.text_input("Modification formula", placeholder="O for hydroxylation", key="modification_formula")
+                    with col_or:
+                        st.markdown("<div style='text-align:center; margin-top:2.5em;'>or</div>", unsafe_allow_html=True)
+                    with sub_col2:
+                        modification_mass = st.text_input("Modification mass (Da)", placeholder="15.9949 for O", key="modification_mass")
+                    do_subsetModificationSearch = st.checkbox("Only report modified molecules if <condition>", value=False, key="do_subsetModificationSearch")
+
+                    if do_subsetModificationSearch:
+                        list_of_values = ["Raw file", "ATTRIBUTE_DatasetAccession", "NCBITaxonomy"]
+                        modification_condition = st.selectbox("Unmodified found in same", options=list_of_values)
 
+        ctrl1, ctrl2, _ = st.columns([1,1,7])
+        with ctrl1:
+            do_search = st.button("Search Raw Data", key="run_rawdata_search_button")
+
+
+        # perform the raw data search
+        if do_search:
+            time.sleep(2)
+            with st.spinner("Searching raw data…"): 
+
+                new_results = {}
+
+                if option == "FASSTrecords":
+                    # build each queries aggregated table
+                    for name, ik_dict in st.session_state.grouped_results.items():
+                        sel_frames = []
+                        for ik, data in ik_dict.items():
                             
-                            opts_key = f"{name}_sankey_options"
-                            new_cols = df_redu.columns.tolist()
-                            if opts_key not in st.session_state:
-                                st.session_state[opts_key] = new_cols[:]
-                            else:
+                            df_struct = data["structure"]
+
+                            df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
+                            df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
+                            df_struct["similar_library_spectra"] = (
+                                df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
+                                        .transform("size")
+                                        .astype("int64")
+                            )
+
+                            # add column with difference between spectrum_id_int and representative_spectrum_int
+                            df_struct["spectrum_difference"] = df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
+
+                            #sort so that smallest difference is kept by falcon_cluster (closest to representative spectrum)
+                            df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
+
+                            #keep first per falcon cluster
+                            df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
+
+                            # set spectrum_id_int value to representative_spectrum_int value
+                            df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
+
+                            if not df_struct.empty:
+                                sel_frames.append(df_struct)
+
+                        if not sel_frames:
+                            st.warning(f"No entries left for **{name}**, skipping.")
+                            continue
+
+                        df_for_name = pd.concat(sel_frames, ignore_index=True)
+
+                        # get raw data from masstrecords
+                        masst_df, redu_df = get_masst_and_redu_tables(df_for_name,
+                                                                    cosine_threshold=float(min_cosine),
+                                                                    matching_peaks=int(min_peaks),
+                                                                    sqlite_path=config.PATH_TO_SQLITE,
+                                                                    api_endpoint=config.MASSTRECORDS_ENDPOINT,
+                                                                    timeout=config.MASSTRECORDS_TIMEOUT,
+                                                                    chunk_size=200)
+
+                        # if cosine not in masst_df.columns return empty dataframes
+                        if "cosine" not in masst_df.columns or "matching_peaks" not in masst_df.columns:
+                            new_results[name] = {"masst": pd.DataFrame(), "redu": pd.DataFrame()}
+                            continue
+
+                        # subset results for sample matches table to best match by sample
+                        df_masst_sorted = masst_df.sort_values(by=["cosine", "matching_peaks"], ascending=[False, False])
+                        df_masst_unique = df_masst_sorted.drop_duplicates(subset="mri_id_int", keep="first")
+                        
+                        if 'mri_id_int' in redu_df.columns:
+                            # add query spectrum ID and scan ID to redu_df //could potentially move this into get_masst_and_redu_tables
+                            redu_df = redu_df.merge(
+                                df_masst_unique[["mri_id_int", "scan_id", "query_spectrum_id", 'matching_peaks', 'cosine', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'inchikey_first_block', 'similar_library_spectra', 'unique_spectra_in_mri']],
+                                on="mri_id_int",
+                                how="left"
+                                )
+
+                            redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'] + redu_df['unique_spectra_in_mri'] - 2
+
+                            # make integer
+                            redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'].astype('Int64')
+
+                            # make character values from 0 to "9+"
+                            s = redu_df["similar_library_spectra"].astype("Int64")       
+                            b = s.clip(upper=9)                                          
+                            redu_df["similar_library_spectra"] = b.astype("string").where(b < 9, "9+")
+
+
+                            # rename cosine to Cosine and matching_peaks to Matching Peaks
+                            redu_df = redu_df.rename(columns={
+                                "cosine": "Cosine",
+                                "matching_peaks": "Matching Peaks",
+                                "USI": "mri"
+                            })
+
+                            redu_df['Delta Mass'] = 0
+
+                            # make library usis for the links
+                            redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
+                                lambda x: (
+                                    f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
+                                    else f"mzspec:MASSBANK::accession:{x}" 
+                                )
+                            )                    
+                            # in every row add USI + :scan: + scan_id (as str)
+                            redu_df["scan_id"] = pd.to_numeric(redu_df["scan_id"], errors="raise").astype(int)
+                            redu_df["USI"] = redu_df["mri"] + ":scan:" + redu_df["scan_id"].astype(str)
+                            redu_df["best_spectral_match"] = redu_df.apply(
+                                lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]),
+                                axis=1
+                                )
+
+                            if "Check LC peak" not in redu_df.columns:
+                                redu_df["Check LC peak"] = np.nan
+
+                            # Make sure the destination column can hold strings
+                            redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  
+
+                            mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
+                            redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
+                                lambda row: build_dashboard_eic_url(
+                                    usi=row['USI'],
+                                    xic_mz=row['Precursor_MZ'],
+                                    xic_tolerance=0.05
+                                ),
+                                axis=1
+                            )
+
+                        new_results[name] = {"masst": masst_df, "redu": redu_df}
+                    
+                elif option == "FASST":
+
+                    # build each queries aggregated table
+                    for name, ik_dict in st.session_state.grouped_results.items():
+                        sel_frames = []
+                        for ik, data in ik_dict.items():
+                            df_struct = data["structure"]
+
+                            # dereplicate spectra
+                            df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
+                            df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
+                            df_struct["similar_library_spectra"] = (
+                                df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
+                                        .transform("size")
+                                        .astype("int64")
+                            )
+                            # add column with difference between spectrum_id_int and representative_spectrum_int
+                            df_struct["spectrum_difference"] = df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
+
+                            #sort so that smallest difference is kept by falcon_cluster (closest to representative spectrum)
+                            df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
+
+                            #keep first per falcon cluster
+                            df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
+
+                            # set spectrum_id_int value to representative_spectrum_int value
+                            df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
+
+                            if not df_struct.empty:
+                                sel_frames.append(df_struct)
+
+                        if not sel_frames:
+                            st.warning(f"No entries left for **{name}**, skipping.")
+                            continue
+
+                        df_for_name = pd.concat(sel_frames, ignore_index=True)
+
+                        # if we do modification and got a molecular formula calculate the monoisotopic mass of the expected mass difference
+                        formulaModi_object = Formula.formula_from_str(modification_formula) if do_modification_search and modification_formula else None
+                        try:
+                            modification_mass = formulaModi_object.get_monoisotopic_mass()
+                        except AttributeError:
+                            modification_mass = modification_mass if 'modification_mass' in locals() else None
+
+                        # retrieve raw data matches through MASST
+                        masst_df, redu_df = retrieve_raw_data_matches(
+                            df_for_name,
+                            database='metabolomicspanrepo_index_nightly',
+                            precursor_mz_tol=float(prec_tol),
+                            fragment_mz_tol=float(frag_tol),
+                            min_cos=float(min_cosine),
+                            matching_peaks=int(min_peaks),
+                            analog=do_modification_search,
+                            modimass=modification_mass,
+                            elimination=do_elimination if 'do_elimination' in locals() else False,
+                            addition=do_addition if 'do_addition' in locals() else False,
+                            modification_condition=modification_condition if 'modification_condition' in locals() else None,
+                            sqlite_path=config.PATH_TO_SQLITE,
+                            api_endpoint=config.MASSTRECORDS_ENDPOINT,
+                            timeout=config.MASSTRECORDS_TIMEOUT
+                        )
+
+                        if len(redu_df) > 0:
+                            # make library usis for the links
+                            redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
+                                lambda x: (
+                                    f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
+                                    else f"mzspec:MASSBANK::accession:{x}" 
+                                )
+                            )
+
+                            redu_df["best_spectral_match"] = redu_df.apply(
+                                lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]), 
+                                axis=1
+                                )
+
+
+                            if "Check LC peak" not in redu_df.columns:
+                                redu_df["Check LC peak"] = np.nan
+
+                            # Make sure the destination column can hold strings
+                            redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  
+
+                            mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
+                            redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
+                                lambda row: build_dashboard_eic_url(
+                                    usi=row['USI'],
+                                    xic_mz=row['Precursor_MZ'],
+                                    xic_tolerance=0.05
+                                ),
+                                axis=1
+                            )
+            
+                        new_results[name] = {"masst": masst_df, "redu": redu_df}
+
+                # store the results in session state
+                st.session_state.raw_results = new_results
+
+        # display results in tabs
+        if st.session_state.get("raw_results"):
+            raw_results = st.session_state.get("raw_results", {})
+
+            # print lens of what has been found
+            for name, df_pair in raw_results.items():
+                # count unique MRI IDs in the 'redu' dataframe
+
+                if 'mri_id_int' in df_pair['redu'].columns:
+                    num_unique_mri = df_pair['redu']['mri_id_int'].dropna().nunique()
+                elif 'mri' in df_pair['redu'].columns:
+                    num_unique_mri = df_pair['redu']['mri'].dropna().nunique()
+                else:
+                    num_unique_mri = 0
+
+            has_valid_results = any(
+                not df_pair["masst"].empty or not df_pair["redu"].empty
+                for df_pair in raw_results.values()
+            )
+
+            if has_valid_results:
+                with st.expander("Metabolomics Raw Data Matches", expanded=True):
+                    st.markdown("### Metabolomics Raw Data Matches")
+
+                    # create tabs for each query structure
+                    result_tabs = st.tabs(list(st.session_state.raw_results.keys()))
+                    for result_fig_id, (name, tab) in enumerate(zip(st.session_state.raw_results.keys(), result_tabs)):
+                        with tab:
+
+                            # get the results for this query structure
+                            st.markdown(f"Retrieved **{len(st.session_state.raw_results[name]['redu'])}** matching samples with ReDU metadata for **{name}**.")
+
+
+                            df_redu = st.session_state.raw_results[name]["redu"]
+
+                            if ('mri_id_int' in df_redu.columns or 'mri' in df_redu.columns) and len(df_redu) > 0:
+
                                 
-                                st.session_state[opts_key] = list(dict.fromkeys(st.session_state[opts_key] + new_cols))
-
-                            column_options = st.session_state[opts_key]
-                            # Make sankey diagram
-                            ##########
-
-                            def _def_val(v: str) -> str:
-                                return v if v in column_options else column_options[0]
-
-                            def _apply_vals(vals: list[str]):
-                                for i, v in enumerate(vals, start=1):
-                                    st.session_state[f"{name}_col{i}"] = _def_val(v)
-                                st.rerun()
-
-                            def sticky_selectbox(label: str, options: list[str], key: str):
-                                """Render a selectbox that keeps the user's selection across reruns."""
-                                cur = st.session_state.get(key, None)
-                                if cur in options:
-                                    # Use existing session value; DON'T pass index (prevents Streamlit reset)
-                                    return st.selectbox(label, options, key=key)
+                                opts_key = f"{name}_sankey_options"
+                                new_cols = df_redu.columns.tolist()
+                                if opts_key not in st.session_state:
+                                    st.session_state[opts_key] = new_cols[:]
                                 else:
-                                    # First time / invalid value -> choose the first option
-                                    return st.selectbox(label, options, index=0, key=key)
+                                    
+                                    st.session_state[opts_key] = list(dict.fromkeys(st.session_state[opts_key] + new_cols))
+
+                                column_options = st.session_state[opts_key]
+                                # Make sankey diagram
+                                ##########
+
+                                def _def_val(v: str) -> str:
+                                    return v if v in column_options else column_options[0]
+
+                                def _apply_vals(vals: list[str]):
+                                    for i, v in enumerate(vals, start=1):
+                                        st.session_state[f"{name}_col{i}"] = _def_val(v)
+                                    st.rerun()
+
+                                def sticky_selectbox(label: str, options: list[str], key: str):
+                                    """Render a selectbox that keeps the user's selection across reruns."""
+                                    cur = st.session_state.get(key, None)
+                                    if cur in options:
+                                        # Use existing session value; DON'T pass index (prevents Streamlit reset)
+                                        return st.selectbox(label, options, key=key)
+                                    else:
+                                        # First time / invalid value -> choose the first option
+                                        return st.selectbox(label, options, index=0, key=key)
 
 
-                            PRESET_MAP = {
-                                            "datasets_bodypart_division_taxa": [
-                                                "ATTRIBUTE_DatasetAccession", "UBERONBodyPartName", "NCBIDivision", "NCBITaxonomy"
-                                            ],
-                                            "query_similar_division_taxa": [
-                                                "similar_library_spectra", "query_spectrum_id", "NCBIDivision", "NCBITaxonomy"
-                                            ],
-                                            "compound_bodypart_division_taxa": [
-                                                "inchikey_first_block", "Compound_Name", "UBERONBodyPartName", "NCBITaxonomy"
-                                            ],
-                                            "delta_modified_bodypart_doid": [
-                                                "Delta Mass", "Modified", "UBERONBodyPartName", "DOIDCommonName"
-                                            ],
+                                PRESET_MAP = {
+                                                "datasets_bodypart_division_taxa": [
+                                                    "ATTRIBUTE_DatasetAccession", "UBERONBodyPartName", "NCBIDivision", "NCBITaxonomy"
+                                                ],
+                                                "query_similar_division_taxa": [
+                                                    "similar_library_spectra", "query_spectrum_id", "NCBIDivision", "NCBITaxonomy"
+                                                ],
+                                                "compound_bodypart_division_taxa": [
+                                                    "inchikey_first_block", "Compound_Name", "UBERONBodyPartName", "NCBITaxonomy"
+                                                ],
+                                                "delta_modified_bodypart_doid": [
+                                                    "Delta Mass", "Modified", "UBERONBodyPartName", "DOIDCommonName"
+                                                ],
+                                            }
+
+                                if "default_sankey_vals" not in st.session_state:
+                                    st.session_state["default_sankey_vals"] = PRESET_MAP["datasets_bodypart_division_taxa"]
+
+
+
+                                with st.container():
+                                    st.markdown(
+                                        """
+                                        <style>
+                                        /* Shared card look */
+                                        .tipbox, .presetbox {
+                                            font-size: 0.95rem;
+                                            line-height: 1.5;
+                                            background: #f6f8fa;
+                                            border: 1px solid #e5e7eb;
+                                            padding: 0.9rem 1rem;
+                                            border-radius: 12px;
+                                            margin-bottom: 0.9rem;
+                                        }
+                                        .tipbox h4, .presetbox h4 {
+                                            margin: 0 0 0.6rem 0;
+                                            font-size: 1rem;
+                                            font-weight: 700;
+                                        }
+                                        .tipbox ul {
+                                            margin: 0.25rem 0 0 1.25rem;
+                                            padding: 0;
+                                            list-style-type: disc;
+                                        }
+                                        .tipbox li { margin: 0.35rem 0; }
+
+                                        /* Rows inside preset panel */
+                                        .preset-row {
+                                            display: flex;
+                                            align-items: flex-start;
+                                            gap: 0.75rem;
+                                            padding: 0.6rem 0.5rem;
+                                            border-radius: 10px;
+                                        }
+                                        .preset-row:not(:last-child) {
+                                            border-bottom: 1px dashed #e5e7eb;
+                                        }
+                                        .preset-text {
+                                            flex: 1;
+                                        }
+                                        .preset-title {
+                                            font-weight: 700;
+                                        }
+                                        .preset-sub {
+                                            display: block;
+                                            margin-top: 0.15rem;
+                                            opacity: 0.9;
                                         }
 
-                            if "default_sankey_vals" not in st.session_state:
-                                st.session_state["default_sankey_vals"] = PRESET_MAP["datasets_bodypart_division_taxa"]
-
-
-
-                            with st.container():
-                                st.markdown(
-                                    """
-                                    <style>
-                                    /* Shared card look */
-                                    .tipbox, .presetbox {
-                                        font-size: 0.95rem;
-                                        line-height: 1.5;
-                                        background: #f6f8fa;
-                                        border: 1px solid #e5e7eb;
-                                        padding: 0.9rem 1rem;
-                                        border-radius: 12px;
-                                        margin-bottom: 0.9rem;
-                                    }
-                                    .tipbox h4, .presetbox h4 {
-                                        margin: 0 0 0.6rem 0;
-                                        font-size: 1rem;
-                                        font-weight: 700;
-                                    }
-                                    .tipbox ul {
-                                        margin: 0.25rem 0 0 1.25rem;
-                                        padding: 0;
-                                        list-style-type: disc;
-                                    }
-                                    .tipbox li { margin: 0.35rem 0; }
-
-                                    /* Rows inside preset panel */
-                                    .preset-row {
-                                        display: flex;
-                                        align-items: flex-start;
-                                        gap: 0.75rem;
-                                        padding: 0.6rem 0.5rem;
-                                        border-radius: 10px;
-                                    }
-                                    .preset-row:not(:last-child) {
-                                        border-bottom: 1px dashed #e5e7eb;
-                                    }
-                                    .preset-text {
-                                        flex: 1;
-                                    }
-                                    .preset-title {
-                                        font-weight: 700;
-                                    }
-                                    .preset-sub {
-                                        display: block;
-                                        margin-top: 0.15rem;
-                                        opacity: 0.9;
-                                    }
-
-                                    /* Make the Streamlit button align nicely & fill the small right column */
-                                    .preset-button .stButton>button {
-                                        width: 100%;
-                                        height: 32px;
-                                        border-radius: 10px;
-                                        border: 1px solid #d1d5db;
-                                        background: white;
-                                    }
-                                    .preset-button .stButton>button:hover {
-                                        background: #f3f4f6;
-                                    }
-                                    </style>
-                                    """,
-                                    unsafe_allow_html=True,
-                                )
-
-                                # Preset panel (everything in one grey card; each preset is a clean row)
-                                st.markdown("##### Suggested views")
-
-
-                                # We render the rows right after the header "card" to look continuous.
-                                preset_panel = st.container()
-                                with preset_panel:
-                                    # Row 1
-                                    r1c1, r1c2 = st.columns([0.86, 0.14])
-                                    with r1c1:
-                                        st.markdown(
-                                            """
-                                            <div class="preset-row">
-                                            <div class="preset-text">
-                                                <span class="preset-title">ATTRIBUTE_DatasetAccession → UBERONBodyPartName → NCBIDivision → NCBITaxonomy</span>
-                                                <span class="preset-sub">Understand biological distributions at a glance while not losing sight of the number of datasets confirming an observed pattern.</span>
-                                            </div>
-                                            </div>
-                                            """,
-                                            unsafe_allow_html=True,
-                                        )
-                                    with r1c2:
-                                        st.markdown('<div class="preset-button">', unsafe_allow_html=True)
-                                        if st.button("Apply", key=f"{name}_preset_1"):
-                                            _apply_vals(PRESET_MAP["datasets_bodypart_division_taxa"])
-                                        st.markdown('</div>', unsafe_allow_html=True)
-
-                                    # Divider look is handled by CSS (dashed bottom border on each row block).
-                                    r2c1, r2c2 = st.columns([0.86, 0.14])
-                                    with r2c1:
-                                        st.markdown(
-                                            """
-                                            <div class="preset-row">
-                                            <div class="preset-text">
-                                                <span class="preset-title">similar_library_spectra → query_spectrum_id → NCBIDivision → NCBITaxonomy</span>
-                                                <span class="preset-sub">Explore if matches to suspicious sample types are driven by different <em>query_spectrum_ids</em> than those for expected sample types.</span>
-                                            </div>
-                                            </div>
-                                            """,
-                                            unsafe_allow_html=True,
-                                        )
-                                    with r2c2:
-                                        st.markdown('<div class="preset-button">', unsafe_allow_html=True)
-                                        if st.button("Apply", key=f"{name}_preset_2"):
-                                            _apply_vals(PRESET_MAP["query_similar_division_taxa"])
-                                        st.markdown('</div>', unsafe_allow_html=True)
-
-                                    # Row 3
-                                    r3c1, r3c2 = st.columns([0.86, 0.14])
-                                    with r3c1:
-                                        st.markdown(
-                                            """
-                                            <div class="preset-row">
-                                            <div class="preset-text">
-                                                <span class="preset-title">inchikey_first_block → Compound_Name → UBERONBodyPartName → NCBITaxonomy</span>
-                                                <span class="preset-sub">After substructure or Tanimoto similarity searches, investigate if molecules differ by sample types.</span>
-                                            </div>
-                                            </div>
-                                            """,
-                                            unsafe_allow_html=True,
-                                        )
-                                    with r3c2:
-                                        st.markdown('<div class="preset-button">', unsafe_allow_html=True)
-                                        if st.button("Apply", key=f"{name}_preset_3"):
-                                            _apply_vals(PRESET_MAP["compound_bodypart_division_taxa"])
-                                        st.markdown('</div>', unsafe_allow_html=True)
-
-                                    # Row 4
-                                    r4c1, r4c2 = st.columns([0.86, 0.14])
-                                    with r4c1:
-                                        st.markdown(
-                                            """
-                                            <div class="preset-row">
-                                            <div class="preset-text">
-                                                <span class="preset-title">Delta Mass → Modified → UBERONBodyPartName → DOIDCommonName</span>
-                                                <span class="preset-sub">For modification searches, explore if specific modifications differ by body part and disease (especially interesting for drugs).</span>
-                                            </div>
-                                            </div>
-                                            """,
-                                            unsafe_allow_html=True,
-                                        )
-                                    with r4c2:
-                                        st.markdown('<div class="preset-button">', unsafe_allow_html=True)
-                                        if st.button("Apply", key=f"{name}_preset_4"):
-                                            _apply_vals(PRESET_MAP["delta_modified_bodypart_doid"])
-                                        st.markdown('</div>', unsafe_allow_html=True)
-
-                            def_val = lambda v: v if v in column_options else column_options[0]
-
-                            # initialize session_state defaults 
-                            for i, default in enumerate(st.session_state["default_sankey_vals"], start=1):
-                                key = f"{name}_col{i}"
-                                if key not in st.session_state:
-                                    st.session_state[key] = def_val(default)
-
-                            # make four sticky selectboxes (won't reset after buttons/reruns)
-                            col1_c, col2_c, col3_c, col4_c = st.columns(4)
-                            with col1_c:
-                                sticky_selectbox("Column 1", column_options, key=f"{name}_col1")
-                            with col2_c:
-                                sticky_selectbox("Column 2", column_options, key=f"{name}_col2")
-                            with col3_c:
-                                sticky_selectbox("Column 3", column_options, key=f"{name}_col3")
-                            with col4_c:
-                                sticky_selectbox("Column 4", column_options, key=f"{name}_col4")
-
-
-                            # pull the latest values and build your Sankey immediately
-                            col1 = st.session_state[f"{name}_col1"]
-                            col2 = st.session_state[f"{name}_col2"]
-                            col3 = st.session_state[f"{name}_col3"]
-                            col4 = st.session_state[f"{name}_col4"]
-
-                            # if any two cols have the same value give warning
-                            if len({col1, col2, col3, col4}) == 4:
-                                fig = raw_data_sankey(df_redu, col1, col2, col3, col4)
-
-                                config_sankey_download = {
-                                    "toImageButtonOptions": {"format": "svg", "filename": f"plot_{fig_id}"},
-                                    "displaylogo": False,
-                                }
-
-                                st.plotly_chart(fig, use_container_width=True, key=f"sankey_{result_fig_id}", config=config_sankey_download)
-                                try:
-                                    fig.write_image(
-                                        f"{output_folder}/rawData_sankey_{name}.pdf", 
-                                        format="pdf", 
-                                        width=1240, 
-                                        height=400, 
-                                        scale=2
+                                        /* Make the Streamlit button align nicely & fill the small right column */
+                                        .preset-button .stButton>button {
+                                            width: 100%;
+                                            height: 32px;
+                                            border-radius: 10px;
+                                            border: 1px solid #d1d5db;
+                                            background: white;
+                                        }
+                                        .preset-button .stButton>button:hover {
+                                            background: #f3f4f6;
+                                        }
+                                        </style>
+                                        """,
+                                        unsafe_allow_html=True,
                                     )
-                                except RuntimeError as e:
-                                    if "Kaleido requires Google Chrome to be installed" in str(e):
-                                        print("⚠️ Skipping PDF export: Chrome not available for Kaleido.")
-                                    else:
-                                        raise
-                            else:
-                                st.warning("Warning: Some selected columns have the same value.")
+
+                                    # Preset panel (everything in one grey card; each preset is a clean row)
+                                    st.markdown("##### Suggested views")
 
 
-                            # sample matches tab
-                            #########
-                            # Reorder columns: best_spectral_match first, then modification_site if it exists, then the rest
-                            cols = ["best_spectral_match"]
-                            if "modification_site" in df_redu.columns:
-                                cols.append("modification_site")
-                            if "Check LC peak" in df_redu.columns:
-                                cols.append("Check LC peak")
+                                    # We render the rows right after the header "card" to look continuous.
+                                    preset_panel = st.container()
+                                    with preset_panel:
+                                        # Row 1
+                                        r1c1, r1c2 = st.columns([0.86, 0.14])
+                                        with r1c1:
+                                            st.markdown(
+                                                """
+                                                <div class="preset-row">
+                                                <div class="preset-text">
+                                                    <span class="preset-title">ATTRIBUTE_DatasetAccession → UBERONBodyPartName → NCBIDivision → NCBITaxonomy</span>
+                                                    <span class="preset-sub">Understand biological distributions at a glance while not losing sight of the number of datasets confirming an observed pattern.</span>
+                                                </div>
+                                                </div>
+                                                """,
+                                                unsafe_allow_html=True,
+                                            )
+                                        with r1c2:
+                                            st.markdown('<div class="preset-button">', unsafe_allow_html=True)
+                                            if st.button("Apply", key=f"{name}_preset_1"):
+                                                _apply_vals(PRESET_MAP["datasets_bodypart_division_taxa"])
+                                            st.markdown('</div>', unsafe_allow_html=True)
+
+                                        # Divider look is handled by CSS (dashed bottom border on each row block).
+                                        r2c1, r2c2 = st.columns([0.86, 0.14])
+                                        with r2c1:
+                                            st.markdown(
+                                                """
+                                                <div class="preset-row">
+                                                <div class="preset-text">
+                                                    <span class="preset-title">similar_library_spectra → query_spectrum_id → NCBIDivision → NCBITaxonomy</span>
+                                                    <span class="preset-sub">Explore if matches to suspicious sample types are driven by different <em>query_spectrum_ids</em> than those for expected sample types.</span>
+                                                </div>
+                                                </div>
+                                                """,
+                                                unsafe_allow_html=True,
+                                            )
+                                        with r2c2:
+                                            st.markdown('<div class="preset-button">', unsafe_allow_html=True)
+                                            if st.button("Apply", key=f"{name}_preset_2"):
+                                                _apply_vals(PRESET_MAP["query_similar_division_taxa"])
+                                            st.markdown('</div>', unsafe_allow_html=True)
+
+                                        # Row 3
+                                        r3c1, r3c2 = st.columns([0.86, 0.14])
+                                        with r3c1:
+                                            st.markdown(
+                                                """
+                                                <div class="preset-row">
+                                                <div class="preset-text">
+                                                    <span class="preset-title">inchikey_first_block → Compound_Name → UBERONBodyPartName → NCBITaxonomy</span>
+                                                    <span class="preset-sub">After substructure or Tanimoto similarity searches, investigate if molecules differ by sample types.</span>
+                                                </div>
+                                                </div>
+                                                """,
+                                                unsafe_allow_html=True,
+                                            )
+                                        with r3c2:
+                                            st.markdown('<div class="preset-button">', unsafe_allow_html=True)
+                                            if st.button("Apply", key=f"{name}_preset_3"):
+                                                _apply_vals(PRESET_MAP["compound_bodypart_division_taxa"])
+                                            st.markdown('</div>', unsafe_allow_html=True)
+
+                                        # Row 4
+                                        r4c1, r4c2 = st.columns([0.86, 0.14])
+                                        with r4c1:
+                                            st.markdown(
+                                                """
+                                                <div class="preset-row">
+                                                <div class="preset-text">
+                                                    <span class="preset-title">Delta Mass → Modified → UBERONBodyPartName → DOIDCommonName</span>
+                                                    <span class="preset-sub">For modification searches, explore if specific modifications differ by body part and disease (especially interesting for drugs).</span>
+                                                </div>
+                                                </div>
+                                                """,
+                                                unsafe_allow_html=True,
+                                            )
+                                        with r4c2:
+                                            st.markdown('<div class="preset-button">', unsafe_allow_html=True)
+                                            if st.button("Apply", key=f"{name}_preset_4"):
+                                                _apply_vals(PRESET_MAP["delta_modified_bodypart_doid"])
+                                            st.markdown('</div>', unsafe_allow_html=True)
+
+                                def_val = lambda v: v if v in column_options else column_options[0]
+
+                                # initialize session_state defaults 
+                                for i, default in enumerate(st.session_state["default_sankey_vals"], start=1):
+                                    key = f"{name}_col{i}"
+                                    if key not in st.session_state:
+                                        st.session_state[key] = def_val(default)
+
+                                # make four sticky selectboxes (won't reset after buttons/reruns)
+                                col1_c, col2_c, col3_c, col4_c = st.columns(4)
+                                with col1_c:
+                                    sticky_selectbox("Column 1", column_options, key=f"{name}_col1")
+                                with col2_c:
+                                    sticky_selectbox("Column 2", column_options, key=f"{name}_col2")
+                                with col3_c:
+                                    sticky_selectbox("Column 3", column_options, key=f"{name}_col3")
+                                with col4_c:
+                                    sticky_selectbox("Column 4", column_options, key=f"{name}_col4")
+
+
+                                # pull the latest values and build your Sankey immediately
+                                col1 = st.session_state[f"{name}_col1"]
+                                col2 = st.session_state[f"{name}_col2"]
+                                col3 = st.session_state[f"{name}_col3"]
+                                col4 = st.session_state[f"{name}_col4"]
+
+                                # if any two cols have the same value give warning
+                                if len({col1, col2, col3, col4}) == 4:
+                                    fig = raw_data_sankey(df_redu, col1, col2, col3, col4)
+
+                                    config_sankey_download = {
+                                        "toImageButtonOptions": {"format": "svg", "filename": f"plot_{fig_id}"},
+                                        "displaylogo": False,
+                                    }
+
+                                    st.plotly_chart(fig, use_container_width=True, key=f"sankey_{result_fig_id}", config=config_sankey_download)
+                                    try:
+                                        fig.write_image(
+                                            f"{output_folder}/rawData_sankey_{name}.pdf", 
+                                            format="pdf", 
+                                            width=1240, 
+                                            height=400, 
+                                            scale=2
+                                        )
+                                    except RuntimeError as e:
+                                        if "Kaleido requires Google Chrome to be installed" in str(e):
+                                            print("⚠️ Skipping PDF export: Chrome not available for Kaleido.")
+                                        else:
+                                            raise
+                                else:
+                                    st.warning("Warning: Some selected columns have the same value.")
+
+
+                                # sample matches tab
+                                #########
+                                # Reorder columns: best_spectral_match first, then modification_site if it exists, then the rest
+                                cols = ["best_spectral_match"]
+                                if "modification_site" in df_redu.columns:
+                                    cols.append("modification_site")
+                                if "Check LC peak" in df_redu.columns:
+                                    cols.append("Check LC peak")
+                                
+                                cols += [col for col in df_redu.columns if col not in cols]
+                                df_redu = df_redu[cols]
+
+                                # If modification column exists sort so that modified matches come first
+                                if 'Modified' in df_redu.columns:
+                                    df_redu['Modified'] = df_redu['Modified'].astype(str).str.lower()
+                                    df_redu.loc[~df_redu['Modified'].isin(['addition', 'elimination', 'no']), 'Modified'] = pd.NA
+                                    df_redu['Modified'] = pd.Categorical(
+                                        df_redu['Modified'],
+                                        categories=['addition', 'elimination', 'no'],
+                                        ordered=True
+                                    )
+                                    df_redu = df_redu.sort_values(by='Modified', ascending=True)
+
+
+                                column_config = {
+                                            "best_spectral_match": st.column_config.LinkColumn(
+                                                label="best_spectral_match",
+                                                display_text="View MS/MS match"
+                                            )
+                                        }
                             
-                            cols += [col for col in df_redu.columns if col not in cols]
-                            df_redu = df_redu[cols]
-
-                            # If modification column exists sort so that modified matches come first
-                            if 'Modified' in df_redu.columns:
-                                df_redu['Modified'] = df_redu['Modified'].astype(str).str.lower()
-                                df_redu.loc[~df_redu['Modified'].isin(['addition', 'elimination', 'no']), 'Modified'] = pd.NA
-                                df_redu['Modified'] = pd.Categorical(
-                                    df_redu['Modified'],
-                                    categories=['addition', 'elimination', 'no'],
-                                    ordered=True
-                                )
-                                df_redu = df_redu.sort_values(by='Modified', ascending=True)
-
-
-                            column_config = {
-                                        "best_spectral_match": st.column_config.LinkColumn(
-                                            label="best_spectral_match",
-                                            display_text="View MS/MS match"
-                                        )
-                                    }
-                        
-                            if 'modification_site' in df_redu.columns:
-                                column_config["modification_site"] = st.column_config.LinkColumn(
-                                    label="Modification Site",
-                                    display_text="View Modification Site"
-                                )
-
-                            if 'Check LC peak' in df_redu.columns:
-                                column_config["Check LC peak"] = st.column_config.LinkColumn(
-                                    label="Check LC peak",
-                                    display_text="View LC peak"
-                                )
-                            # show dataframe
-                            table_evt = st.dataframe(
-                                df_redu,
-                                column_config=column_config,
-                                hide_index=True,
-                                width='stretch',
-                                on_select="rerun",
-                                selection_mode="multi-row",
-                                key=f"{name}_redu_table",
-                            )
-                            # grab the selected row positions
-                            ui_selected = st.session_state.get(f"{name}_redu_table", {}).get("selection", {}).get("rows", [])
-
-                            # grab the selected row positions from UI
-                            ui_selected = st.session_state.get(f"{name}_redu_table", {}).get("selection", {}).get("rows", [])
-
-                            # dropdowns
-                            btn_col3, btn_col4, _ = st.columns([2,3,5])
-
-                            with btn_col3:
-                                column_options = ["None"] + list(df_redu.columns)
-                                sel_col = st.selectbox("Column", column_options, index=0, key=f"{name}_redu_selcol")
-
-                            dropdown_selected = []
-
-                            sel_vals = []
-
-                            with btn_col4:
-                                if sel_col != "None":
-                                    disp_col = df_redu[sel_col].astype("string").fillna("<NA>")
-                                    value_options = sorted(disp_col.unique().tolist())
-                                    sel_vals = st.multiselect(
-                                        "Value(s)",
-                                        value_options,
-                                        key=f"{name}_redu_selvals",
+                                if 'modification_site' in df_redu.columns:
+                                    column_config["modification_site"] = st.column_config.LinkColumn(
+                                        label="Modification Site",
+                                        display_text="View Modification Site"
                                     )
-                                    disp = df_redu[sel_col].astype("string").fillna("<NA>")
-                                    dropdown_selected = [i for i, ok in enumerate(disp.isin(sel_vals).to_numpy()) if ok]
-                                else:
-                                    st.multiselect("Value(s)", [], key=f"{name}_redu_selvals_disabled", disabled=True)
 
-                            # --- FINAL SELECTION ---
-                            use_dropdown = (sel_col != "None" and bool(sel_vals))  
-                            selected = dropdown_selected if use_dropdown else ui_selected
+                                if 'Check LC peak' in df_redu.columns:
+                                    column_config["Check LC peak"] = st.column_config.LinkColumn(
+                                        label="Check LC peak",
+                                        display_text="View LC peak"
+                                    )
+                                # show dataframe
+                                table_evt = st.dataframe(
+                                    df_redu,
+                                    column_config=column_config,
+                                    hide_index=True,
+                                    width='stretch',
+                                    on_select="rerun",
+                                    selection_mode="multi-row",
+                                    key=f"{name}_redu_table",
+                                )
+                                # grab the selected row positions
+                                ui_selected = st.session_state.get(f"{name}_redu_table", {}).get("selection", {}).get("rows", [])
 
-                            btn_col1, btn_col2, _ = st.columns([2,2, 6])
+                                # grab the selected row positions from UI
+                                ui_selected = st.session_state.get(f"{name}_redu_table", {}).get("selection", {}).get("rows", [])
 
-                            # buttons for selected rows  
-                            with btn_col1:
-                                if st.button("Remove selected rows", key=f"{name}_redu_remove"):
-                                    if selected:
-                                        st.session_state.raw_results[name]["redu"] = (
-                                            df_redu.drop(df_redu.index[selected]).reset_index(drop=True)
+                                # dropdowns
+                                btn_col3, btn_col4, _ = st.columns([2,3,5])
+
+                                with btn_col3:
+                                    column_options = ["None"] + list(df_redu.columns)
+                                    sel_col = st.selectbox("Column", column_options, index=0, key=f"{name}_redu_selcol")
+
+                                dropdown_selected = []
+
+                                sel_vals = []
+
+                                with btn_col4:
+                                    if sel_col != "None":
+                                        disp_col = df_redu[sel_col].astype("string").fillna("<NA>")
+                                        value_options = sorted(disp_col.unique().tolist())
+                                        sel_vals = st.multiselect(
+                                            "Value(s)",
+                                            value_options,
+                                            key=f"{name}_redu_selvals",
                                         )
+                                        disp = df_redu[sel_col].astype("string").fillna("<NA>")
+                                        dropdown_selected = [i for i, ok in enumerate(disp.isin(sel_vals).to_numpy()) if ok]
                                     else:
-                                        st.warning("No rows selected!")
-                                    st.rerun()
+                                        st.multiselect("Value(s)", [], key=f"{name}_redu_selvals_disabled", disabled=True)
 
-                            with btn_col2:
-                                if st.button("Keep only selected rows", key=f"{name}_redu_keep"):
-                                    if selected:
-                                        st.session_state.raw_results[name]["redu"] = (
-                                            df_redu.iloc[selected].reset_index(drop=True)
-                                        )
-                                    else:
-                                        st.warning("No rows selected!")
-                                    st.rerun()
+                                # --- FINAL SELECTION ---
+                                use_dropdown = (sel_col != "None" and bool(sel_vals))  
+                                selected = dropdown_selected if use_dropdown else ui_selected
+
+                                btn_col1, btn_col2, _ = st.columns([2,2, 6])
+
+                                # buttons for selected rows  
+                                with btn_col1:
+                                    if st.button("Remove selected rows", key=f"{name}_redu_remove"):
+                                        if selected:
+                                            st.session_state.raw_results[name]["redu"] = (
+                                                df_redu.drop(df_redu.index[selected]).reset_index(drop=True)
+                                            )
+                                        else:
+                                            st.warning("No rows selected!")
+                                        st.rerun()
+
+                                with btn_col2:
+                                    if st.button("Keep only selected rows", key=f"{name}_redu_keep"):
+                                        if selected:
+                                            st.session_state.raw_results[name]["redu"] = (
+                                                df_redu.iloc[selected].reset_index(drop=True)
+                                            )
+                                        else:
+                                            st.warning("No rows selected!")
+                                        st.rerun()
 
 
-                            # Make topic MASSTs per query
+                                # Make topic MASSTs per query
 
 
-                            st.markdown(f"##### Downstream tooling")
+                                st.markdown(f"##### Downstream tooling")
 
 
-                            masst_by_query_button, _ = st.columns([4, 6])
+                                masst_by_query_button, _ = st.columns([4, 6])
 
-                            with masst_by_query_button:
-                                if st.button(f"Populate DomainMASST for {name}", key=f"{name}_topic_masst"):
-                                    sid = st.session_state["_session_hash"]
+                                with masst_by_query_button:
+                                    if st.button(f"Populate DomainMASST for {name}", key=f"{name}_topic_masst"):
+                                        sid = st.session_state["_session_hash"]
 
-                                    # Prepare input
-                                    topic_masst_df = st.session_state.raw_results[name]["redu"].copy()
-                                    topic_masst_df = topic_masst_df[["USI", "Cosine", "Matching Peaks", "Delta Mass"]]
-                                    topic_masst_df["Status"] = 1
+                                        # Prepare input
+                                        topic_masst_df = st.session_state.raw_results[name]["redu"].copy()
+                                        topic_masst_df = topic_masst_df[["USI", "Cosine", "Matching Peaks", "Delta Mass"]]
+                                        topic_masst_df["Status"] = 1
 
-                                    input_path = f"{output_folder}/topicMasst_input_{name}.tsv"
-                                    topic_masst_df.to_csv(input_path, sep="\t", index=False, header=True)
+                                        input_path = f"{output_folder}/topicMasst_input_{name}.tsv"
+                                        topic_masst_df.to_csv(input_path, sep="\t", index=False, header=True)
 
-                                    # Run and report
-                                    with st.spinner("Running DomainMASSTs…"):
-                                        time.sleep(2)
-                                        returncode, stdout, stderr = run_topic_MASSTs(input_path, output_folder, name)
+                                        # Run and report
+                                        with st.spinner("Running DomainMASSTs…"):
+                                            time.sleep(2)
+                                            returncode, stdout, stderr = run_topic_MASSTs(input_path, output_folder, name)
 
-                                    if returncode == 0:
-                                        st.session_state["last_topic_masst_name"] = name
-                                        st.session_state["last_topic_masst_output_dir"] = output_folder
+                                        if returncode == 0:
+                                            st.session_state["last_topic_masst_name"] = name
+                                            st.session_state["last_topic_masst_output_dir"] = output_folder
 
-                                        st.success(f"DomainMASSTs for **{name}** completed.")
-                                        st.page_link(
-                                            "pages/domainMASST (under construction).py", 
-                                            label="➡️ Click for DomainMASST Results",
-                                        )
-                                    else:
-                                        st.error("DomainMASSTs failed. See logs below.")
-                                        with st.expander("Show logs"):
-                                            st.code(stdout or "", language="text")
-                                            st.code(stderr or "", language="text")
+                                            st.success(f"DomainMASSTs for **{name}** completed.")
+                                            st.page_link(
+                                                "pages/domainMASST (under construction).py", 
+                                                label="➡️ Click for DomainMASST Results",
+                                            )
+                                        else:
+                                            st.error("DomainMASSTs failed. See logs below.")
+                                            with st.expander("Show logs"):
+                                                st.code(stdout or "", language="text")
+                                                st.code(stderr or "", language="text")
+                            else:
+                                st.warning("No ReDU metadata matches found.")
+
+                redu_tables = {
+                    qname: pair["redu"]
+                    for qname, pair in st.session_state.raw_results.items()
+                    if isinstance(pair.get("redu"), pd.DataFrame)
+                }
+
+                
+                if len(redu_tables) > 1 and all(len(df) > 1 for df in redu_tables.values()):
+
+                    # helper: build a unified MRI key
+                    def _mri_key(df: pd.DataFrame) -> pd.Series:
+                        if "mri" in df.columns:
+                            return df["mri"].astype(str)
+                        elif "mri_id_int" in df.columns:
+                            return df["mri_id_int"].astype(str)
                         else:
-                            st.warning("No ReDU metadata matches found.")
+                            # no usable key → empty
+                            return pd.Series([], dtype=str)
 
-            redu_tables = {
-                qname: pair["redu"]
-                for qname, pair in st.session_state.raw_results.items()
-                if isinstance(pair.get("redu"), pd.DataFrame)
-            }
+                    masst_by_query_button, message_space_masst_by_query = st.columns([4,4]) 
 
-            
-            if len(redu_tables) > 1 and all(len(df) > 1 for df in redu_tables.values()):
+                    with masst_by_query_button:
+                        if st.button(f"Populate DomainMASST with Molecule Co-occurrence", key=f"intersection_topic_masst"):
 
-                # helper: build a unified MRI key
-                def _mri_key(df: pd.DataFrame) -> pd.Series:
-                    if "mri" in df.columns:
-                        return df["mri"].astype(str)
-                    elif "mri_id_int" in df.columns:
-                        return df["mri_id_int"].astype(str)
-                    else:
-                        # no usable key → empty
-                        return pd.Series([], dtype=str)
+                            # intersection of MRIs across all ReDU tables
+                            mri_sets = [set(_mri_key(df).dropna().unique()) for df in redu_tables.values()]
+                            common_mris = set.intersection(*mri_sets) if mri_sets else set()
 
-                masst_by_query_button, message_space_masst_by_query = st.columns([4,4]) 
+                            if common_mris:
+                                # keep only rows whose MRI is present in ALL tables
+                                filtered_frames = []
+                                for df in redu_tables.values():
+                                    dfx = df.copy()
 
-                with masst_by_query_button:
-                    if st.button(f"Populate DomainMASST with Molecule Co-occurrence", key=f"intersection_topic_masst"):
+                                    # unify cosine column name
+                                    if "Cosine" not in dfx.columns and "cosine" in dfx.columns:
+                                        dfx = dfx.rename(columns={"cosine": "Cosine"})
 
-                        # intersection of MRIs across all ReDU tables
-                        mri_sets = [set(_mri_key(df).dropna().unique()) for df in redu_tables.values()]
-                        common_mris = set.intersection(*mri_sets) if mri_sets else set()
-
-                        if common_mris:
-                            # keep only rows whose MRI is present in ALL tables
-                            filtered_frames = []
-                            for df in redu_tables.values():
-                                dfx = df.copy()
-
-                                # unify cosine column name
-                                if "Cosine" not in dfx.columns and "cosine" in dfx.columns:
-                                    dfx = dfx.rename(columns={"cosine": "Cosine"})
-
-                                # create standardized key column
-                                if "mri" in dfx.columns:
-                                    dfx["mri_key"] = dfx["mri"].astype(str)
-                                elif "mri_id_int" in dfx.columns:
-                                    dfx["mri_key"] = dfx["mri_id_int"].astype(str)
-                                else:
-                                    continue
-
-                                filtered_frames.append(dfx[dfx["mri_key"].isin(common_mris)])
-
-                            if filtered_frames:
-                                cooccurrence_df = pd.concat(filtered_frames, ignore_index=True)
-
-                                # pick one row per MRI with highest Cosine
-                                cos_series = pd.to_numeric(cooccurrence_df.get("Cosine", pd.Series([-1] * len(cooccurrence_df))), errors="coerce").fillna(-1)
-                                cooccurrence_df["__cos_num"] = cos_series
-
-                                idxmax = cooccurrence_df.groupby("mri_key")["__cos_num"].idxmax()
-                                cooccurrence_df = cooccurrence_df.loc[idxmax].drop(columns="__cos_num").reset_index(drop=True)
-
-                                # optional: sort by Cosine desc if present
-                                if "Cosine" in cooccurrence_df.columns:
-                                    topic_masst_df = cooccurrence_df.sort_values("Cosine", ascending=False, na_position="last")
-                                    sid = st.session_state["_session_hash"]
-
-                                    # save only USI column without header
-                                    topic_masst_df = topic_masst_df[["USI", "Cosine", "Matching Peaks", "Delta Mass"]].copy()
-                                    topic_masst_df['Status'] = 1
-                                    
-                                    # write the file
-                                    topic_masst_df.to_csv(f"{output_folder}/domainMasst_input_moleculeIntersection.tsv", sep="\t", index=False, header=True)
-
-                                    with st.spinner("Running DomainMASSTs…"): 
-                                        returncode, stdout, stderr = run_topic_MASSTs(f"{output_folder}/domainMasst_input_moleculeIntersection.tsv", output_folder, "moleculeIntersection")
-
-                                    if returncode == 0:
-                                        st.session_state["last_topic_masst_name"] = name
-                                        st.session_state["last_topic_masst_output_dir"] = output_folder
-
-                                        st.success(f"DomainMASSTs for Molecule Intersection completed.")
-                                        st.page_link(
-                                            "pages/domainMASST.py", 
-                                            label="➡️ Click for DomainMASST Results",
-                                        )
+                                    # create standardized key column
+                                    if "mri" in dfx.columns:
+                                        dfx["mri_key"] = dfx["mri"].astype(str)
+                                    elif "mri_id_int" in dfx.columns:
+                                        dfx["mri_key"] = dfx["mri_id_int"].astype(str)
                                     else:
-                                        st.error("DomainMASSTs failed. See logs below.")
-                                        with st.expander("Show logs"):
-                                            st.code(stdout or "", language="text")
-                                            st.code(stderr or "", language="text")
-                    
+                                        continue
+
+                                    filtered_frames.append(dfx[dfx["mri_key"].isin(common_mris)])
+
+                                if filtered_frames:
+                                    cooccurrence_df = pd.concat(filtered_frames, ignore_index=True)
+
+                                    # pick one row per MRI with highest Cosine
+                                    cos_series = pd.to_numeric(cooccurrence_df.get("Cosine", pd.Series([-1] * len(cooccurrence_df))), errors="coerce").fillna(-1)
+                                    cooccurrence_df["__cos_num"] = cos_series
+
+                                    idxmax = cooccurrence_df.groupby("mri_key")["__cos_num"].idxmax()
+                                    cooccurrence_df = cooccurrence_df.loc[idxmax].drop(columns="__cos_num").reset_index(drop=True)
+
+                                    # optional: sort by Cosine desc if present
+                                    if "Cosine" in cooccurrence_df.columns:
+                                        topic_masst_df = cooccurrence_df.sort_values("Cosine", ascending=False, na_position="last")
+                                        sid = st.session_state["_session_hash"]
+
+                                        # save only USI column without header
+                                        topic_masst_df = topic_masst_df[["USI", "Cosine", "Matching Peaks", "Delta Mass"]].copy()
+                                        topic_masst_df['Status'] = 1
+                                        
+                                        # write the file
+                                        topic_masst_df.to_csv(f"{output_folder}/domainMasst_input_moleculeIntersection.tsv", sep="\t", index=False, header=True)
+
+                                        with st.spinner("Running DomainMASSTs…"): 
+                                            returncode, stdout, stderr = run_topic_MASSTs(f"{output_folder}/domainMasst_input_moleculeIntersection.tsv", output_folder, "moleculeIntersection")
+
+                                        if returncode == 0:
+                                            st.session_state["last_topic_masst_name"] = name
+                                            st.session_state["last_topic_masst_output_dir"] = output_folder
+
+                                            st.success(f"DomainMASSTs for Molecule Intersection completed.")
+                                            st.page_link(
+                                                "pages/domainMASST.py", 
+                                                label="➡️ Click for DomainMASST Results",
+                                            )
+                                        else:
+                                            st.error("DomainMASSTs failed. See logs below.")
+                                            with st.expander("Show logs"):
+                                                st.code(stdout or "", language="text")
+                                                st.code(stderr or "", language="text")
+                        
+            else:
+                st.warning("No raw data matches found. Please try a different query structure or adjust your search parameters.")
         else:
-            st.warning("No raw data matches found. Please try a different query structure or adjust your search parameters.")
-    else:
-        st.markdown("")
+            st.markdown("")
+raw_data_search_panel()
