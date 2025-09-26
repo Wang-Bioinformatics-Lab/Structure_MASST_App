@@ -1706,4 +1706,4 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                 st.warning("No raw data matches found. Please try a different query structure or adjust your search parameters.")
         else:
             st.markdown("")
-raw_data_search_panel()
+    raw_data_search_panel()
