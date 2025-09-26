@@ -1,4 +1,4 @@
-from rdkit import Chem, DataStructs
+from rdkit import Chem
 from tqdm import tqdm
 from rdkit.Chem import rdMolDescriptors, rdFingerprintGenerator, rdmolops, DataStructs
 import pandas as pd
@@ -7,6 +7,9 @@ from formula_validation.Formula import Formula
 import argparse
 import numpy as np
 from rdkit.Chem.MolStandardize import rdMolStandardize
+import base64
+import math
+from rdkit.DataStructs.cDataStructs import ExplicitBitVect
 
 def tanimoto_match_using_stored_morgan(df, target_mol, tanimoto_threshold: float):
     """
@@ -180,56 +183,30 @@ def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='o
         # Perform exact match based on InChIKey
         df_matched = df[df['inchikey_first_block'] == target_inchi_key]
     elif match_type == 'substructure':
-        # Perform substructure matching
-        # unique_smiles = df.groupby('inchikey_first_block')['Smiles'].first().dropna().reset_index()
-        # unique_smiles = unique_smiles['Smiles'].dropna().unique()
-
-        # smiles_to_mol = {smiles: Chem.MolFromSmiles(smiles) for smiles in unique_smiles if Chem.MolFromSmiles(smiles) is not None}
-
-        # matching_smiles = []
-        # for smiles, mol in tqdm(smiles_to_mol.items(), desc="Substructure Matching", total=len(smiles_to_mol)):
-        #     if mol.HasSubstructMatch(target_mol):
-        #         # Formula difference matching
-        #         if formula_base != 'any':
-        #             formula_candidate = rdMolDescriptors.CalcMolFormula(mol)
-        #             formula_candidate = Formula.formula_from_str(formula_candidate)
-
-        #             try:
-        #                 formula_diff_here = formula_candidate - formula_base
-        #             except:
-        #                 continue
-
-        #             diff_comparison = None
-        #             try:
-        #                 diff_comparison = formula_diff_here - element_diff
-        #             except:
-        #                 try:
-        #                     diff_comparison = element_diff - formula_diff_here
-        #                 except:
-        #                     diff_comparison = None
-
-        #             match_is = (diff_comparison is None) or (set(re.sub(r'\d', '', str(diff_comparison))) == {"H"})
-
-        #             if not match_is:
-        #                 continue
-
-        #         matching_smiles.append(smiles)
-
-        # df_matched = df[df['Smiles'].isin(matching_smiles)]
-
-        # Example with a phenol SMARTS
 
         # 1) Build query fingerprint once from your existing target_mol
         qfp = rdmolops.PatternFingerprint(target_mol, fpSize=2048)
 
         # 2) Prescreen via fingerprint subset (no false negatives)
         keep = []
-        for b in df['fp_pattern'].values:
-            if b is None:
-                keep.append(False)  # set to True if you want to fall back when fp missing
+        for raw in df["fp_pattern"].values:
+            if raw is None:
+                keep.append(False)
+                continue
+            # accept ExplicitBitVect or bytes/memoryview
+            if isinstance(raw, ExplicitBitVect):
+                bv = raw
+            elif isinstance(raw, (bytes, bytearray, memoryview)):
+                try:
+                    bv = DataStructs.CreateFromBinaryText(bytes(raw))
+                except Exception:
+                    keep.append(False)
+                    continue
             else:
-                tfp = DataStructs.CreateFromBinaryText(b)
-                keep.append(DataStructs.AllProbeBitsMatch(qfp, tfp))
+                keep.append(False)
+                continue
+
+            keep.append(DataStructs.AllProbeBitsMatch(qfp, bv))
 
         df_screened = df.loc[np.array(keep)]
         if df_screened.empty:
@@ -341,7 +318,6 @@ def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='o
 
     # Return the unique spectrum_ids
     return df_limited
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Match SMILES')

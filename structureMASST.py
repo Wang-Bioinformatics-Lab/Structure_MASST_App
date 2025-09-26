@@ -273,7 +273,12 @@ with col_smiles:
         key="smiles_input",  # gets auto-populated only if single-component
         placeholder="Enter SMILES or SMARTS",
         help="Enter a valid SMILES or SMARTS string. For SMARTS string creation, you can use third-party tools like SMARTSPlus https://smarts.plus/create"
-    )
+    )    
+    smiles_input = smiles_input.strip()
+    # Use effective SMILES (from editor if available) for type detection
+    effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
+    smiles_type = detect_smiles_or_smarts(effective_smiles)
+    
 
 with col_or2:
     st.markdown("<div style='text-align:center; margin-top:2.5em;'>or</div>", unsafe_allow_html=True)
@@ -404,8 +409,6 @@ if st.button("Get Available Spectra", icon=':material/search:'):
     if smiles_type == "smiles":
         effective_smiles = tautomerize_neutralize_smiles(effective_smiles)
     
-    st.write(f"Using SMILES: {effective_smiles}")
-
     with st.spinner("Finding spectra..."): 
         # Reset upstream & downstream state
         for key in [
@@ -931,7 +934,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
     ctrl1, ctrl2, _ = st.columns([1,1,7])
     with ctrl1:
-        do_search = st.button("Search Raw Data")
+        do_search = st.button("Search Raw Data", key="run_rawdata_search_button")
 
 
     # perform the raw data search

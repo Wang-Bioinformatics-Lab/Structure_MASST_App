@@ -16,6 +16,12 @@ from io import StringIO
 import sqlite3
 import re
 from typing import Iterable, Optional, Tuple
+from rdkit import Chem, DataStructs
+from rdkit.Chem import rdFingerprintGenerator
+from rdkit.DataStructs.cDataStructs import ExplicitBitVect
+import base64
+import math
+import json
 
 # ——— Shared helpers ———
 def _append_limit_offset(sql: str, limit: int, offset: int) -> str:
@@ -63,22 +69,81 @@ def _coerce_types_except_blobs(
 
     return df
 
+def _sql_mentions_any(sql: str, cols) -> bool:
+    if not cols: 
+        return False
+    pat = r"|".join(rf"\b{re.escape(c)}\b" for c in cols)
+    return re.search(pat, sql, flags=re.IGNORECASE) is not None
+
+_BLOB_JSON_KEY = "$base64"
+def _decode_datasette_blob_cell(v):
+    """
+    Datasette JSON returns blobs as {"$base64": true, "encoded": "..."}.
+    Locally we may see bytes/memoryview already. Return raw bytes or None.
+    """
+    if v is None:
+        return None
+    if isinstance(v, memoryview):
+        return v.tobytes()
+    if isinstance(v, (bytes, bytearray)):
+        return bytes(v)
+    if isinstance(v, dict) and v.get(_BLOB_JSON_KEY) and "encoded" in v:
+        try:
+            return base64.b64decode(v["encoded"])
+        except Exception:
+            return None
+    return None  # leave non-blob values alone; caller will keep them as str
+
 # --- existing public helpers (updated) ---------------------------------------
 def _fetch_csv(sql: str, api_endpoint: str, timeout: int,
                blob_cols: Optional[Iterable[str]] = ("fp_pattern","fp_morgan",),
                normalize_types: bool = True) -> pd.DataFrame:
     """
-    Fetch via HTTP CSV. Note: CSV generally cannot carry raw bytes safely.
-    If a blob column appears as text, we leave it as text (or try latin1 -> bytes),
-    but in most cases your API shouldn't include fp_pattern in CSV responses.
+    Fetch via HTTP.
+    - If SQL mentions any blob column, use Datasette JSON (_shape=array) and base64-decode blobs to bytes.
+    - Otherwise, use CSV exactly as before.
+    Keeps previous behavior: strings everywhere except for blob_cols, which are bytes.
     """
-    print(f"[API ] Querying with SQL: {sql}")
+    want_json = _sql_mentions_any(sql, blob_cols)
+
+    if want_json:
+        # JSON path (safe blob handling)
+        print(f"[API ] Querying (JSON) with SQL: {sql}")
+        resp = requests.get(
+            f"{api_endpoint}.json",
+            params={"sql": sql, "_shape": "array"},
+            headers={"Accept": "application/json"},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        rows = resp.json()  # list[dict]
+        df = pd.DataFrame(rows)
+        print(f"[API ] returned {len(df)} rows (json)")
+
+        # Decode only the blob columns we actually received
+        if blob_cols:
+            for c in blob_cols:
+                if c in df.columns:
+                    df[c] = df[c].map(_decode_datasette_blob_cell)
+
+        # Keep prior typing behavior for non-blob columns
+        if blob_cols:
+            df = _coerce_types_except_blobs(df, tuple(blob_cols), normalize_types=normalize_types)
+        else:
+            # no blobs; optional normalization across the board
+            if normalize_types:
+                df = df.convert_dtypes()
+
+        return df
+
+    # CSV path (unchanged)
+    print(f"[API ] Querying (CSV) with SQL: {sql}")
     resp = requests.get(f"{api_endpoint}.csv", params={"sql": sql, "_stream": "on"}, timeout=timeout)
     resp.raise_for_status()
     df = pd.read_csv(StringIO(resp.text), dtype=str)
-    print(f"[API ] returned {len(df)} rows")
+    print(f"[API ] returned {len(df)} rows (csv)")
 
-    # Try to coerce blob cols back to bytes if they appear
+    # Try to coerce types but preserve blobs (if any slipped through)
     if blob_cols:
         df = _coerce_types_except_blobs(df, tuple(blob_cols), normalize_types=normalize_types)
     return df
@@ -233,8 +298,49 @@ def _batched_fetch(template_sql: str,
         print("[BATCH] returned 0 rows")
         return pd.DataFrame()
 
-
+def _quote_for_sql_in(values):
+    """Quote a list of string values for SQL IN (...). Handles None and escapes single quotes."""
+    out = []
+    for v in values:
+        if v is None:
+            continue
+        s = str(v).replace("'", "''")
+        out.append(f"'{s}'")
+    return out
 # ——— Part 1: library lookup ———
+def _decode_datasette_blob_cell(v):
+    if v is None: return None
+    if isinstance(v, float) and math.isnan(v): return None
+    if isinstance(v, memoryview): return v.tobytes()
+    if isinstance(v, (bytes, bytearray)): return bytes(v)
+    if isinstance(v, dict) and v.get("$base64") and "encoded" in v:
+        try: return base64.b64decode(v["encoded"])
+        except Exception: return None
+    if isinstance(v, str) and v.strip().startswith("{") and '"$base64"' in v:
+        try:
+            d = json.loads(v)
+            if d.get("$base64") and "encoded" in d:
+                return base64.b64decode(d["encoded"])
+        except Exception:
+            return None
+    return None
+
+def _normalize_fp_columns(df: pd.DataFrame, cols):
+    for c in cols:
+        if c in df.columns:
+            df[c] = df[c].map(_decode_datasette_blob_cell)
+    return df
+
+def _fill_bytes_from_hex(df: pd.DataFrame, col: str):
+    hex_col = f"{col}_hex"
+    if hex_col in df.columns:
+        mask = df[col].isna() & df[hex_col].notna()
+        if mask.any():
+            df.loc[mask, col] = df.loc[mask, hex_col].apply(
+                lambda s: bytes.fromhex(s) if isinstance(s, str) and len(s) % 2 == 0 else None
+            )
+        # drop the helper column
+        df.drop(columns=[hex_col], inplace=True)
 
 def get_library_table(
     smiles: str,
@@ -289,41 +395,155 @@ def get_library_table(
 
         structure_type = detect_smiles_or_smarts(smiles)
 
+        # Pass A — only one representative per molecule (block)
         fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
-        lib_sql_minimal = (
-            "SELECT spectrum_id_int, Smiles, InChIKey_smiles, fp_pattern, fp_morgan, fp_morgan_popcnt FROM library_table "
-            "WHERE ppmBetweenExpAndThMass <= 20 "
-            "AND (msMassAnalyzer NOT IN ('quadrupole', 'ion trap') OR msMassAnalyzer IS NULL) "
-            "AND Smiles IS NOT NULL "
-            "AND Smiles != '' "
-            "AND Smiles != 'NaN'"
+
+        if searchtype == "tanimoto":
+            fp_blob_cols = ["fp_morgan"]
+            fp_predicate = "AND l.fp_morgan IS NOT NULL AND length(l.fp_morgan) > 0"
+            # include hex fallback
+            fp_select = "l.fp_morgan, l.fp_morgan_popcnt, hex(l.fp_morgan) AS fp_morgan_hex"
+        else:
+            fp_blob_cols = ["fp_pattern"]
+            fp_predicate = "AND l.fp_pattern IS NOT NULL AND length(l.fp_pattern) > 0"
+            # include hex fallback
+            fp_select = "l.fp_pattern, hex(l.fp_pattern) AS fp_pattern_hex"
+
+        rep_sql = f"""
+        WITH reps AS (
+        SELECT MIN(l.spectrum_id_int) AS rep_id
+        FROM library_table AS l
+        WHERE l.ppmBetweenExpAndThMass <= 20
+            AND (l.msMassAnalyzer NOT IN ('quadrupole', 'ion trap') OR l.msMassAnalyzer IS NULL)
+            AND l.InChIKey_smiles_firstBlock IS NOT NULL
+            AND l.InChIKey_smiles_firstBlock != ''
+            AND l.InChIKey_smiles_firstBlock != 'NaN'
+            {fp_predicate}
+        GROUP BY l.InChIKey_smiles_firstBlock
+        )
+        SELECT l.spectrum_id_int,
+            l.InChIKey_smiles,
+            l.InChIKey_smiles_firstBlock,
+            l.Smiles,
+            {fp_select}
+        FROM library_table AS l
+        JOIN reps r ON l.spectrum_id_int = r.rep_id
+        """
+        df_reps = fetch(rep_sql)
+
+        # decode base64 blobs (Datasette JSON), no-op for local bytes
+        _normalize_fp_columns(df_reps, fp_blob_cols)
+
+        # if still None (as your debug shows), backfill bytes from hex()
+        for c in fp_blob_cols:
+            _fill_bytes_from_hex(df_reps, c)
+
+        # ensure popcnt numeric for tanimoto
+        if "fp_morgan_popcnt" in df_reps.columns:
+            df_reps["fp_morgan_popcnt"] = pd.to_numeric(df_reps["fp_morgan_popcnt"], errors="coerce")
+
+        # Run your existing matcher ONLY on the reps
+        library_df_minimal = fetch_and_match_smiles(
+            df_reps,
+            smiles,
+            match_type=searchtype,
+            smiles_name='only',
+            smiles_type=structure_type,
+            formula_base='any',
+            element_diff='any',
+            max_by_grp=None,
+            max_overall=None,
+            tanimoto_threshold=tanimoto_threshold
         )
 
-        library_df_minimal = fetch(lib_sql_minimal)
-
-        library_df_minimal = fetch_and_match_smiles(library_df_minimal, smiles, match_type=searchtype, smiles_name='only',
-                                             smiles_type=structure_type, formula_base='any', element_diff='any',
-                                             max_by_grp=None, max_overall=None, tanimoto_threshold=tanimoto_threshold)
-        
-
-        # If no matches, return early
+        # Early exit if nothing matched
         if isinstance(library_df_minimal, list) or library_df_minimal.empty:
             print("No matching structures found in the library.")
             df_final = pd.DataFrame()
             return df_final
-        
-        matched_ids = library_df_minimal['spectrum_id_int'].dropna().astype(int).unique().tolist()
 
-        lib_sql_template = (
-            "SELECT spectrum_id_int, spectrum_id, Compound_Name, Ion_Mode, collision_energy, Precursor_MZ, Adduct, "
-            "msManufacturer, msMassAnalyzer, GNPS_library_membership, representative_spectrum_int "
-            "FROM library_table WHERE spectrum_id_int IN ({ids})"
+        matched_blocks = (
+            library_df_minimal['InChIKey_smiles_firstBlock']
+            .dropna().astype(str).unique().tolist()
+        )
+        if not matched_blocks:
+            df_final = pd.DataFrame()
+            return df_final
+
+        # IMPORTANT: quote string keys for IN (...)
+        matched_blocks_quoted = _quote_for_sql_in(matched_blocks)
+
+        block_ids_sql_tmpl = """
+        SELECT spectrum_id_int
+        FROM library_table
+        WHERE InChIKey_smiles_firstBlock IN ({ids})
+        AND ppmBetweenExpAndThMass <= 20
+        AND (msMassAnalyzer NOT IN ('quadrupole', 'ion trap') OR msMassAnalyzer IS NULL)
+        AND Smiles IS NOT NULL
+        AND Smiles != ''
+        AND Smiles != 'NaN'
+        """
+
+        all_ids_df = _batched_fetch(
+            block_ids_sql_tmpl,
+            matched_blocks_quoted,   # <-- pass QUOTED values here
+            fetch,
+            chunk_size=30,
+            paginate=True,
+            page_size=500000,
+            max_pages=None
         )
 
-        df_metadata = _batched_fetch(lib_sql_template, matched_ids, fetch, chunk_size=500)
 
-        # join and return
-        df_final = library_df_minimal.merge(df_metadata, on='spectrum_id_int', how='left')
+        if all_ids_df is None or all_ids_df.empty:
+            df_final = pd.DataFrame()
+            return df_final
+
+        all_spectrum_ids = all_ids_df['spectrum_id_int'].dropna().astype(int).unique().tolist()
+        if not all_spectrum_ids:
+            df_final = pd.DataFrame()
+            return df_final
+
+        # Pull minimal columns for ALL matched spectra
+        all_min_sql_tmpl = """
+        SELECT spectrum_id_int, InChIKey_smiles, InChIKey_smiles_firstBlock
+        FROM library_table
+        WHERE spectrum_id_int IN ({ids})
+        """
+
+        df_all_minimal = _batched_fetch(
+            all_min_sql_tmpl,
+            all_spectrum_ids,
+            fetch,
+            chunk_size=500,
+            paginate=True,
+            page_size=500000,
+            max_pages=None
+        )
+
+        # Pull metadata for ALL matched spectra
+        lib_meta_sql_tmpl = """
+        SELECT spectrum_id_int, spectrum_id, Compound_Name, Ion_Mode, collision_energy,
+            Precursor_MZ, Adduct, msManufacturer, msMassAnalyzer, Smiles, GNPS_library_membership,
+            representative_spectrum_int
+        FROM library_table
+        WHERE spectrum_id_int IN ({ids})
+        """
+
+        df_metadata = _batched_fetch(
+            lib_meta_sql_tmpl,
+            all_spectrum_ids,
+            fetch,
+            chunk_size=500,
+            paginate=True,
+            page_size=500000,
+            max_pages=None
+        )
+
+        # Join minimal + metadata. If you want to carry any scores from Pass A to every spectrum of the same block,
+        # first merge df_all_minimal with library_df_minimal on 'InChIKey_smiles_firstBlock'.
+        df_final = df_all_minimal.merge(df_metadata, on='spectrum_id_int', how='left')
+
 
         if 'collision_energy' in df_final.columns:
             df_final['collision_energy'] = df_final['collision_energy'].apply(lambda x: str(x) if pd.notna(x) else 'unknown')
@@ -338,8 +558,8 @@ def get_library_table(
         for col in ['fp_pattern', 'fp_morgan', 'fp_morgan_popcnt']:
             if col in df_final.columns:
                 df_final.drop(columns=[col], inplace=True)
-
-
+        
+        df_final.rename(columns={'InChIKey_smiles_firstBlock': 'inchikey_first_block'}, inplace=True)
         df_final.rename(columns={'spectrum_id': 'query_spectrum_id'}, inplace=True)
 
 
@@ -348,7 +568,6 @@ def get_library_table(
             df_final[col] = pd.to_numeric(df_final[col], errors="coerce")
 
     return df_final
-
 
 # ——— Part 2: MASST + ReDU lookup ———
 
@@ -376,17 +595,6 @@ def get_masst_and_redu_tables(
     print(f"[STEP 2] masst_table for {len(sids)} spectrum_id_ints")
     if not sids:
         return pd.DataFrame(), pd.DataFrame()
-    # masst_sql_tmpl = (
-    #     "SELECT * FROM ("
-    #     "  SELECT *, "
-    #     "         ROW_NUMBER() OVER (PARTITION BY mri_id_int ORDER BY cosine DESC) AS rn "
-    #     "  FROM masst_table "
-    #     "  WHERE spectrum_id_int IN ({ids}) "
-    #     f"    AND cosine >= {cosine_threshold} "
-    #     f"    AND matching_peaks >= {matching_peaks}"
-    #     ") t "
-    #     "WHERE rn = 1"
-    # )
 
     masst_sql_tmpl = (
         "WITH filtered AS ("
@@ -426,19 +634,6 @@ def get_masst_and_redu_tables(
 
     #adjust datatypes
     masst_df['unique_spectra_in_mri'] = masst_df['unique_spectra_in_mri'].astype('int64')
-
-    # # — add MRI strings —
-    # mids = masst_df['mri_id_int'].dropna().unique().tolist()
-    # if mids:
-    #     print(f"[STEP 3a] fetching mri strings for {len(mids)} mri_id_ints")
-    #     mri_sql   = "SELECT mri_id_int, mri FROM mri_table WHERE mri_id_int IN ({ids})"
-    #     mri_map   = _batched_fetch(mri_sql, mids, fetch, 500)
-    #     if not mri_map.empty:
-    #         masst_df = masst_df.merge(mri_map, on='mri_id_int', how='left')
-    #     else:
-    #         masst_df['mri'] = None
-    # else:
-    #     masst_df['mri'] = None
 
     # — add spectrum_id strings —
     print(f"[STEP 3b] merging spectrum_id for {len(sids)} spectrum_id_ints")
