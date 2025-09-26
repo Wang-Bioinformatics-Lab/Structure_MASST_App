@@ -307,6 +307,7 @@ def _quote_for_sql_in(values):
         s = str(v).replace("'", "''")
         out.append(f"'{s}'")
     return out
+
 # ——— Part 1: library lookup ———
 def _decode_datasette_blob_cell(v):
     if v is None: return None
@@ -360,11 +361,21 @@ def get_library_table(
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
             raise ValueError(f"Invalid SMILES: {smiles}")
-        prefix = inchi.MolToInchiKey(mol).split('-')[0]
+    
 
         fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
+        sql = "SELECT name FROM pragma_table_info('library_table')"
+        library_columns = fetch(sql)
+        library_columns_list = library_columns['name'].tolist()
+        columns_to_exclude = ['fp_pattern', 'fp_morgan', 'fp_morgan_popcnt', 'fp_popcnt']
+
+        library_column_list = [c for c in library_columns_list if c not in columns_to_exclude]
+
+        #Exclude blob columns from the select statement
+        prefix = inchi.MolToInchiKey(mol).split('-')[0]
+        fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
         lib_sql = (
-            "SELECT * FROM library_table "
+            "SELECT " + ", ".join(library_column_list) + " FROM library_table "
             f"WHERE InChIKey_smiles_firstBlock = '{prefix}' "
             "AND ppmBetweenExpAndThMass <= 20 "
             "AND (msMassAnalyzer NOT IN ('quadrupole', 'ion trap') OR msMassAnalyzer IS NULL)"
