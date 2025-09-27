@@ -237,9 +237,11 @@ with col_name:
     suggestions = st.session_state["name_suggestions"]
     if suggestions:
         def _on_choice_change():
-            _resolve_name_to_smiles(st.session_state["name_choice"])
+            _resolve_name_to_smiles(st.session_state.get("name_choice"))
             st.session_state["structure_editor_open"] = False
-            st.session_state["new_smiles"] = smiles_input
+            # mirror whatever resolve put into the text box; fall back to empty
+            st.session_state["new_smiles"] = st.session_state.get("smiles_input", "")
+
 
         st.selectbox(
             "Suggestions",
