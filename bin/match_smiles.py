@@ -119,10 +119,11 @@ def tautomerize_smiles(smiles):
     del mol
     return standard_smiles
 
-def detect_smiles_or_smarts(s):
+def detect_smiles_or_smarts(s: str) -> str:
     """
     Heuristically detect whether a string is a SMILES, SMARTS, or Invalid.
     """
+
     mol_smiles = Chem.MolFromSmiles(s)
     mol_smarts = Chem.MolFromSmarts(s)
 

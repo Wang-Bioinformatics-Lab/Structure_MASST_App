@@ -213,7 +213,7 @@ def retrieve_raw_data_matches(
     # add Smiles column from library_subset to redu_enriched
     if 'Smiles' in library_subset.columns:
         redu_enriched = redu_enriched.merge(
-            library_subset[['query_spectrum_id', 'Smiles', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'similar_library_spectra', 'inchikey_first_block']],
+            library_subset[['query_spectrum_id', 'Smiles', 'Adduct', 'Precursor_MZ', 'similar_library_spectra', 'inchikey_first_block']],
             left_on='query_spectrum_id',
             right_on='query_spectrum_id',
             how='left'

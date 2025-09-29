@@ -7,6 +7,7 @@ st.set_page_config(
     layout="wide",
     page_icon="🔎",
 )
+st.logo("logo.png", icon_image="logo.png")
 
 
 from streamlit.components.v1 import html
@@ -24,6 +25,7 @@ from bin.plotting import raw_data_sankey, export_hits_map
 from bin.linkouts import build_dashboard_eic_url, build_spectraresolver_link
 from bin.smarts_api import query_smarts
 from bin.streamlit_fragment_domainMASST import domainmasst_fragment, domainmasst_intersection_fragment
+from bin.streamlit_fragment_LifeMASST import lifemasst_fragment
 import matplotlib.pyplot as plt
 import matplotlib
 from collections import defaultdict
@@ -95,7 +97,6 @@ html('<script async defer data-website-id="<your_website_id>" src="https://analy
 
 
 
-st.logo("logo.png", icon_image="logo.png")
 
 st.markdown("""
 <style>
@@ -325,7 +326,14 @@ if smiles_input:
     # Use effective SMILES (from editor if available) for type detection
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
     smiles_type = detect_smiles_or_smarts(effective_smiles)
-    
+
+    df_input = pd.DataFrame(
+        {
+            "smiles": [effective_smiles],
+            "name": ["Input Query"],
+            "type": [smiles_type]
+        }
+    )
     if smiles_type == "smiles":
         edit_button = st.button("Edit Structure", icon=":material/edit:")
         if edit_button:
@@ -405,6 +413,7 @@ if st.button("Get Available Spectra", icon=':material/search:'):
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
     if smiles_type == "smiles":
         effective_smiles = tautomerize_neutralize_smiles(effective_smiles)
+
     
     with st.spinner("Finding spectra..."): 
         # Reset upstream & downstream state
@@ -413,7 +422,8 @@ if st.button("Get Available Spectra", icon=':material/search:'):
             "df_library_conflicts",
             "grouped_results",
             "raw_results",
-            "molecule_overview"
+            "molecule_overview",
+            "query_table"
         ]:
             st.session_state.pop(key, None)
 
@@ -422,20 +432,57 @@ if st.button("Get Available Spectra", icon=':material/search:'):
         st.session_state.df_library_conflicts = None
         st.session_state.grouped_results = {}
         st.session_state.molecule_overview = {}
+        st.session_state.query_table = {}
 
         # organize input structure queries
         smiles_list = []
         if smiles_input:
             # Use new_smiles from structure editor if available, otherwise use original input
             effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
-            
+
+            smiles_type = detect_smiles_or_smarts(effective_smiles)
+
+            df_input = pd.DataFrame(
+                {
+                    "smiles": [effective_smiles],
+                    "name": ["Input Query"],
+                    "type": [smiles_type],
+                    "searchtype": [searchtype_option],
+                }
+            )
+
+            st.session_state.query_table = df_input
+
             smiles_list = [effective_smiles]
             name_list = ['Input_query']
+            searchtype_list = [searchtype_option]
         elif uploaded_file is not None:
-            df_in = pd.read_csv(uploaded_file)
-            if "smiles" in df_in.columns and "name" in df_in.columns:
-                smiles_list = df_in["smiles"].dropna().tolist()
-                name_list = df_in["name"].dropna().tolist()
+            df_input = pd.read_csv(uploaded_file)
+            if "smiles" in df_input.columns and "name" in df_input.columns:
+                
+                # drop rows with na in either column
+                df_input = df_input.dropna(subset=["smiles", "name"])
+
+                # add column with type detection
+                df_input["type"] = df_input["smiles"].apply(detect_smiles_or_smarts)
+
+                # harmonize smiles if type is smiles (tautomerize + neutralize)
+                df_input["smiles"] = df_input.apply(
+                    lambda row: tautomerize_neutralize_smiles(row["smiles"]) 
+                    if row["type"] == "smiles" else row["smiles"],
+                    axis=1)
+
+
+                # for smiles set to exact match, for smarts set to substructure match
+                if "searchtype" not in df_input.columns:
+                    df_input["searchtype"] = df_input["type"].apply(lambda x: "exact" if x == "smiles" else "substructure")
+
+                print(df_input)
+                st.session_state.query_table = df_input
+
+                smiles_list = df_input["smiles"].dropna().tolist()
+                name_list = df_input["name"].dropna().tolist()
+                searchtype_list = df_input["searchtype"].dropna().tolist()
             else:
                 st.warning("CSV must contain a 'smiles' and 'name' column.")
                 st.stop()
@@ -446,12 +493,12 @@ if st.button("Get Available Spectra", icon=':material/search:'):
         # process each input structure query separately to retrieve spectra
         grouped_results = defaultdict(dict)
         molecule_overview = defaultdict(dict)
-        for smi, name in zip(smiles_list, name_list):
+        for smi, name, searchtype in zip(smiles_list, name_list, searchtype_list):
             try:
                 df_library_structurematch = get_library_table(
                     smiles=smi,
-                    searchtype=searchtype_option,
-                    tanimoto_threshold=tanimoto_cutoff if searchtype_option == "tanimoto" else None,
+                    searchtype=searchtype,
+                    tanimoto_threshold=tanimoto_cutoff if searchtype == "tanimoto" else None,
                     sqlite_path=config.PATH_TO_SQLITE,
                     api_endpoint=config.MASSTRECORDS_ENDPOINT,
                     timeout=config.MASSTRECORDS_TIMEOUT
@@ -1001,10 +1048,17 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         if 'mri_id_int' in redu_df.columns:
                             # add query spectrum ID and scan ID to redu_df //could potentially move this into get_masst_and_redu_tables
                             redu_df = redu_df.merge(
-                                df_masst_unique[["mri_id_int", "scan_id", "query_spectrum_id", 'matching_peaks', 'cosine', 'Adduct', 'Compound_Name', 'Precursor_MZ', 'inchikey_first_block', 'similar_library_spectra', 'unique_spectra_in_mri']],
+                                df_masst_unique[["mri_id_int", "scan_id", "query_spectrum_id", 'matching_peaks', 'cosine', 'Adduct', 'Precursor_MZ', 'inchikey_first_block', 'similar_library_spectra', 'unique_spectra_in_mri']],
                                 on="mri_id_int",
                                 how="left"
                                 )
+                            
+                            # add Compound_Name from molecule_overview[name]
+                            redu_df = redu_df.merge(
+                                st.session_state.molecule_overview[name][["inchikey_first_block", "Compound_Name"]],
+                                on="inchikey_first_block",
+                                how="left"
+                            )
 
                             redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'] + redu_df['unique_spectra_in_mri'] - 2
 
@@ -1056,6 +1110,8 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 ),
                                 axis=1
                             )
+                            
+                            redu_df["query_name"] = name
 
                         new_results[name] = {"masst": masst_df, "redu": redu_df}
                     
@@ -1151,6 +1207,15 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 ),
                                 axis=1
                             )
+
+                            redu_df = redu_df.merge(
+                                st.session_state.molecule_overview[name][["inchikey_first_block", "Compound_Name"]],
+                                on="inchikey_first_block",
+                                how="left"
+                            )
+
+                            redu_df["query_name"] = name
+
             
                         new_results[name] = {"masst": masst_df, "redu": redu_df}
 
@@ -1571,9 +1636,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
 
                                 # Make topic MASSTs per query
-
-
-                                st.markdown(f"##### Downstream tooling")
+                                st.markdown(f"##### Downstream tooling for **{name}**")
 
 
                                 masst_by_query_button, _ = st.columns([4, 6])
@@ -1593,16 +1656,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                 
                 if len(redu_tables) > 1 and all(len(df) > 1 for df in redu_tables.values()):
 
-                    # helper: build a unified MRI key
-                    def _mri_key(df: pd.DataFrame) -> pd.Series:
-                        if "mri" in df.columns:
-                            return df["mri"].astype(str)
-                        elif "mri_id_int" in df.columns:
-                            return df["mri_id_int"].astype(str)
-                        else:
-                            # no usable key → empty
-                            return pd.Series([], dtype=str)
-
+                    st.markdown(f"##### Downstream tooling for all molecules")
                     masst_by_query_button, message_space_masst_by_query = st.columns([4,4]) 
 
                     with masst_by_query_button:
@@ -1613,7 +1667,16 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             button_label="Populate DomainMASST with Molecule Co-occurrence",
                             job_name="moleculeIntersection",
                         )
-                        
+
+                    life_button, message_space_life = st.columns([4,4])
+
+                    with life_button:
+                        lifemasst_fragment(
+                            input_file=st.session_state.query_table,
+                            structureMASST_op_folder=output_folder,
+                            redu_tables=redu_tables
+                        )
+
             else:
                 st.warning("No raw data matches found. Please try a different query structure or adjust your search parameters.")
         else:
