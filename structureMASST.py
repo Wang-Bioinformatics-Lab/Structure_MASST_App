@@ -441,6 +441,8 @@ if st.button("Get Available Spectra", icon=':material/search:'):
             effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
 
             smiles_type = detect_smiles_or_smarts(effective_smiles)
+            if smiles_type == "smiles":
+                effective_smiles = tautomerize_neutralize_smiles(effective_smiles)
 
             df_input = pd.DataFrame(
                 {

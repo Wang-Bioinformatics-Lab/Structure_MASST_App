@@ -23,7 +23,11 @@ dependencies:
   - ete3
   - psycopg2              
   - black                
-  - pytest                
+  - pytest
+
+  # Nextflow & Java (for nextflow)
+  - openjdk=11  
+  - nextflow                
 
   # RDKit: prefer conda-forge build (stable & fast)
   - rdkit=2024.09.6
