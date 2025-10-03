@@ -34,12 +34,12 @@ def run_LifeMASST(input_tsv, output_folder, query_indicator):
     return proc.returncode, proc.stdout, proc.stderr
 
 @st.fragment
-def lifemasst_fragment(input_file: pd.DataFrame, structureMASST_op_folder: str, redu_tables: Dict[str, pd.DataFrame]):
+def lifemasst_fragment(input_file: pd.DataFrame, structureMASST_op_folder: str, redu_tables: Dict[str, pd.DataFrame], append: str = ""):
     """Self-contained UI + action to run LifeMASST for a single query `name`."""
 
     if st.button(
         f"Setup LifeMASST",
-        key="lifemasst_btn",
+        key="lifemasst_btn" + append,
     ):
         try:
             with st.spinner("Setting up LifeMASSTs…"):

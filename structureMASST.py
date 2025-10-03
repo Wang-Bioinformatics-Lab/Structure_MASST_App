@@ -330,7 +330,7 @@ if smiles_input:
     df_input = pd.DataFrame(
         {
             "smiles": [effective_smiles],
-            "name": ["Input Query"],
+            "name": ["Input_query"],
             "type": [smiles_type]
         }
     )
@@ -447,7 +447,7 @@ if st.button("Get Available Spectra", icon=':material/search:'):
             df_input = pd.DataFrame(
                 {
                     "smiles": [effective_smiles],
-                    "name": ["Input Query"],
+                    "name": ["Input_query"],
                     "type": [smiles_type],
                     "searchtype": [searchtype_option],
                 }
@@ -1646,6 +1646,28 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 with masst_by_query_button:
                                     df_redu_current = st.session_state.raw_results[name]["redu"]
                                     domainmasst_fragment(name=name, output_folder=output_folder, df_redu=df_redu_current)
+
+
+                                life_button, message_space_life = st.columns([4,4])
+
+                                pair = st.session_state.raw_results.get(name)
+                                if pair and isinstance(pair.get("redu"), pd.DataFrame):
+                                    redu_tables = {name: pair["redu"]}
+                                else:
+                                    redu_tables = {}
+
+
+                                with life_button:
+
+                                    ip_table = st.session_state.query_table
+                                    ip_table = ip_table[ip_table["name"].astype(str).str.strip() == name]
+
+                                    lifemasst_fragment(
+                                        input_file=ip_table,
+                                        structureMASST_op_folder=output_folder,
+                                        redu_tables=redu_tables,
+                                        append=f"_{name.replace(' ', '_')}"
+                                    )
                             else:
                                 st.warning("No ReDU metadata matches found.")
 
@@ -1670,9 +1692,9 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             job_name="moleculeIntersection",
                         )
 
-                    life_button, message_space_life = st.columns([4,4])
+                    life_button_all, message_space_life = st.columns([4,4])
 
-                    with life_button:
+                    with life_button_all:
                         lifemasst_fragment(
                             input_file=st.session_state.query_table,
                             structureMASST_op_folder=output_folder,
