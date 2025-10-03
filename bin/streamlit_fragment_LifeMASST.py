@@ -104,7 +104,7 @@ def lifemasst_fragment(input_file: pd.DataFrame, structureMASST_op_folder: str, 
                 st.success(f"LifeMASST setup completed.")
                 st.page_link(
                     "pages/lifeMASST (under construction).py",
-                    label="➡️ Click for LifeMASST Results",
+                    label="➡️ Click for LifeMASST Workspace",
                 )
         except subprocess.CalledProcessError as e:
             st.error("LifeMASST setup failed.")
