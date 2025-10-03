@@ -95,6 +95,9 @@ def lifemasst_fragment(input_file: pd.DataFrame, structureMASST_op_folder: str, 
                     if col.startswith("masstCounts_"):
                         merged_summary[col] = merged_summary[col].astype("Int64")
 
+                # IMPORTANT UNTIL FIXED IN REDU: remove OpenTreeOfLifeTaxonomyID ott prefix
+                merged_summary['OpenTreeOfLifeTaxonomyID'] = merged_summary['OpenTreeOfLifeTaxonomyID'].astype(str).str.replace('ott', '', regex=False)
+                merged_summary['OpenTreeOfLifeTaxonomyID'] = merged_summary['OpenTreeOfLifeTaxonomyID'].astype("Int64")
                 out_path = os.path.join(out_dir, f"lifemasst_input_summary.tsv")
                 merged_summary.to_csv(out_path, sep="\t", index=False)
 

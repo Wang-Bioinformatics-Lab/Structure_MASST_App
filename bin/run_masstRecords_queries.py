@@ -174,7 +174,7 @@ def _get_fetcher(sqlite_path: str, api_endpoint: str, timeout: int,
                  normalize_types: bool = True):
     """
     Returns a single-arg callable(sql) that fetches a DataFrame.
-    Keeps previous behavior (strings everywhere) but preserves bytes for blob_cols.
+    Uses SQLite if sqlite_path exists, otherwise HTTP API.
     """
     use_sqlite = bool(sqlite_path and os.path.isfile(sqlite_path))
     if use_sqlite:

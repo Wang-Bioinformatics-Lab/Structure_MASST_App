@@ -41,6 +41,7 @@ tree_nwk_files = [f for f in os.listdir(tree_directory) if f.endswith(".nwk")]
 tree_labels = {
     "labelled_supertree_redu_limited_upfront.nwk": "Open Tree of Life",
     "labelled_supertree.nwk": "Open Tree of Life (full)",
+    "upload": "Custom Uploaded Tree",
 }
 
 molecule_path_abs = os.path.abspath(molecule_path)
@@ -51,9 +52,8 @@ os.makedirs(lifemasst_folder, exist_ok=True)
 
 
 match_id_options = {
-    "ott_w_prefix": "OpenTreeOfLifeTaxonomyID ('ott<ID>')",
-    "ncbi_w_prefix": "NCBI Taxonomic ID ('ncbi<ID>')",
-    "ncbi": "NCBI Taxonomic ID ('<ID>')",
+    "ott": "OpenTreeOfLifeTaxonomyID",
+    "ncbi": "NCBI Taxonomic ID",
 }
 
 match_level_options = {
@@ -67,7 +67,7 @@ match_level_options = {
 }
 
 
-tree_selection, match_id_selection, match_level_selection, _ = st.columns([3,3,3,3])
+tree_selection, _, _, _ = st.columns([3,3,3,3])
 
 
 with tree_selection:
@@ -78,25 +78,71 @@ with tree_selection:
         index=0,
         help="Select the phylogenetic or taxonomic tree to use for LifeMASST analysis.",
     )
-    tree_path = os.path.join(tree_directory, tree_choice)
 
-with match_id_selection:
-    match_id = st.selectbox(
-        "Select a matching ID",
-        options=match_id_options.keys(),
-        format_func=lambda x: match_id_options[x],
-        index=2,
-        help="Select the taxonomic identifier used in your tree (can be OpenTreeOfLifeTaxonomyID with prefix or NCBI Taxonomic ID, with or without 'ncbi' prefix).",
-    )
+match_level_selection_masst, match_level_selection_wd, _, _ = st.columns([3,3,3,3])
 
-with match_level_selection:
-    match_level = st.selectbox(
-        "Select a matching level",
+with match_level_selection_masst:
+    match_level_masst = st.selectbox(
+        "Matching level for metabolomics raw data",
         options=match_level_options.keys(),
         format_func=lambda x: match_level_options[x],
         index=0,
         help="Select the taxonomic level to match your IDs to in the tree (exact ID, genus, class, order, family, phylum, kingdom).",
     )
+
+with match_level_selection_wd:
+    match_level_wd = st.selectbox(
+        "Matching level for wikidata molecule-organism records",
+        options=match_level_options.keys(),
+        format_func=lambda x: match_level_options[x],
+        index=0,
+        help="Select the taxonomic level to match your IDs to in the tree (exact ID, genus, class, order, family, phylum, kingdom).",
+    )
+if tree_choice != "upload":
+    tree_path = os.path.join(tree_directory, tree_choice)
+
+else:
+
+    tree_upload, match_id_selection, match_id_prefix, _ = st.columns([3,3,3,3])
+
+
+    with tree_upload:
+        uploaded_tree = st.file_uploader(
+            "Upload your own tree in Newick format (.nwk)",
+            type=["nwk"],
+            accept_multiple_files=False,
+            help="Upload a Newick formatted tree file. Ensure that the tip labels match the taxonomic IDs you will select.",
+        )
+        if uploaded_tree is not None:
+            tree_path = os.path.join(lifemasst_folder, "uploaded_tree.nwk")
+            with open(tree_path, "wb") as f:
+                f.write(uploaded_tree.getbuffer())
+        else:
+            st.warning("Please upload a tree file to proceed.")
+            st.stop()
+
+
+    with match_id_selection:
+        match_id = st.selectbox(
+            "Select a matching ID between your tree and metabolomics raw data",
+            options=match_id_options.keys(),
+            format_func=lambda x: match_id_options[x],
+            index=2,
+            help="Select the taxonomic identifier used in your tree (can be OpenTreeOfLifeTaxonomyID with prefix or NCBI Taxonomic ID, with or without 'ncbi' prefix).",
+        )
+
+    # make text input for prefix to id
+    with match_id_prefix:
+        id_prefix = st.text_input(
+            "If your tree uses prefixed IDs (e.g. 'ott12345' or 'ncbi12345'), enter the prefix here (e.g. 'ott' or 'ncbi'). Otherwise, leave blank.",
+            value="",
+            help="Enter the prefix used in your tree IDs, if any.",
+        )
+
+
+if tree_choice == "labelled_supertree_redu_limited_upfront.nwk":
+    match_id = "ott"
+    id_prefix = "ott"
 
 
 lifemasst_button, _ = st.columns([9,3])
@@ -116,6 +162,9 @@ with lifemasst_button:
                     "--structureMASST_input_file", structuremasst_path_abs,
                     "--tree_path", tree_path,
                     "--tax_id", match_id,
+                    "--tax_id_prefix", id_prefix,
+                    "--masst_matchLevel", match_level_masst,
+                    "--wikidata_matchLevel", match_level_wd,
                     "--output_folder", out_dir_abs],
                     check=True
                 )
