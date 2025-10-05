@@ -702,20 +702,6 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                     }
                     st.plotly_chart(fig, use_container_width=True, key=f"plot_{fig_id}", config=config_sankey_download)
 
-                    try:
-                        fig.write_image(
-                            f"{output_folder}/library_sankey_{name}.pdf", 
-                            format="pdf", 
-                            width=1240, 
-                            height=400, 
-                            scale=2
-                        )
-                    except RuntimeError as e:
-                        if "Kaleido requires Google Chrome to be installed" in str(e):
-                            print("⚠️ Skipping PDF export: Chrome not available for Kaleido.")
-                        else:
-                            raise
-
                 molecule_overview_df = st.session_state.molecule_overview[name]
 
                 if _RD_DRAW_AVAILABLE:
@@ -768,7 +754,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                 selected = table_mol.selection.rows
 
                 # show buttons with actions for selected molecules
-                col1_mol_level, col2_mol_level, _ = st.columns([2, 2, 6])
+                col1_mol_level, col2_mol_level, _, col_split_mols_into_queries = st.columns([2, 2, 4, 2])
                 with col1_mol_level:
                     if st.button("Remove selected molecule(s)", key=f"{name}_mol_remove"):
                         if selected:
@@ -801,7 +787,42 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         else:
                             st.warning("No rows selected!")
                         st.rerun()
+                #if more than 1 molecule, allow splitting
+                if num_molecules > 1:
+                    with col_split_mols_into_queries:
+                        if st.button("Split each molecule into separate query", key=f"{name}_mol_split"):
+                            # If nothing selected, split ALL rows
+                            df_to_split = (
+                                molecule_overview_df.iloc[selected].reset_index(drop=True)
+                                if selected
+                                else molecule_overview_df.reset_index(drop=True)
+                            )
 
+                            if df_to_split.empty:
+                                st.warning("No rows to split!")
+                            else:
+                                src_results = st.session_state.grouped_results.get(name, {})
+                                for idx, row in df_to_split.iterrows():
+                                    new_name = f"{row.get('Compound_Name')}_{idx+1}"
+                                    st.session_state.molecule_overview[new_name] = pd.DataFrame([row])
+
+                                    ik = row.get("inchikey_first_block")
+                                    if isinstance(src_results, dict) and ik in src_results:
+                                        st.session_state.grouped_results[new_name] = {ik: src_results[ik]}
+                                    else:
+                                        st.session_state.grouped_results[new_name] = {
+                                            "structure": pd.DataFrame(),
+                                            "conflicts": pd.DataFrame(),
+                                        }
+
+                                # remove the original group
+                                st.session_state.molecule_overview.pop(name, None)
+                                st.session_state.grouped_results.pop(name, None)
+
+                            st.rerun()
+
+
+                
                 # update the session state with the filtered dataframe
                 st.session_state.molecule_overview[name] = molecule_overview_df
 
@@ -892,6 +913,12 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
             st.empty()
 
         last_iteration = "09/2025"  # need to get version into sql table
+        if option == "FASSTrecords":
+            min_peaks_allowed = 3
+            min_cos_allowed = 0.7
+        elif option == "FASST":
+            min_peaks_allowed = 1
+            min_cos_allowed = 0.3
 
         info_row = st.empty()  # single, stable placeholder
 
@@ -947,9 +974,18 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
         # Cosine and Matching Peaks input 
         col3, col4, _, _ = st.columns(4)
         with col3:
-            min_cosine = st.text_input("Minimum Cosine", value="0.7", key="min_cosine")
+            min_cosine = st.number_input(
+                "Minimum Cosine",
+                min_value=min_cos_allowed, max_value=1.0, value=0.70, step=0.01,
+                key="raw_min_cosine_ui"   # <- new, UI-only key
+            )
+
         with col4:
-            min_peaks = st.text_input("Minimum Matching Peaks", value="5", key="min_peaks")
+            min_peaks = st.number_input(
+                "Minimum Matching Peaks",
+                min_value=min_peaks_allowed, value=5, step=1,
+                key="raw_min_peaks_ui"   
+    )
 
         # Conditional input for FASST 
         if option == "FASST":
@@ -982,7 +1018,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
         ctrl1, ctrl2, _ = st.columns([1,1,7])
         with ctrl1:
-            do_search = st.button("Search Raw Data", key="run_rawdata_search_button")
+            do_search = st.button("Search Raw Data", key="run_rawdata_search_button", icon=':material/search:')
 
 
         # perform the raw data search
@@ -1461,7 +1497,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                                 <div class="preset-row">
                                                 <div class="preset-text">
                                                     <span class="preset-title">Delta Mass → Modified → UBERONBodyPartName → DOIDCommonName</span>
-                                                    <span class="preset-sub">For modification searches, explore if specific modifications differ by body part and disease (especially interesting for drugs).</span>
+                                                    <span class="preset-sub">If modifications were enabled, explore if specific modifications differ by body part and disease (especially interesting for drugs).</span>
                                                 </div>
                                                 </div>
                                                 """,
@@ -1509,19 +1545,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     }
 
                                     st.plotly_chart(fig, use_container_width=True, key=f"sankey_{result_fig_id}", config=config_sankey_download)
-                                    try:
-                                        fig.write_image(
-                                            f"{output_folder}/rawData_sankey_{name}.pdf", 
-                                            format="pdf", 
-                                            width=1240, 
-                                            height=400, 
-                                            scale=2
-                                        )
-                                    except RuntimeError as e:
-                                        if "Kaleido requires Google Chrome to be installed" in str(e):
-                                            print("⚠️ Skipping PDF export: Chrome not available for Kaleido.")
-                                        else:
-                                            raise
+
                                 else:
                                     st.warning("Warning: Some selected columns have the same value.")
 
@@ -1666,7 +1690,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                         input_file=ip_table,
                                         structureMASST_op_folder=output_folder,
                                         redu_tables=redu_tables,
-                                        append=f"_{name.replace(' ', '_')}"
+                                        append=f" for {name}"
                                     )
                             else:
                                 st.warning("No ReDU metadata matches found.")

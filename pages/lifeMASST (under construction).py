@@ -39,8 +39,10 @@ tree_nwk_files = [f for f in os.listdir(tree_directory) if f.endswith(".nwk")]
 # create named list of nwk files in tree_directory
 # labelled_supertree_redu_limited_upfront.nwk = Open Tree of Life
 tree_labels = {
-    "labelled_supertree_redu_limited_upfront.nwk": "Open Tree of Life",
-    "labelled_supertree.nwk": "Open Tree of Life (full)",
+    "labelled_supertree_subset_prepped": "Open Tree of Life",
+    "labelled_supertree_full_prepped": "Open Tree of Life (full) - not recommended",
+    "trees/avian_prepared/OW2019_timetree_alltaxa_with_root_constraint": "Bird Tree of Life (time tree)",
+    "trees/avian_prepared/OW2019_CYB_ND2_estBL_alltaxa": "Bird Tree of Life (molecular tree)",
     "upload": "Custom Uploaded Tree",
 }
 
@@ -57,13 +59,13 @@ match_id_options = {
 }
 
 match_level_options = {
-    "exact": "Same as matching ID",
-    "NCBIGenus": "NCBIGenus",
-    "NCBIClass": "NCBIClass",
-    "NCBIOrder": "NCBIOrder",
-    "NCBIFamily": "NCBIFamily",
-    "NCBIPhylum": "NCBIPhylum",
-    "NCBIKingdom": "NCBIKingdom",
+    "exact": "NCBI ID",
+    "NCBIGenus": "NCBI Genus",
+    "NCBIClass": "NCBI Class",
+    "NCBIOrder": "NCBI Order",
+    "NCBIFamily": "NCBI Family",
+    "NCBIPhylum": "NCBI Phylum",
+    "NCBIKingdom": "NCBI Kingdom",
 }
 
 
@@ -73,11 +75,33 @@ tree_selection, _, _, _ = st.columns([3,3,3,3])
 with tree_selection:
     tree_choice = st.selectbox(
         "Select a tree for LifeMASST",
-        options=tree_nwk_files,
-        format_func=lambda x: tree_labels.get(x, x),
+        options=list(tree_labels.keys()),   # keys are the real values
+        format_func=lambda x: tree_labels.get(x, x),  # labels shown
         index=0,
         help="Select the phylogenetic or taxonomic tree to use for LifeMASST analysis.",
     )
+
+if tree_choice in ["labelled_supertree_subset_prepped", "labelled_supertree_full_prepped"]:
+    match_id = "ott"
+    id_prefix = "ott"
+if tree_choice in ["trees/avian_prepared/OW2019_timetree_alltaxa_with_root_constraint", "trees/avian_prepared/OW2019_CYB_ND2_estBL_alltaxa"]:
+    match_id = "Native_tree_label"
+    id_prefix = ""
+    if tree_choice == "trees/avian_prepared/OW2019_timetree_alltaxa_with_root_constraint":
+        message = """
+        We use the rooted timetree with all taxa from Kimball et al. (2019)
+        (timetree_all_taxa_OW_2019.nextree.tre, rooted version).
+        → Branch lengths represent absolute divergence times estimated with fossil calibrations.
+        """
+    if tree_choice == "trees/avian_prepared/OW2019_CYB_ND2_estBL_alltaxa":
+        message = """
+        We use the CYB+ND2 supertree with estimated branch lengths
+        (OW_2019_CYB_ND2_estBL.tre).
+        → Branch lengths represent molecular substitution distances based on mitochondrial gene data.
+        """
+
+    st.info(message)
+
 
 match_level_selection_masst, match_level_selection_wd, _, _ = st.columns([3,3,3,3])
 
@@ -99,7 +123,8 @@ with match_level_selection_wd:
         help="Select the taxonomic level to match your IDs to in the tree (exact ID, genus, class, order, family, phylum, kingdom).",
     )
 if tree_choice != "upload":
-    tree_path = os.path.join(tree_directory, tree_choice)
+    tree_path = os.path.join(tree_directory, tree_choice) + ".nwk"
+    feature_path = os.path.join(tree_directory, tree_choice) + ".tsv"
 
 else:
 
@@ -140,9 +165,6 @@ else:
         )
 
 
-if tree_choice == "labelled_supertree_redu_limited_upfront.nwk":
-    match_id = "ott"
-    id_prefix = "ott"
 
 
 lifemasst_button, _ = st.columns([9,3])
@@ -161,6 +183,7 @@ with lifemasst_button:
                     "--input_molecules", molecule_path_abs, 
                     "--structureMASST_input_file", structuremasst_path_abs,
                     "--tree_path", tree_path,
+                    "--tree_features", feature_path,
                     "--tax_id", match_id,
                     "--tax_id_prefix", id_prefix,
                     "--masst_matchLevel", match_level_masst,
