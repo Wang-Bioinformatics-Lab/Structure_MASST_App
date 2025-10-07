@@ -32,6 +32,28 @@ molecule_path = os.path.join(lifemasst_folder, "structuremasst_input.tsv")
 structuremasst_path = os.path.join(lifemasst_folder, "lifemasst_input_summary.tsv")
 tree_directory = os.path.abspath(os.path.join(HERE, '..', 'external', 'LifeMASST', 'data'))
 
+
+def format_message(msg: str) -> str:
+    """Wrap message in a styled HTML info box for Streamlit display."""
+    return f"""
+    <div style="
+        background-color: #f9f6f1;
+        border-left: 5px solid #b58900;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        padding: 1rem 1.25rem;
+        border-radius: 0.75rem;
+        margin-top: 0.75rem;
+        margin-bottom: 0.75rem;
+        color: #222;
+        font-size: 1.05rem;
+        line-height: 1.5;
+        font-family: 'Inter', 'Segoe UI', sans-serif;
+    ">
+        {msg}
+    </div>
+    """
+
+
 # --- RESULT PATHS (DEFINED OUTSIDE THE BUTTON) ---
 empress_zip_path = os.path.join(output_folder, "lifemasst", "empress_results.zip")
 tree_png_path = os.path.join(output_folder, "lifemasst", "tree_plot.png")
@@ -39,8 +61,8 @@ metadata_tsv_path = os.path.join(output_folder, "lifemasst", "merged_metadata.ts
 
 tree_nwk_files = [f for f in os.listdir(tree_directory) if f.endswith(".nwk")]
 tree_labels = {
-    "labelled_supertree_subset_prepped": "Open Tree of Life",
-    "labelled_supertree_full_prepped": "Open Tree of Life (full) - not recommended",
+    "trees/OTL_prepared/labelled_supertree_subset_prepped": "Open Tree of Life",
+    #"labelled_supertree_full_prepped": "Open Tree of Life (full) - not recommended",
     "trees/avian_prepared/OW2019_timetree_alltaxa_with_root_constraint": "Bird Tree (time tree)",
     "trees/avian_prepared/OW2019_CYB_ND2_estBL_alltaxa": "Bird Tree (molecular tree)",
     "trees/mammalian_prepared/Foley2022_Concatenation_HRA_neutral_241_10miss_rooted": "Mammal Tree (molecular tree)",
@@ -73,94 +95,104 @@ with tree_selection:
     )
 
 # if tree choice does not start with Open Tree of Life
-if tree_choice not in ["labelled_supertree_subset_prepped", "labelled_supertree_full_prepped"]:
+if tree_choice not in ["trees/OTL_prepared/labelled_supertree_subset_prepped", "trees/OTL_prepared/labelled_supertree_full_prepped"]:
     match_level_options = {
+        "NCBIFamily": "NCBI Family",
         "NCBI_ID": "NCBI ID",
         "NCBIGenus": "NCBI Genus",
         "NCBIClass": "NCBI Class",
         "NCBIOrder": "NCBI Order",
-        "NCBIFamily": "NCBI Family",
         "NCBIPhylum": "NCBI Phylum",
     }
 else:
     match_level_options = {
-        "OpenTreeOfLifeTaxonomyID": "OpenTreeOfLifeTaxonomyID",
+        "NCBIFamily": "NCBI Family",
         "NCBIGenus": "NCBI Genus",
         "NCBIClass": "NCBI Class",
         "NCBIOrder": "NCBI Order",
-        "NCBIFamily": "NCBI Family",
         "NCBIPhylum": "NCBI Phylum",
+        "OpenTreeOfLifeTaxonomyID": "OpenTreeOfLifeTaxonomyID",
     }
 
 message = ""
 
-if tree_choice in ["trees/avian_prepared/OW2019_timetree_alltaxa_with_root_constraint", "trees/avian_prepared/OW2019_CYB_ND2_estBL_alltaxa"]:
+if tree_choice in [
+    "trees/avian_prepared/OW2019_timetree_alltaxa_with_root_constraint",
+    "trees/avian_prepared/OW2019_CYB_ND2_estBL_alltaxa"
+]:
     match_id = "Native_tree_label"
     id_prefix = ""
     if tree_choice == "trees/avian_prepared/OW2019_timetree_alltaxa_with_root_constraint":
-        message = """
-        Rooted timetree from Kimball et al. (2019)
-        → Branch lengths represent absolute divergence times estimated with fossil calibrations.
-        """
-    if tree_choice == "trees/avian_prepared/OW2019_CYB_ND2_estBL_alltaxa":
-        message = """
-        CYB+ND2 supertree from Kimball et al. (2019)
-        → Branch lengths represent molecular substitution distances based on mitochondrial gene data.
-        """
+        message = (
+            "Rooted timetree from Kimball et al. (2019)<br/>"
+            "→ Branch lengths represent absolute divergence times estimated with fossil calibrations.<br/>"
+            "Source: Kimball et al. (2019), <i>Diversity</i> 11, 109. https://doi.org/10.3390/d11070109"
+        )
+    elif tree_choice == "trees/avian_prepared/OW2019_CYB_ND2_estBL_alltaxa":
+        message = (
+            "CYB+ND2 supertree from Kimball et al. (2019)<br/>"
+            "→ Branch lengths represent molecular substitution distances based on mitochondrial gene data.<br/>"
+            "Source: Kimball et al. (2019), <i>Diversity</i> 11, 109. https://doi.org/10.3390/d11070109"
+        )
 
-if tree_choice in ["trees/mammalian_prepared/Foley2022_Concatenation_HRA_neutral_241_10miss_rooted"]:
+elif tree_choice == "trees/mammalian_prepared/Foley2022_Concatenation_HRA_neutral_241_10miss_rooted":
     match_id = "Native_tree_label"
     id_prefix = ""
-    message = """
-    Concatenated phylogeny from Foley et al. (2022)
-    → Branch lengths represent molecular substitution distances based on genome-wide nearly neutral sites.
-    """
+    message = (
+        "Concatenated phylogeny from Foley et al. (2023)<br/>"
+        "→ Branch lengths represent molecular substitution distances based on genome-wide nearly neutral sites.<br/>"
+        "Source: Foley et al. (2023), <i>Science</i> 380, eabl8189. https://doi.org/10.1126/science.abl8189"
+    )
 
-if tree_choice in ["trees/fish_prepared/fish_treepl_12k"]:
+elif tree_choice == "trees/fish_prepared/fish_treepl_12k":
     match_id = "Native_tree_label"
     id_prefix = ""
-    message = """
-    Time-calibrated tree (Actinopterygii 12k; treePL)
-    → Branch lengths represent absolute divergence times (millions of years) estimated via fossil-calibrated treePL.
-    Source: Rabosky et al. (2018), Nature 559, 392–395. doi:10.1038/s41586-018-0273-1
-    """
+    message = (
+        "Time-calibrated tree (Actinopterygii 12k; treePL)<br/>"
+        "→ Branch lengths represent absolute divergence times (millions of years) estimated via fossil-calibrated treePL.<br/>"
+        "Source: Rabosky et al. (2018), <i>Nature</i> 559, 392–395. https://doi.org/10.1038/s41586-018-0273-1"
+    )
 
-if tree_choice in ["trees/fish_prepared/fish_raxml_12k"]:
+elif tree_choice == "trees/fish_prepared/fish_raxml_12k":
     match_id = "Native_tree_label"
     id_prefix = ""
-    message = """
-    Molecular phylogram (Actinopterygii 12k; RAxML)
-    → Branch lengths represent molecular substitution distances (substitutions per site) from maximum-likelihood inference.
-    Source: Rabosky et al. (2018), Nature 559, 392–395. doi:10.1038/s41586-018-0273-1
-    """
+    message = (
+        "Molecular phylogram (Actinopterygii 12k; RAxML)<br/>"
+        "→ Branch lengths represent molecular substitution distances (substitutions per site) from maximum-likelihood inference.<br/>"
+        "Source: Rabosky et al. (2018), <i>Nature</i> 559, 392–395. https://doi.org/10.1038/s41586-018-0273-1"
+    )
 
-if tree_choice in ["trees/plants_prepared/1kp_astral_alltaxa_FAA"]:
+elif tree_choice == "trees/plants_prepared/1kp_astral_alltaxa_FAA":
     match_id = "Native_tree_label"
     id_prefix = ""
-    message = """
-    Molecular phylogeny from One Thousand Plant Transcriptomes Initiative (1KP, 2019)
-    → Branch lengths represent molecular substitution distances inferred from large-scale transcriptome data.
-    Source: One Thousand Plant Transcriptomes Initiative (2019), Nature 574, 679–685. doi:10.1038/s41586-019-1693-2
-    """
+    message = (
+        "Molecular phylogeny from One Thousand Plant Transcriptomes Initiative (1KP, 2019)<br/>"
+        "→ Branch lengths represent molecular substitution distances inferred from large-scale transcriptome data.<br/>"
+        "Source: One Thousand Plant Transcriptomes Initiative (2019), <i>Nature</i> 574, 679–685. https://doi.org/10.1038/s41586-019-1693-2"
+    )
 
-if tree_choice in ["labelled_supertree_subset_prepped", "labelled_supertree_full_prepped"]:
+elif tree_choice in ["trees/OTL_prepared/labelled_supertree_subset_prepped", "trees/OTL_prepared/labelled_supertree_full_prepped"]:
     match_id = "OpenTreeOfLifeTaxonomyID"
     id_prefix = "ott"
-    if tree_choice == "labelled_supertree_full_prepped":
-        message = """
-        Open Tree of Life (full)
-        → Comprehensive tree of life from Open Tree of Life, based on a synthesis of published phylogenies and taxonomies.
-        Note: This full tree is very large and may lead to long processing times. The subsetted version is recommended for most analyses.
-        Source: Open Tree of Life (2023), PNAS 120(41) e2301969120; doi: 10.1073/pnas.2301969120
-        """
-    if tree_choice == "labelled_supertree_subset_prepped":
-        message = """
-        Open Tree of Life (subset)
-        → Subsetted comprehensive tree of life from Open Tree of Life, based on a synthesis of published phylogenies and taxonomies.
-        Source: Open Tree of Life (2023), PNAS 120(41) e2301969120; doi: 10.1073/pnas.2301969120
-        """
+    if tree_choice == "trees/OTL_prepared/labelled_supertree_full_prepped":
+        message = (
+            "Open Tree of Life (full)<br/>"
+            "→ Comprehensive tree of life from Open Tree of Life, based on a synthesis of published phylogenies and taxonomies.<br/>"
+            "Note: This full tree is very large and may lead to long processing times. The subsetted version is recommended for most analyses.<br/>"
+            "Source: OpenTree et al. Open Tree of Life Synthetic Tree https://doi.org/10.5281/zenodo.3937741"
+        )
+    else:
+        message = (
+            "Open Tree of Life (subset with available metabolomics data)<br/>"
+            "→ Subsetted comprehensive tree of life from Open Tree of Life, based on a synthesis of published phylogenies and taxonomies.<br/>"
+            "Source: OpenTree et al. Open Tree of Life Synthetic Tree https://doi.org/10.5281/zenodo.3937741"
+        )
 
-st.info(message)
+if message != "":
+    message_formatted = format_message(message)
+else:
+    message_formatted = ""
+st.markdown(message_formatted, unsafe_allow_html=True)
 
 match_level_selection_masst, match_level_selection_wd, _, _ = st.columns([3,3,3,3])
 
@@ -288,14 +320,17 @@ if df is not None:
     st.markdown("### Merged Metadata")
     st.dataframe(df)
 
-st.success("Download the LifeMASST results below.")
+    st.success("Download an interactive LifeMASST plot below.")
 
-zip_bytes = st.session_state.get("empress_zip_bytes")
-st.download_button(
-    label="📥 Download Empress Results",
-    data=zip_bytes if zip_bytes is not None else b"",
-    file_name="empress_results.zip",
-    mime="application/zip",
-    disabled=zip_bytes is None,
-    key="download_empress_results"
-)
+    zip_bytes = st.session_state.get("empress_zip_bytes")
+    st.download_button(
+        label="📥 Download Empress Results",
+        data=zip_bytes if zip_bytes is not None else b"",
+        file_name="empress_results.zip",
+        mime="application/zip",
+        disabled=zip_bytes is None,
+        key="download_empress_results"
+    )
+
+
+

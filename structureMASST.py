@@ -578,7 +578,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                 # messages on retrieved spectra
                 st.markdown(
-                    f"##### Retrieved **{total_matches}** spectra for **{num_molecules}** molecule(s) ({name}).",
+                    f"##### Retrieved **{total_matches}** spectra for molecule ({name}).",
                 )
 
                 st.markdown(
@@ -901,6 +901,18 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
     # selection menu for raw data search
     @st.fragment
     def raw_data_search_panel():
+
+        # Message that we can now search all of the above xx spectra across raw data to retrieve matching samples. Include exact number of spectra
+        spectra_across_all_molecules = sum(
+            len(ik_dict[ik]['structure'])
+            for ik_dict in st.session_state.grouped_results.values()
+            for ik in ik_dict
+        )
+
+        number_of_molecules = len(st.session_state.grouped_results)
+
+        st.markdown(f"##### Next, search all {spectra_across_all_molecules} spectra of {number_of_molecules} molecule(s) across public metabolomics raw data to retrieve matching samples:")
+
         col_a, col_b = st.columns(2)
         with col_a:
             option = st.radio(
@@ -939,9 +951,9 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         <strong>FASSTrecords</strong>
                     </h4>
                     <p style="margin:0; line-height:1.5; font-size:0.95em;">
-                        This is <strong>very fast</strong> as it relies on precomputed annotations, and therefore especially <br/>
-                        recommended for substructure-enabled search and searches of large<br/>
-                        numbers of spectra or molecules expected in large numbers of samples.<br/>
+                        This generally takes less than 1 minute even for hundreds of spectra as it relies on<br/>
+                        precomputed annotations, and is therefore especially recommended for large numbers of<br/> 
+                        spectra or molecules expected in large numbers of samples.<br/>
                         Last iteration: <strong>{last_iteration}</strong>.
                     </p>
                     </div>
@@ -960,8 +972,8 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         <strong>FASST</strong>
                     </h4>
                     <p style="margin:0; line-height:1.5; font-size:0.95em;">
-                        Can be rather slow especially for molecules expected to be present in many datasets<br/>
-                        or large numbers of spectra. Searches can even take a few minutes, depending on traffic.<br/>
+                        Can be rather slow especially for molecules expected to be present in many datasets or large<br/>
+                        numbers of spectra. Searches can take several minutes and even fail depending on current traffic.<br/>
                         Allows the discovery of unknown chemical analogues through modification search.<br/>
                         Always up to date with the latest raw data indexed at <a href="https://fasst.gnps2.org/" target="_blank" style="color:#e76f51;">fasst.gnps2.org</a>.
                     </p>
@@ -1016,10 +1028,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         list_of_values = ["Raw file", "ATTRIBUTE_DatasetAccession", "NCBITaxonomy"]
                         modification_condition = st.selectbox("Unmodified found in same", options=list_of_values)
 
-        ctrl1, ctrl2, _ = st.columns([1,1,7])
-        with ctrl1:
-            do_search = st.button("Search Raw Data", key="run_rawdata_search_button", icon=':material/search:')
-
+        do_search = st.button("Search Raw Data", key="run_rawdata_search_button", icon=':material/search:')
 
         # perform the raw data search
         if do_search:
