@@ -22,7 +22,7 @@ left, right = st.columns([6,1])
 with left:
     st.title("GeoMASST (preview)")
     st.write("""
-            This page lets you further explore your StructureMASST results in the context of environmental distributions across our plants. 
+            This page lets you further explore your StructureMASST results in the context of environmental distributions across our planet. 
     """)
 
 output_folder = st.session_state["_session_output_folder"]

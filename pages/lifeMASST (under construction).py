@@ -26,6 +26,14 @@ with left:
             You can investigate how molecules or substructures are distributed across life and align your results with records recorded in Wikidata.
     """)
 
+
+
+if not st.session_state.get("raw_results"):
+    st.warning("This is a downstream tool. Run StructureMASST first to generate LifeMASST results.")
+    st.stop()
+
+
+
 output_folder = st.session_state["_session_output_folder"]
 lifemasst_folder = os.path.join(output_folder, "lifemasst")
 molecule_path = os.path.join(lifemasst_folder, "structuremasst_input.tsv")
