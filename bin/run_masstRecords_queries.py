@@ -22,6 +22,8 @@ from rdkit.DataStructs.cDataStructs import ExplicitBitVect
 import base64
 import math
 import json
+import urllib.parse
+from pathlib import Path
 
 # ——— Shared helpers ———
 def _append_limit_offset(sql: str, limit: int, offset: int) -> str:
@@ -30,12 +32,6 @@ def _append_limit_offset(sql: str, limit: int, offset: int) -> str:
 
 def _has_limit_or_offset(sql: str) -> bool:
     return re.search(r'(?i)\b(LIMIT|OFFSET)\b', sql) is not None
-
-import os
-import sqlite3
-import pandas as pd
-from io import StringIO
-from typing import Iterable, Optional, Tuple
 
 # --- internal helper ---------------------------------------------------------
 def _coerce_types_except_blobs(
@@ -149,18 +145,27 @@ def _fetch_csv(sql: str, api_endpoint: str, timeout: int,
     return df
 
 
+def _sqlite_ro_connect(sqlite_path: str, immutable: bool = True) -> sqlite3.Connection:
+    # Build a proper file: URI for SQLite
+    p = Path(sqlite_path).resolve()
+    qs = "mode=ro"
+    if immutable:
+        qs += "&immutable=1"     # treat file as read-only, can speed things up if DB won’t change
+    uri = f"file:{urllib.parse.quote(str(p))}?{qs}"
+    return sqlite3.connect(uri, uri=True, check_same_thread=False)
+
 def _fetch_sqlite(sql: str, sqlite_path: str,
                   blob_cols: Optional[Iterable[str]] = ("fp_pattern","fp_morgan",),
                   normalize_types: bool = True) -> pd.DataFrame:
     """
-    Fetch from SQLite and ensure BLOB columns (e.g., fp_pattern) come back as raw bytes,
-    while other columns are cast to str to match previous behavior.
+    Read-only SQLite fetch. BLOBs stay as bytes, other cols coerced as before.
     """
-    print(f"[SQL ] Querying with SQL: {sql}")
-    with sqlite3.connect(sqlite_path) as conn:
-        # Critical: keep blobs as bytes
+    print(f"[SQL ] Querying (RO) with SQL: {sql}")
+    with _sqlite_ro_connect(sqlite_path) as conn:
+        # Enforce query-only mode at the connection level
+        conn.execute("PRAGMA query_only=ON;")
+        # Keep blobs as bytes while preventing TEXT→str coercion
         conn.text_factory = bytes
-        # Avoid dtype=str here (it would coerce BLOBs into text).
         df = pd.read_sql_query(sql, conn)
     print(f"[SQL ] returned {len(df)} rows")
 

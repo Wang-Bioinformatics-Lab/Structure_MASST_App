@@ -45,6 +45,7 @@ import time
 import numpy as np
 from dotenv import load_dotenv
 from streamlit_ketcher import st_ketcher
+import gc
 
 # Load .env file
 load_dotenv("keys.env")
@@ -1100,6 +1101,11 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 how="left"
                                 )
                             
+                            # IF df_masst_sorted, df_masst_unique or masst_df exist free envronemnt from them
+                            del df_masst_sorted, df_masst_unique, masst_df
+                            gc.collect()
+
+
                             # add Compound_Name from molecule_overview[name]
                             redu_df = redu_df.merge(
                                 st.session_state.molecule_overview[name][["inchikey_first_block", "Compound_Name"]],
@@ -1160,7 +1166,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             
                             redu_df["query_name"] = name
 
-                        new_results[name] = {"masst": masst_df, "redu": redu_df}
+                        new_results[name] = {"masst": pd.DataFrame(), "redu": redu_df}
                     
                 elif option == "FASST":
 
@@ -1224,6 +1230,9 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             timeout=config.MASSTRECORDS_TIMEOUT
                         )
 
+                        del masst_df
+                        gc.collect()
+
                         if len(redu_df) > 0:
                             # make library usis for the links
                             redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
@@ -1263,8 +1272,8 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                             redu_df["query_name"] = name
 
-            
-                        new_results[name] = {"masst": masst_df, "redu": redu_df}
+
+                        new_results[name] = {"masst": pd.DataFrame(), "redu": redu_df}
 
                 # store the results in session state
                 st.session_state.raw_results = new_results
