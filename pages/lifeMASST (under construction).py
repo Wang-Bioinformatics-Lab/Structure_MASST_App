@@ -220,6 +220,10 @@ if tree_choice != "upload":
 else:
     # Upload flow
     tree_upload, match_id_selection, match_id_prefix, _ = st.columns([3,3,3,3])
+
+    # Warning that this was not implemented yet
+    st.warning("This feature is not implemented yet.")
+
     with tree_upload:
         uploaded_tree = st.file_uploader(
             "Upload your own tree in Newick format (.nwk)",
