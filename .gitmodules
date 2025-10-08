@@ -7,5 +7,5 @@
 	branch = no_query_drawing
 [submodule "external/LifeMASST"]
 	path = external/LifeMASST
-	url = git@github.com:YasinEl/LifeMASST.git
+	url = https://github.com/YasinEl/LifeMASST.git
 	branch = main
