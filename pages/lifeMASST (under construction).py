@@ -41,6 +41,13 @@ structuremasst_path = os.path.join(lifemasst_folder, "lifemasst_input_summary.ts
 tree_directory = os.path.abspath(os.path.join(HERE, '..', 'external', 'LifeMASST', 'data'))
 
 
+# check if structuremasst_path exists
+if not os.path.exists(structuremasst_path):
+    st.warning("Click the Setup LifeMASST button at the bottom of your StructureMASST results to proceed with LifeMASST.")
+    st.stop()
+
+
+
 def format_message(msg: str) -> str:
     """Wrap message in a styled HTML info box for Streamlit display."""
     return f"""

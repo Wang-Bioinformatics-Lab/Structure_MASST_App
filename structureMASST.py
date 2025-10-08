@@ -26,6 +26,7 @@ from bin.linkouts import build_dashboard_eic_url, build_spectraresolver_link
 from bin.smarts_api import query_smarts
 from bin.streamlit_fragment_domainMASST import domainmasst_fragment, domainmasst_intersection_fragment
 from bin.streamlit_fragment_LifeMASST import lifemasst_fragment
+from bin.api_health import test_fasst_api_search_nonblocking
 import matplotlib.pyplot as plt
 import matplotlib
 from collections import defaultdict
@@ -525,8 +526,7 @@ if st.button("Get Available Spectra", icon=':material/search:'):
                 grouped_results[name][ik] = {"structure": sub_struct, "conflicts": sub_conf}
                 st.session_state.selected_queries[ik] = list(sub_struct["query_spectrum_id"].unique())
 
-
-                # pick most common Compound_Name (tie-break by len≈20 & fewest special chars)
+                # pick most common Compound_Name (tie-break by len≈10 & fewest special chars)
                 names = sub_struct["Compound_Name"].dropna().astype(str)
                 if not names.empty:
                     vc = names.value_counts()
@@ -534,7 +534,7 @@ if st.button("Get Available Spectra", icon=':material/search:'):
                     cands = vc[vc == top].index.tolist()
                     def special_count(s): 
                         return len(re.findall(r"[^A-Za-z0-9]", s))
-                    best_name = min(cands, key=lambda s: (abs(len(s) - 20), special_count(s)))
+                    best_name = min(cands, key=lambda s: (abs(len(s) - 10), special_count(s)))
                 else:
                     best_name = ""
 
@@ -973,7 +973,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         <strong>FASST</strong>
                     </h4>
                     <p style="margin:0; line-height:1.5; font-size:0.95em;">
-                        Can be rather slow especially for molecules expected to be present in many datasets or large<br/>
+                        Can be slow especially for molecules expected to be present in many datasets or large<br/>
                         numbers of spectra. Searches can take several minutes and even fail depending on current traffic.<br/>
                         Allows the discovery of unknown chemical analogues through modification search.<br/>
                         Always up to date with the latest raw data indexed at <a href="https://fasst.gnps2.org/" target="_blank" style="color:#e76f51;">fasst.gnps2.org</a>.
@@ -1169,113 +1169,135 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         new_results[name] = {"masst": pd.DataFrame(), "redu": redu_df}
                     
                 elif option == "FASST":
+                    
+                    fasst_works = True
+                    max_retries = 3
+                    for attempt in range(1, max_retries + 1):
+                        try:
+                            result_ok = test_fasst_api_search_nonblocking() > 5
+                            if result_ok:
+                                break
+                        except Exception:
+                            result_ok = False
+
+                        if attempt < max_retries:
+                            time.sleep(0.5)  
+                        else:
+                            st.error(
+                                "The FASST API is not responding after multiple attempts. "
+                                "Please try again later or contact support. "
+                                "FASSTrecords mode remains available — refresh the page to continue."
+                            )
+                            fasst_works = False
+
 
                     # build each queries aggregated table
-                    for name, ik_dict in st.session_state.grouped_results.items():
-                        sel_frames = []
-                        for ik, data in ik_dict.items():
-                            df_struct = data["structure"]
+                    if fasst_works:
+                        for name, ik_dict in st.session_state.grouped_results.items():
+                            sel_frames = []
+                            for ik, data in ik_dict.items():
+                                df_struct = data["structure"]
 
-                            # dereplicate spectra
-                            df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
-                            df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
-                            df_struct["similar_library_spectra"] = (
-                                df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
-                                        .transform("size")
-                                        .astype("int64")
-                            )
-                            # add column with difference between spectrum_id_int and representative_spectrum_int
-                            df_struct["spectrum_difference"] = df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
-
-                            #sort so that smallest difference is kept by falcon_cluster (closest to representative spectrum)
-                            df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
-
-                            #keep first per falcon cluster
-                            df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
-
-                            # set spectrum_id_int value to representative_spectrum_int value
-                            df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
-
-                            if not df_struct.empty:
-                                sel_frames.append(df_struct)
-
-                        if not sel_frames:
-                            st.warning(f"No entries left for **{name}**, skipping.")
-                            continue
-
-                        df_for_name = pd.concat(sel_frames, ignore_index=True)
-
-                        # if we do modification and got a molecular formula calculate the monoisotopic mass of the expected mass difference
-                        formulaModi_object = Formula.formula_from_str(modification_formula) if do_modification_search and modification_formula else None
-                        try:
-                            modification_mass = formulaModi_object.get_monoisotopic_mass()
-                        except AttributeError:
-                            modification_mass = modification_mass if 'modification_mass' in locals() else None
-
-                        # retrieve raw data matches through MASST
-                        masst_df, redu_df = retrieve_raw_data_matches(
-                            df_for_name,
-                            database='metabolomicspanrepo_index_nightly',
-                            precursor_mz_tol=float(prec_tol),
-                            fragment_mz_tol=float(frag_tol),
-                            min_cos=float(min_cosine),
-                            matching_peaks=int(min_peaks),
-                            analog=do_modification_search,
-                            modimass=modification_mass,
-                            elimination=do_elimination if 'do_elimination' in locals() else False,
-                            addition=do_addition if 'do_addition' in locals() else False,
-                            modification_condition=modification_condition if 'modification_condition' in locals() else None,
-                            sqlite_path=config.PATH_TO_SQLITE,
-                            api_endpoint=config.MASSTRECORDS_ENDPOINT,
-                            timeout=config.MASSTRECORDS_TIMEOUT
-                        )
-
-                        del masst_df
-                        gc.collect()
-
-                        if len(redu_df) > 0:
-                            # make library usis for the links
-                            redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
-                                lambda x: (
-                                    f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
-                                    else f"mzspec:MASSBANK::accession:{x}" 
+                                # dereplicate spectra
+                                df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
+                                df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
+                                df_struct["similar_library_spectra"] = (
+                                    df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
+                                            .transform("size")
+                                            .astype("int64")
                                 )
+                                # add column with difference between spectrum_id_int and representative_spectrum_int
+                                df_struct["spectrum_difference"] = df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
+
+                                #sort so that smallest difference is kept by falcon_cluster (closest to representative spectrum)
+                                df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
+
+                                #keep first per falcon cluster
+                                df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
+
+                                # set spectrum_id_int value to representative_spectrum_int value
+                                df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
+
+                                if not df_struct.empty:
+                                    sel_frames.append(df_struct)
+
+                            if not sel_frames:
+                                st.warning(f"No entries left for **{name}**, skipping.")
+                                continue
+
+                            df_for_name = pd.concat(sel_frames, ignore_index=True)
+
+                            # if we do modification and got a molecular formula calculate the monoisotopic mass of the expected mass difference
+                            formulaModi_object = Formula.formula_from_str(modification_formula) if do_modification_search and modification_formula else None
+                            try:
+                                modification_mass = formulaModi_object.get_monoisotopic_mass()
+                            except AttributeError:
+                                modification_mass = modification_mass if 'modification_mass' in locals() else None
+
+                            # retrieve raw data matches through MASST
+                            masst_df, redu_df = retrieve_raw_data_matches(
+                                df_for_name,
+                                database='metabolomicspanrepo_index_nightly',
+                                precursor_mz_tol=float(prec_tol),
+                                fragment_mz_tol=float(frag_tol),
+                                min_cos=float(min_cosine),
+                                matching_peaks=int(min_peaks),
+                                analog=do_modification_search,
+                                modimass=modification_mass,
+                                elimination=do_elimination if 'do_elimination' in locals() else False,
+                                addition=do_addition if 'do_addition' in locals() else False,
+                                modification_condition=modification_condition if 'modification_condition' in locals() else None,
+                                sqlite_path=config.PATH_TO_SQLITE,
+                                api_endpoint=config.MASSTRECORDS_ENDPOINT,
+                                timeout=config.MASSTRECORDS_TIMEOUT
                             )
 
-                            redu_df["best_spectral_match"] = redu_df.apply(
-                                lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]), 
-                                axis=1
+                            del masst_df
+                            gc.collect()
+
+                            if len(redu_df) > 0:
+                                # make library usis for the links
+                                redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
+                                    lambda x: (
+                                        f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
+                                        else f"mzspec:MASSBANK::accession:{x}" 
+                                    )
                                 )
 
-
-                            if "Check LC peak" not in redu_df.columns:
-                                redu_df["Check LC peak"] = np.nan
-
-                            # Make sure the destination column can hold strings
-                            redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  
-
-                            mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
-                            redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
-                                lambda row: build_dashboard_eic_url(
-                                    usi=row['USI'],
-                                    xic_mz=row['Precursor_MZ'],
-                                    xic_tolerance=0.05
-                                ),
-                                axis=1
-                            )
-
-                            redu_df = redu_df.merge(
-                                st.session_state.molecule_overview[name][["inchikey_first_block", "Compound_Name"]],
-                                on="inchikey_first_block",
-                                how="left"
-                            )
-
-                            redu_df["query_name"] = name
+                                redu_df["best_spectral_match"] = redu_df.apply(
+                                    lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]), 
+                                    axis=1
+                                    )
 
 
-                        new_results[name] = {"masst": pd.DataFrame(), "redu": redu_df}
+                                if "Check LC peak" not in redu_df.columns:
+                                    redu_df["Check LC peak"] = np.nan
 
-                # store the results in session state
+                                # Make sure the destination column can hold strings
+                                redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  
+
+                                mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
+                                redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
+                                    lambda row: build_dashboard_eic_url(
+                                        usi=row['USI'],
+                                        xic_mz=row['Precursor_MZ'],
+                                        xic_tolerance=0.05
+                                    ),
+                                    axis=1
+                                )
+
+                                redu_df = redu_df.merge(
+                                    st.session_state.molecule_overview[name][["inchikey_first_block", "Compound_Name"]],
+                                    on="inchikey_first_block",
+                                    how="left"
+                                )
+
+                                redu_df["query_name"] = name
+
+
+                            new_results[name] = {"masst": pd.DataFrame(), "redu": redu_df}
+
+                    # store the results in session state
                 st.session_state.raw_results = new_results
 
         # display results in tabs

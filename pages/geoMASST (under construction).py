@@ -29,13 +29,15 @@ output_folder = st.session_state["_session_output_folder"]
 
 if st.session_state.get("raw_results"):
     names = list(st.session_state.raw_results.keys())
-    selected_name = st.selectbox("Select result", names, key="result_name")
+    selected_name = st.selectbox("Select chemical", names, key="result_name")
+    
     selected_tab = st.session_state.raw_results[selected_name]
 
-    df_redu = st.session_state.raw_results[selected_name]["redu"]
-    fig_map, _ = export_hits_map(df_redu, engine="mapbox", hover_mri="count", map_style='carto-positron')
-
-    st.plotly_chart(fig_map, use_container_width=True, config={"scrollZoom": True}, key=f"map_{names}")
+    if st.button("Run GeoMASST", key="run_geomasst_btn"):
+        with st.spinner("Running GeoMASST…"): 
+            df_redu = st.session_state.raw_results[selected_name]["redu"]
+            fig_map, _ = export_hits_map(df_redu, engine="mapbox", hover_mri="count", map_style='carto-positron')
+            st.plotly_chart(fig_map, use_container_width=True, config={"scrollZoom": True}, key=f"map_{names}")
 
 else:
     st.warning("This is a downstream tool. Run StructureMASST first to generate GeoMASST results.")

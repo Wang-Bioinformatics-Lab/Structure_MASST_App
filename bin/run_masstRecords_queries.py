@@ -5,19 +5,15 @@ from bin.run_fasst import query_fasst_usi
 # from match_smiles import fetch_and_match_smiles
 # from run_fasst import query_fasst_usi
 # from make_linkouts import create_gnps_link
-import argparse
 from collections import defaultdict
 import os
 import requests
-import pandas as pd
-from rdkit import Chem
-from rdkit.Chem import inchi
 from io import StringIO
 import sqlite3
 import re
 from typing import Iterable, Optional, Tuple
 from rdkit import Chem, DataStructs
-from rdkit.Chem import rdFingerprintGenerator
+from rdkit.Chem import rdFingerprintGenerator, Descriptors, inchi
 from rdkit.DataStructs.cDataStructs import ExplicitBitVect
 import base64
 import math
@@ -40,7 +36,7 @@ def _coerce_types_except_blobs(
     normalize_types: bool = True,
 ) -> pd.DataFrame:
     """
-    Make all columns 'str' like the old behavior, EXCEPT columns in blob_cols,
+    Make all columns 'str', EXCEPT columns in blob_cols,
     which are left as bytes (if present).
     If a blob col accidentally arrived as str, convert it back to bytes via latin1.
     """
@@ -88,9 +84,9 @@ def _decode_datasette_blob_cell(v):
             return base64.b64decode(v["encoded"])
         except Exception:
             return None
-    return None  # leave non-blob values alone; caller will keep them as str
+    return None  
 
-# --- existing public helpers (updated) ---------------------------------------
+# --- public helpers (updated) ---------------------------------------
 def _fetch_csv(sql: str, api_endpoint: str, timeout: int,
                blob_cols: Optional[Iterable[str]] = ("fp_pattern","fp_morgan",),
                normalize_types: bool = True) -> pd.DataFrame:
@@ -112,7 +108,7 @@ def _fetch_csv(sql: str, api_endpoint: str, timeout: int,
             timeout=timeout,
         )
         resp.raise_for_status()
-        rows = resp.json()  # list[dict]
+        rows = resp.json() 
         df = pd.DataFrame(rows)
         print(f"[API ] returned {len(df)} rows (json)")
 
@@ -132,14 +128,14 @@ def _fetch_csv(sql: str, api_endpoint: str, timeout: int,
 
         return df
 
-    # CSV path (unchanged)
+    # CSV path 
     print(f"[API ] Querying (CSV) with SQL: {sql}")
     resp = requests.get(f"{api_endpoint}.csv", params={"sql": sql, "_stream": "on"}, timeout=timeout)
     resp.raise_for_status()
     df = pd.read_csv(StringIO(resp.text), dtype=str)
     print(f"[API ] returned {len(df)} rows (csv)")
 
-    # Try to coerce types but preserve blobs (if any slipped through)
+    # Try to coerce types but preserve blobs
     if blob_cols:
         df = _coerce_types_except_blobs(df, tuple(blob_cols), normalize_types=normalize_types)
     return df
@@ -367,6 +363,9 @@ def get_library_table(
         if mol is None:
             raise ValueError(f"Invalid SMILES: {smiles}")
     
+        # get monoisotopic mass
+        precursor_mz = round(Chem.Descriptors.ExactMolWt(mol), 4)
+        mass_tolerance = 0.02
 
         fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
         sql = "SELECT name FROM pragma_table_info('library_table')"
@@ -382,6 +381,7 @@ def get_library_table(
         lib_sql = (
             "SELECT " + ", ".join(library_column_list) + " FROM library_table "
             f"WHERE InChIKey_smiles_firstBlock = '{prefix}' "
+            f"AND ABS(ExactMass - {precursor_mz}) <= {mass_tolerance} "
             "AND ppmBetweenExpAndThMass <= 20 "
             "AND (msMassAnalyzer NOT IN ('quadrupole', 'ion trap') OR msMassAnalyzer IS NULL)"
         )
@@ -392,37 +392,28 @@ def get_library_table(
         if 'msMassAnalyzer' in library_df.columns:
             library_df['msMassAnalyzer'] = library_df['msMassAnalyzer'].apply(lambda x: str(x) if pd.notna(x) else '_unknown')
 
-        # Only fillna for known string columns
         library_df[['Adduct', 'msManufacturer', 'msMassAnalyzer', 'GNPS_library_membership']] = library_df[
             ['Adduct', 'msManufacturer', 'msMassAnalyzer', 'GNPS_library_membership']
         ].fillna('unknown')
 
-        
-        # rename column InChIKey_smiles_firstBlock to inchikey_first_block
         if 'InChIKey_smiles_firstBlock' in library_df.columns:
             library_df.rename(columns={'InChIKey_smiles_firstBlock': 'inchikey_first_block'}, inplace=True)
 
-        # rename spectrum_id to query_spectrum_id
         if 'spectrum_id' in library_df.columns:
             library_df.rename(columns={'spectrum_id': 'query_spectrum_id'}, inplace=True)
 
         df_final = library_df.copy()
     else:
-
         structure_type = detect_smiles_or_smarts(smiles)
-
-        # Pass A — only one representative per molecule (block)
         fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
 
         if searchtype == "tanimoto":
             fp_blob_cols = ["fp_morgan"]
             fp_predicate = "AND l.fp_morgan IS NOT NULL AND length(l.fp_morgan) > 0"
-            # include hex fallback
             fp_select = "l.fp_morgan, l.fp_morgan_popcnt, hex(l.fp_morgan) AS fp_morgan_hex"
         else:
             fp_blob_cols = ["fp_pattern"]
             fp_predicate = "AND l.fp_pattern IS NOT NULL AND length(l.fp_pattern) > 0"
-            # include hex fallback
             fp_select = "l.fp_pattern, hex(l.fp_pattern) AS fp_pattern_hex"
 
         rep_sql = f"""
@@ -486,7 +477,6 @@ def get_library_table(
             df_final = pd.DataFrame()
             return df_final
 
-        # IMPORTANT: quote string keys for IN (...)
         matched_blocks_quoted = _quote_for_sql_in(matched_blocks)
 
         block_ids_sql_tmpl = """
@@ -502,7 +492,7 @@ def get_library_table(
 
         all_ids_df = _batched_fetch(
             block_ids_sql_tmpl,
-            matched_blocks_quoted,   # <-- pass QUOTED values here
+            matched_blocks_quoted, 
             fetch,
             chunk_size=30,
             paginate=True,
@@ -611,7 +601,23 @@ def get_masst_and_redu_tables(
     print(f"[STEP 2] masst_table for {len(sids)} spectrum_id_ints")
     if not sids:
         return pd.DataFrame(), pd.DataFrame()
-
+    
+    # This query returns a per-MRI summary of the strongest MASST match.
+    # Steps:
+    #   1. "filtered": select all MASST hits whose spectrum_id_int is in {ids},
+    #      keeping only those with cosine ≥ cosine_threshold and matching_peaks ≥ matching_peaks.
+    #   2. "ranked": within each mri_id_int, rank the filtered hits by cosine (highest first)
+    #      and assign a row number (rn).
+    #   3. "uniq_counts": for each mri_id_int, count how many distinct spectrum_id_int
+    #      values contributed to that MRI (unique_spectra_in_mri).
+    #   4. Final SELECT: keep only the top-ranked hit per mri_id_int (rn = 1)
+    #      and join in the unique_spectra_in_mri counts.
+    #
+    # Resulting table:
+    #   → One row per mri_id_int (the best-cosine match for that dataset),
+    #     including all MASST fields for that representative hit plus
+    #     a column 'unique_spectra_in_mri' giving how many distinct spectra
+    #     from the query molecule matched that MRI.
     masst_sql_tmpl = (
         "WITH filtered AS ("
         "  SELECT * "
