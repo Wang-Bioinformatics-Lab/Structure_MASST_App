@@ -1,12 +1,9 @@
-## Wang Lab Streamlit Basic Template
+## Structure MASST
 
-This is a minimally viable template for Wang Lab
+Things for setup for LifeMASST
 
-### Editing Template
-
-1. Replace all references to template to your own name
-1. Change the external port in docker-compose.yml and docker-compose-dev.yml
-1. Make new repo
-1. Bring up the server with ```make server-compose-interactive```
-1. For Production, we don't open ports, everything goes through a reverse proxy, so you can use the following command ```make server-compose-production```
-
+1. bring everything up in docker
+1. docker exec -it structure-masst-streamlit bash 
+1. source activate StructureMASST_env
+1. cd /app/external/LifeMASST/data
+1. bash ./get_data.sh 
