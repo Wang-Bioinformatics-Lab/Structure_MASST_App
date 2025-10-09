@@ -271,24 +271,17 @@ def _batched_fetch(template_sql: str,
             if (max_pages is not None) and (pages > max_pages):
                 print(f"[BATCH] chunk {batch_idx}: reached max_pages={max_pages}, stopping pagination")
                 break
-
             paged_sql = _append_limit_offset(sql, page_size, offset)
             df_page = fetch(paged_sql)
-
             n_rows = len(df_page)
             total_rows_this_chunk += n_rows
             print(f"[BATCH] chunk {batch_idx} page {pages}: offset={offset} limit={page_size} -> {n_rows} rows")
-
             if n_rows == 0:
                 break
-
             dfs.append(df_page)
-
             if n_rows < page_size:
                 break
-
             offset += page_size
-
         print(f"[BATCH] chunk {batch_idx}: total {total_rows_this_chunk} rows across {pages} page(s)")
 
     if dfs:
