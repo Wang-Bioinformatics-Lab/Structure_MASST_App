@@ -4,3 +4,4 @@ database*
 sessionoutput*
 work/work*
 !work/work_env*
+external

@@ -9,8 +9,8 @@ services:
       - ./logs:/app/logs:rw
       - ./database/:/app/database:ro
       - ./sessionoutput:/app/sessionoutput:rw
-      - ./work/work:/app/work/work:rw
-      - ./work/work_env:/app/work/work_env:rw
+      - ./work:/app/work:rw
+      - ./external:/app/external:rw
     networks:
       - default
       - nginx-net
