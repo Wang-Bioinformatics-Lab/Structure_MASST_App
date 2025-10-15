@@ -18,6 +18,12 @@ umami.set_url_base("https://analytics-api.gnps2.org/")
 umami.set_website_id('032bfca4-a353-4586-b637-8908d8b71c85')
 umami.set_hostname('analytics-api.gnps2.org')
 
+# Add a tracking token
+from streamlit.components.v1 import html
+html('<script async defer data-website-id="74bc9983-13c4-4da0-89ae-b78209c13aaf" src="https://analytics.gnps2.org/umami.js"></script>', width=0, height=0) # GNPS2 Global
+html('<script defer src="https://analytics-api.gnps2.org/script.js" data-website-id="74665d88-3b9d-4812-b8fc-7f55ceb08f11"></script>',  width=0, height=0) # Streamlit Apps
+html('<script defer src="https://analytics-api.gnps2.org/script.js" data-website-id="032bfca4-a353-4586-b637-8908d8b71c85"></script>',  width=0, height=0) # Structure MASST
+
 
 # Write the page label
 st.set_page_config(
