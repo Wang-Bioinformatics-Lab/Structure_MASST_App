@@ -3,6 +3,7 @@ import os
 import streamlit.components.v1 as components
 import sys 
 
+
 HERE = os.path.dirname(__file__)  
 PKG_PATH = os.path.abspath(os.path.join(HERE, '..', 'bin'))
 
@@ -10,6 +11,13 @@ if PKG_PATH not in sys.path:
     sys.path.insert(0, PKG_PATH)
 
 from plotting import raw_data_sankey, export_hits_map
+
+# Tracking
+import umami
+umami.set_url_base("https://analytics-api.gnps2.org/")
+umami.set_website_id('032bfca4-a353-4586-b637-8908d8b71c85')
+umami.set_hostname('analytics-api.gnps2.org')
+
 
 # Write the page label
 st.set_page_config(
@@ -34,6 +42,9 @@ if st.session_state.get("raw_results"):
     selected_tab = st.session_state.raw_results[selected_name]
 
     if st.button("Run GeoMASST", key="run_geomasst_btn"):
+        # Tracking this action
+        umami.new_event(event_name="GeoMASST Button Clicked")
+
         with st.spinner("Running GeoMASST…"): 
             df_redu = st.session_state.raw_results[selected_name]["redu"]
             fig_map, _ = export_hits_map(df_redu, engine="mapbox", hover_mri="count", map_style='carto-positron')

@@ -8,6 +8,13 @@ import json
 import pandas as pd
 from pathlib import Path
 
+# Tracking
+import umami
+umami.set_url_base("https://analytics-api.gnps2.org/")
+umami.set_website_id('032bfca4-a353-4586-b637-8908d8b71c85')
+umami.set_hostname('analytics-api.gnps2.org')
+
+
 HERE = os.path.dirname(__file__)
 NF_PATH = os.path.abspath(os.path.join(HERE, '..', 'external', 'LifeMASST', 'nf_workflow.nf'))
 
@@ -294,6 +301,9 @@ with lifemasst_button:
         f"Run LifeMASST",
         key="lifemasst_btn",
     ):
+        # Tracking this action
+        umami.new_event(event_name="LifeMASST Button Clicked")
+
         try:
             with st.spinner("Running LifeMASST…"):
                 subprocess.run(
