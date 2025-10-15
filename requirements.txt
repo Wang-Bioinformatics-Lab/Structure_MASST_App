@@ -21,3 +21,4 @@ dash_extensions
 rdkit
 
 python-dotenv
+umami-analytics

@@ -40,3 +40,4 @@ dependencies:
       - dash_extensions
       - python-dotenv
       - streamlit_ketcher
+      - umami-analytics

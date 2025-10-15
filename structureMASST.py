@@ -48,6 +48,13 @@ from dotenv import load_dotenv
 from streamlit_ketcher import st_ketcher
 import gc
 
+# Tracking
+import umami
+umami.set_url_base("https://analytics-api.gnps2.org/")
+umami.set_website_id('032bfca4-a353-4586-b637-8908d8b71c85')
+umami.set_hostname('analytics-api.gnps2.org')
+
+
 # Load .env file
 load_dotenv("keys.env")
 SMARTS_API_KEY = os.getenv("SMARTS_API_KEY", "")
@@ -412,6 +419,10 @@ elif searchtype_option == "Tanimoto similarity":
 
 # — run the search —
 if st.button("Get Available Spectra", icon=':material/search:'):
+    # Tracking this action
+    umami.new_event(event_name="Get Available Spectra Clicked")
+
+
     # Use new_smiles from structure editor if available, otherwise use original input
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
     if smiles_type == "smiles":
