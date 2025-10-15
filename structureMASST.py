@@ -379,7 +379,7 @@ if smiles_input:
             #if st.button("View SMARTS", icon=":material/visibility:"):
             show_structure_dialog(bytes_io)
         else:
-            st.warning("Failed to retrieve SMARTS image from the API. Please try again.")
+            st.warning("Failed to retrieve SMARTS image from the API. You can still go ahead.")
     else:
         st.warning("Not a valid SMILES/SMARTS")
 

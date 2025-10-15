@@ -110,8 +110,8 @@ def neutralize_atoms(smiles):
 
 def tautomerize_smiles(smiles):
     params = rdMolStandardize.CleanupParameters()
-    params.maxTautomers = 100000
-    params.maxTransforms = 100000
+    params.maxTautomers = 2000
+    params.maxTransforms = 2000
     te = rdMolStandardize.TautomerEnumerator(params)
     mol = Chem.MolFromSmiles(smiles)
     mol = te.Canonicalize(mol)
