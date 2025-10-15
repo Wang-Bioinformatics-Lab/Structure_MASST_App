@@ -3,5 +3,5 @@ log
 database*
 sessionoutput*
 work/work*
-!work/work_env*
+work/work_env*
 external
