@@ -41,3 +41,5 @@ dependencies:
       - python-dotenv
       - streamlit_ketcher
       - umami-analytics
+      - celery==5.2.2
+      - redis

@@ -59,7 +59,35 @@ services:
       LETSENCRYPT_HOST: masst-records.gnps2.org
       LETSENCRYPT_EMAIL: mwang87@gmail.com
 
+
+  structure-masst-redis:
+    image: redis:7.2
+    container_name: structure-masst-redis
+    networks:
+      - default
+    restart: unless-stopped
+    volumes:
+      - ./redis-data:/data
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+
+  structure-masst-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: structure-masst-worker
+    command: /app/run_worker.sh
+    volumes:
+      - ./logs:/app/logs:rw
+      - ./database/:/app/database:ro
+      - ./sessionoutput:/app/sessionoutput:rw
+    depends_on:
+      - structure-masst-redis
+    networks:
+      - default
+    restart: unless-stopped
+      
 networks:
   nginx-net:
     external:
       name: nginx-net
+
