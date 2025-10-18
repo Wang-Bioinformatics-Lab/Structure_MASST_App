@@ -245,8 +245,8 @@ with col_name:
         "Type a chemical name to search PubChem",
         key="name_query",
         placeholder="e.g., diazepam, caffeine, etc.",
+        on_change=lambda: st.session_state.update({'structure_editor_open': False, 'new_smiles': '', 'smiles_input': ''})
     )
-
     # If the query changed (e.g., after Enter), fetch suggestions once
     if name_query and name_query != st.session_state["last_fetched_query"]:
         suggestions = pubchem_autocomplete(name_query) or []
@@ -291,8 +291,10 @@ with col_smiles:
         "SMILES/SMARTS",
         key="smiles_input",  # gets auto-populated only if single-component
         placeholder="Enter SMILES or SMARTS",
-        help="Enter a valid SMILES or SMARTS string. For SMARTS string creation, you can use third-party tools like SMARTSPlus https://smarts.plus/create"
-    )    
+        help="Enter a valid SMILES or SMARTS string. For SMARTS string creation, you can use third-party tools like SMARTSPlus https://smarts.plus/create",
+        #cleans session state on change and cleans name input and suggestions
+        on_change=lambda: st.session_state.update({'structure_editor_open': False, 'new_smiles': '', 'name_query': '', 'name_suggestions': []}),
+    )
     smiles_input = smiles_input.strip()
     # Use effective SMILES (from editor if available) for type detection
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
