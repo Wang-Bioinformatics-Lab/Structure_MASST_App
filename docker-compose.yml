@@ -30,8 +30,6 @@ services:
       VIRTUAL_PORT: 5000
       LETSENCRYPT_HOST: structure-masst.gnps2.org
       LETSENCRYPT_EMAIL: mwang87@gmail.com
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_BACKEND_URL: redis://redis:6379/0
 
   structure-masst-datasette:
     ports:
@@ -62,7 +60,7 @@ services:
       LETSENCRYPT_EMAIL: mwang87@gmail.com
 
 
-  redis:
+  structure-masst-redis:
     image: redis:7.2
     container_name: structure-masst-redis
     networks:
@@ -72,26 +70,21 @@ services:
       - ./redis-data:/data
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
 
-  celery-worker:
+  structure-masst-worker:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: structure-masst-celery
-    command: celery -A tasks worker --loglevel=INFO --concurrency=4
+    container_name: structure-masst-worker
+    command: /app/run_worker.sh
     volumes:
       - ./logs:/app/logs:rw
       - ./database/:/app/database:ro
       - ./sessionoutput:/app/sessionoutput:rw
-      - ./work:/app/work:rw
-      - ./external:/app/external:rw
     depends_on:
-      - redis
+      - structure-masst-redis
     networks:
       - default
     restart: unless-stopped
-    environment:
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_BACKEND_URL: redis://redis:6379/0
       
 networks:
   nginx-net:

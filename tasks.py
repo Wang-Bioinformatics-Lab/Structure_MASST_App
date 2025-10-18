@@ -7,13 +7,17 @@ import gc
 
 # Connect to Redis (broker) and store results back in Redis
 celery_app = Celery(
-    "structuremasst",
-    broker="redis://redis:6379/0",
-    backend="redis://redis:6379/0"
+    "structuremasst_tasks",
+    broker="redis://structure-masst-redis",
+    backend="redis://structure-masst-redis"
 )
 
-@celery_app.task(bind=True)
-def run_get_library_table(self, smiles, searchtype, tanimoto_threshold, sqlite_path, api_endpoint, timeout):
+@celery_app.task()
+def heartbeat_task():
+    return "Structure MASST worker is alive."
+
+@celery_app.task()
+def run_get_library_table(smiles, searchtype, tanimoto_threshold, sqlite_path, api_endpoint, timeout):
     df = get_library_table(
         smiles=smiles,
         searchtype=searchtype,
@@ -25,9 +29,8 @@ def run_get_library_table(self, smiles, searchtype, tanimoto_threshold, sqlite_p
     return df.to_json(orient="records")
 
 
-@celery_app.task(bind=True)
+@celery_app.task()
 def run_get_masst_and_redu_tables(
-    self,
     df_for_name_json,
     cosine_threshold,
     matching_peaks,
@@ -56,9 +59,8 @@ def run_get_masst_and_redu_tables(
         "redu": redu_df.to_json(orient="records"),
     }
 
-@celery_app.task(bind=True)
+@celery_app.task()
 def run_retrieve_raw_data_matches(
-    self,
     df_for_name_json,
     database,
     precursor_mz_tol,
