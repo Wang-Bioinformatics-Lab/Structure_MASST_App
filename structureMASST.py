@@ -585,6 +585,12 @@ if st.button("Get Available Spectra", icon=':material/search:'):
         # get results into session state
         st.session_state.grouped_results = grouped_results
 
+        for var in ["df_library_structurematch", "result"]:
+            try:
+                del locals()[var]
+            except KeyError:
+                pass
+        gc.collect()
 
 # render outer tabs for each structure query
 if "grouped_results" in st.session_state and st.session_state["grouped_results"]:
@@ -1125,87 +1131,21 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             time.sleep(0.1)
 
                         result_data = result.get()
-                        masst_df = pd.read_json(result_data["masst"])
+                        #masst_df = pd.read_json(result_data["masst"])
                         redu_df = pd.read_json(result_data["redu"]) 
 
-                        # if cosine not in masst_df.columns return empty dataframes
-                        if "cosine" not in masst_df.columns or "matching_peaks" not in masst_df.columns:
+                        # if cosine not in redu_df.columns return empty dataframes
+                        if "Cosine" not in redu_df.columns or "Matching Peaks" not in redu_df.columns:
                             new_results[name] = {"masst": pd.DataFrame(), "redu": pd.DataFrame()}
                             continue
 
-                        # subset results for sample matches table to best match by sample
-                        df_masst_sorted = masst_df.sort_values(by=["cosine", "matching_peaks"], ascending=[False, False])
-                        df_masst_unique = df_masst_sorted.drop_duplicates(subset="mri_id_int", keep="first")
-                        
+
                         if 'mri_id_int' in redu_df.columns:
-                            # add query spectrum ID and scan ID to redu_df //could potentially move this into get_masst_and_redu_tables
-                            redu_df = redu_df.merge(
-                                df_masst_unique[["mri_id_int", "scan_id", "query_spectrum_id", 'matching_peaks', 'cosine', 'Adduct', 'Precursor_MZ', 'inchikey_first_block', 'similar_library_spectra', 'unique_spectra_in_mri']],
-                                on="mri_id_int",
-                                how="left"
-                                )
-                            
-                            # IF df_masst_sorted, df_masst_unique or masst_df exist free envronemnt from them
-                            del df_masst_sorted, df_masst_unique, masst_df
-                            gc.collect()
-
-
                             # add Compound_Name from molecule_overview[name]
                             redu_df = redu_df.merge(
                                 st.session_state.molecule_overview[name][["inchikey_first_block", "Compound_Name"]],
                                 on="inchikey_first_block",
                                 how="left"
-                            )
-
-                            redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'] + redu_df['unique_spectra_in_mri'] - 2
-
-                            # make integer
-                            redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'].astype('Int64')
-
-                            # make character values from 0 to "9+"
-                            s = redu_df["similar_library_spectra"].astype("Int64")       
-                            b = s.clip(upper=9)                                          
-                            redu_df["similar_library_spectra"] = b.astype("string").where(b < 9, "9+")
-
-
-                            # rename cosine to Cosine and matching_peaks to Matching Peaks
-                            redu_df = redu_df.rename(columns={
-                                "cosine": "Cosine",
-                                "matching_peaks": "Matching Peaks",
-                                "USI": "mri"
-                            })
-
-                            redu_df['Delta Mass'] = 0
-
-                            # make library usis for the links
-                            redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
-                                lambda x: (
-                                    f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
-                                    else f"mzspec:MASSBANK::accession:{x}" 
-                                )
-                            )                    
-                            # in every row add USI + :scan: + scan_id (as str)
-                            redu_df["scan_id"] = pd.to_numeric(redu_df["scan_id"], errors="raise").astype(int)
-                            redu_df["USI"] = redu_df["mri"] + ":scan:" + redu_df["scan_id"].astype(str)
-                            redu_df["best_spectral_match"] = redu_df.apply(
-                                lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]),
-                                axis=1
-                                )
-
-                            if "Check LC peak" not in redu_df.columns:
-                                redu_df["Check LC peak"] = np.nan
-
-                            # Make sure the destination column can hold strings
-                            redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  
-
-                            mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
-                            redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
-                                lambda row: build_dashboard_eic_url(
-                                    usi=row['USI'],
-                                    xic_mz=row['Precursor_MZ'],
-                                    xic_tolerance=0.05
-                                ),
-                                axis=1
                             )
                             
                             redu_df["query_name"] = name
@@ -1383,6 +1323,15 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                     # store the results in session state
                 st.session_state.raw_results = new_results
+
+                for var in ["masst_df", "redu_df", "result_data", "result"]:
+                    try:
+                        del locals()[var]
+                    except KeyError:
+                        pass
+                gc.collect()
+
+
 
         # display results in tabs
         if st.session_state.get("raw_results"):

@@ -12,6 +12,14 @@ celery_app = Celery(
     backend="redis://structure-masst-redis"
 )
 
+celery_app.conf.update(
+    result_expires=900,              # 0.25 hour expiration for results (prevents Redis bloat)
+    task_acks_late=True,              # ensures a task is only acked after success
+    worker_prefetch_multiplier=1,     # prevents one worker from hogging all tasks
+    #broker_transport_options={"visibility_timeout": 7200},  # reclaim lost tasks after 2h
+)
+
+
 @celery_app.task()
 def heartbeat_task():
     return "Structure MASST worker is alive."
