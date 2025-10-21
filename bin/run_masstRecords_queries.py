@@ -779,4 +779,4 @@ def get_masst_and_redu_tables(
         )
         
 
-    return redu_df
+    return pd.DataFrame(), redu_df
