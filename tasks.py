@@ -14,9 +14,6 @@ celery_app = Celery(
 
 celery_app.conf.update(
     result_expires=900,              # 0.25 hour expiration for results (prevents Redis bloat)
-    task_acks_late=True,              # ensures a task is only acked after success
-    worker_prefetch_multiplier=1,     # prevents one worker from hogging all tasks
-    #broker_transport_options={"visibility_timeout": 7200},  # reclaim lost tasks after 2h
 )
 
 
