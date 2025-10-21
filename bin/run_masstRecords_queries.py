@@ -22,6 +22,7 @@ import urllib.parse
 from pathlib import Path
 from bin.linkouts import build_dashboard_eic_url, build_spectraresolver_link
 import numpy as np
+from bin.shared_data import get_redu_table_cached
 
 # ——— Shared helpers ———
 def _append_limit_offset(sql: str, limit: int, offset: int) -> str:
@@ -693,25 +694,30 @@ def get_masst_and_redu_tables(
             page_size=500000,
             max_pages=None
         )
+    # else:
+    #     print(f"[STEP 4] >{MAX_IDS_FOR_IN} mri_id_ints → full-table scan with pagination")
+    #     redu_sql_all = f"SELECT {', '.join(redu_columns_list)} FROM redu_table"
+    #     redu_df = _batched_fetch(
+    #         redu_sql_all,
+    #         None,             # table-mode: ignore IDs
+    #         fetch,
+    #         chunk_size=0,     # ignored in table-mode
+    #         paginate=True,
+    #         page_size=50000,
+    #         max_pages=None
+    #     )
+    #     # Filter locally (ensure type alignment)
+    #     mids_str = list(map(str, mids))
+    #     redu_df = redu_df[redu_df['mri_id_int'].isin(mids_str)]
     else:
-        print(f"[STEP 4] >{MAX_IDS_FOR_IN} mri_id_ints → full-table scan with pagination")
-        redu_sql_all = f"SELECT {', '.join(redu_columns_list)} FROM redu_table"
-        redu_df = _batched_fetch(
-            redu_sql_all,
-            None,             # table-mode: ignore IDs
-            fetch,
-            chunk_size=0,     # ignored in table-mode
-            paginate=True,
-            page_size=50000,
-            max_pages=None
-        )
-        # Filter locally (ensure type alignment)
+        print(f"[STEP 4] >{MAX_IDS_FOR_IN} mri_id_ints → using shared ReDU table cache")
+        redu_df_full = get_redu_table_cached(fetch, redu_columns_list, sqlite_path)
         mids_str = list(map(str, mids))
-        redu_df = redu_df[redu_df['mri_id_int'].isin(mids_str)]
+        redu_df = redu_df_full[redu_df_full['mri_id_int'].isin(mids_str)]
 
 
     #Relocated from structureMASST.py to here
-
+    ######################
 
     # subset results for sample matches table to best match by sample
     df_masst_sorted = masst_df.sort_values(by=["cosine", "matching_peaks"], ascending=[False, False])
