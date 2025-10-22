@@ -59,14 +59,18 @@ umami.set_website_id('032bfca4-a353-4586-b637-8908d8b71c85')
 umami.set_hostname('analytics-api.gnps2.org')
 
 # TESTING
-heartbeat_task_result = tasks.heartbeat_task.delay()
+USE_CELERY = os.getenv("USE_CELERY", "0") == "1"
 
-while(1):
-    if heartbeat_task_result.ready():
-        break
-    time.sleep(0.1)
-
-print("Heartbeat task result:", heartbeat_task_result.get())
+if USE_CELERY:
+    try:
+        heartbeat_task_result = tasks.heartbeat_task.delay()
+        if heartbeat_task_result.get(timeout=5) == "Structure MASST worker is alive.":
+            print("✅ Celery worker reachable.")
+    except Exception as e:
+        print(f"⚠️ Celery unavailable ({e}), continuing without it.")
+        USE_CELERY = False
+else:
+    print("⚙️ Running without Celery.")
 
 
 # Load .env file
