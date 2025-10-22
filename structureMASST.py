@@ -58,6 +58,17 @@ umami.set_url_base("https://analytics-api.gnps2.org/")
 umami.set_website_id('032bfca4-a353-4586-b637-8908d8b71c85')
 umami.set_hostname('analytics-api.gnps2.org')
 
+# TESTING
+heartbeat_task_result = tasks.heartbeat_task.delay()
+
+while(1):
+    if heartbeat_task_result.ready():
+        break
+    time.sleep(0.1)
+
+print("Heartbeat task result:", heartbeat_task_result.get())
+
+
 # Load .env file
 load_dotenv("keys.env")
 SMARTS_API_KEY = os.getenv("SMARTS_API_KEY", "")
@@ -517,7 +528,15 @@ if st.button("Get Available Spectra", icon=':material/search:'):
         for smi, name, searchtype in zip(smiles_list, name_list, searchtype_list):
             try:
                 tanimoto_threshold = tanimoto_cutoff if searchtype == "tanimoto" else None
-                df_library_structurematch = tasks.run_get_library_table(smi, searchtype, tanimoto_threshold, config.PATH_TO_SQLITE, config.MASSTRECORDS_ENDPOINT, config.MASSTRECORDS_TIMEOUT)
+                result = tasks.run_get_library_table.delay(smi, searchtype, tanimoto_threshold, config.PATH_TO_SQLITE, config.MASSTRECORDS_ENDPOINT, config.MASSTRECORDS_TIMEOUT)
+
+                # Waiting
+                while(1):
+                    if result.ready():
+                        break
+                    time.sleep(0.1)
+
+                df_library_structurematch = pd.read_json(result.get())
 
                 if df_library_structurematch.empty:
                     continue
@@ -1116,8 +1135,8 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                         df_for_name = pd.concat(sel_frames, ignore_index=True)
 
-                        (masst_df, redu_df) = tasks.run_get_masst_and_redu_tables(
-                            df_for_name,
+                        result = tasks.run_get_masst_and_redu_tables.delay(
+                            df_for_name.to_json(orient="records"),
                             float(min_cosine),
                             int(min_peaks),
                             config.PATH_TO_SQLITE,
@@ -1126,8 +1145,18 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             200,
                         )
 
-                        # if cosine not in masst_df.columns return empty dataframes
-                        if "cosine" not in masst_df.columns or "matching_peaks" not in masst_df.columns:
+                        # Waiting
+                        while(1):
+                            if result.ready():
+                                break
+                            time.sleep(0.1)
+
+                        result_data = result.get()
+                        #masst_df = pd.read_json(result_data["masst"])
+                        redu_df = pd.read_json(result_data["redu"]) 
+
+                        # if cosine not in redu_df.columns return empty dataframes
+                        if "Cosine" not in redu_df.columns or "Matching Peaks" not in redu_df.columns:
                             new_results[name] = {"masst": pd.DataFrame(), "redu": pd.DataFrame()}
                             continue
 
@@ -1211,8 +1240,39 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 modification_mass = modification_mass if 'modification_mass' in locals() else None
 
                             # retrieve raw data matches through MASST
-                            redu_df = tasks.run_retrieve_raw_data_matches(
-                                df_for_name,
+                            # task_id = celery_app.send_task(
+                            #     "tasks.run_retrieve_raw_data_matches",
+                            #     kwargs={
+                            #         "df_for_name_json": df_for_name.to_json(orient="records"),
+                            #         "database": "metabolomicspanrepo_index_nightly",
+                            #         "precursor_mz_tol": float(prec_tol),
+                            #         "fragment_mz_tol": float(frag_tol),
+                            #         "min_cos": float(min_cosine),
+                            #         "matching_peaks": int(min_peaks),
+                            #         "analog": do_modification_search,
+                            #         "modimass": modification_mass,
+                            #         "elimination": do_elimination if "do_elimination" in locals() else False,
+                            #         "addition": do_addition if "do_addition" in locals() else False,
+                            #         "modification_condition": modification_condition if "modification_condition" in locals() else None,
+                            #         "sqlite_path": config.PATH_TO_SQLITE,
+                            #         "api_endpoint": config.MASSTRECORDS_ENDPOINT,
+                            #         "timeout": config.MASSTRECORDS_TIMEOUT,
+                            #     },
+                            # )
+
+                            # res = AsyncResult(task_id, app=celery_app)
+                            # while not res.ready():
+                            #     time.sleep(2)
+                            #     res = AsyncResult(task_id, app=celery_app)
+
+                            # if res.successful():
+                            #     result = res.get()
+                            #     redu_df = pd.read_json(result["redu"])
+                            # else:
+                            #     redu_df = pd.DataFrame()
+
+                            result = tasks.run_retrieve_raw_data_matches.delay(
+                                df_for_name.to_json(orient="records"),
                                 "metabolomicspanrepo_index_nightly",
                                 float(prec_tol),
                                 float(frag_tol),
@@ -1227,6 +1287,18 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 config.MASSTRECORDS_ENDPOINT,
                                 config.MASSTRECORDS_TIMEOUT,
                             )
+
+                            # Waiting
+                            while(1):
+                                if result.ready():
+                                    break
+                                time.sleep(0.1)
+
+                            result_data = result.get()
+                            redu_df = pd.read_json(result_data["redu"])
+
+
+
 
                             if len(redu_df) > 0:
                                 # make library usis for the links
