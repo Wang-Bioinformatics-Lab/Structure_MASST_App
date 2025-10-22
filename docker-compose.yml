@@ -66,9 +66,7 @@ services:
     networks:
       - default
     restart: unless-stopped
-    volumes:
-      - ./redis-data:/data
-    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning", "--maxmemory", "2gb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
 
   structure-masst-worker:
     build:
