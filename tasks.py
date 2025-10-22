@@ -14,6 +14,58 @@ celery_app = Celery(
     backend="redis://structure-masst-redis"
 )
 
+celery_app.conf.update(
+    result_expires=900,              # 0.25 hour expiration for results (prevents Redis bloat)
+)
+
+
+from celery.signals import worker_init
+from bin.shared_data import get_redu_table_cached
+from bin.run_masstRecords_queries import _get_fetcher
+import importlib.util
+
+
+@worker_init.connect
+def preload_redu_table(**kwargs):
+    """
+    Preload the ReDU table once per Celery *parent process* before workers fork.
+    This makes the table available to all worker subprocesses via copy-on-write.
+    """
+
+    # 🔹 Load config.py dynamically (Celery runs in its own context)
+    config_path = "/app/config.py"
+    spec = importlib.util.spec_from_file_location("config", config_path)
+    config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config)
+
+    sqlite_path = config.PATH_TO_SQLITE
+    api_endpoint = config.MASSTRECORDS_ENDPOINT
+    timeout = config.MASSTRECORDS_TIMEOUT
+
+    # 🔹 Create the fetcher for SQLite or Datasette
+    fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
+
+    # 🔹 Dynamically detect ReDU columns (excluding heavy/unused ones)
+    sql = "SELECT name FROM pragma_table_info('redu_table')"
+    redu_columns = fetch(sql)
+    redu_columns_list = redu_columns["name"].tolist()
+
+    columns_to_exclude = [
+        "filename", "TermsofPosition", "ComorbidityListDOIDIndex", "SampleCollectionDateandTime",
+        "ENVOBroadScale", "ENVOLocalScale", "ENVOMediumScale", "qiita_sample_name",
+        "UniqueSubjectID", "UBERONOntologyIndex", "DOIDOntologyIndex", "ENVOEnvironmentBiomeIndex",
+        "ENVOEnvironmentMaterialIndex", "ENVOLocalScaleIndex", "ENVOBroadScaleIndex",
+        "ENVOMediumScaleIndex", "classification", "MS2spectra_count",
+        "InternalStandardsUsed", "HumanPopulationDensity"
+    ]
+    redu_columns_list = [col for col in redu_columns_list if col not in columns_to_exclude]
+
+    # 🔹 Preload ReDU cache once per worker
+    print("[INIT] Preloading ReDU table for this worker...")
+    get_redu_table_cached(fetch, redu_columns_list, sqlite_path)
+    print("[INIT] Worker preload complete.")
+
+
 @celery_app.task()
 def heartbeat_task():
     return "Structure MASST worker is alive."

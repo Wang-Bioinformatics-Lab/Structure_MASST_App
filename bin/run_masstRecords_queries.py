@@ -20,6 +20,9 @@ import math
 import json
 import urllib.parse
 from pathlib import Path
+from bin.linkouts import build_dashboard_eic_url, build_spectraresolver_link
+import numpy as np
+from bin.shared_data import get_redu_table_cached
 
 # ——— Shared helpers ———
 def _append_limit_offset(sql: str, limit: int, offset: int) -> str:
@@ -691,21 +694,95 @@ def get_masst_and_redu_tables(
             page_size=500000,
             max_pages=None
         )
+    # else:
+    #     print(f"[STEP 4] >{MAX_IDS_FOR_IN} mri_id_ints → full-table scan with pagination")
+    #     redu_sql_all = f"SELECT {', '.join(redu_columns_list)} FROM redu_table"
+    #     redu_df = _batched_fetch(
+    #         redu_sql_all,
+    #         None,             # table-mode: ignore IDs
+    #         fetch,
+    #         chunk_size=0,     # ignored in table-mode
+    #         paginate=True,
+    #         page_size=50000,
+    #         max_pages=None
+    #     )
+    #     # Filter locally (ensure type alignment)
+    #     mids_str = list(map(str, mids))
+    #     redu_df = redu_df[redu_df['mri_id_int'].isin(mids_str)]
     else:
-        print(f"[STEP 4] >{MAX_IDS_FOR_IN} mri_id_ints → full-table scan with pagination")
-        redu_sql_all = f"SELECT {', '.join(redu_columns_list)} FROM redu_table"
-        redu_df = _batched_fetch(
-            redu_sql_all,
-            None,             # table-mode: ignore IDs
-            fetch,
-            chunk_size=0,     # ignored in table-mode
-            paginate=True,
-            page_size=50000,
-            max_pages=None
-        )
-        # Filter locally (ensure type alignment)
+        print(f"[STEP 4] >{MAX_IDS_FOR_IN} mri_id_ints → using shared ReDU table cache")
+        redu_df_full = get_redu_table_cached(fetch, redu_columns_list, sqlite_path)
         mids_str = list(map(str, mids))
-        redu_df = redu_df[redu_df['mri_id_int'].isin(mids_str)]
+        redu_df = redu_df_full[redu_df_full['mri_id_int'].isin(mids_str)]
 
 
-    return masst_df, redu_df
+    #Relocated from structureMASST.py to here
+    ######################
+
+    # subset results for sample matches table to best match by sample
+    df_masst_sorted = masst_df.sort_values(by=["cosine", "matching_peaks"], ascending=[False, False])
+    df_masst_unique = df_masst_sorted.drop_duplicates(subset="mri_id_int", keep="first")
+    
+    if 'mri_id_int' in redu_df.columns:
+        # add query spectrum ID and scan ID to redu_df //could potentially move this into get_masst_and_redu_tables
+        redu_df = redu_df.merge(
+            df_masst_unique[["mri_id_int", "scan_id", "query_spectrum_id", 'matching_peaks', 'cosine', 'Adduct', 'Precursor_MZ', 'inchikey_first_block', 'similar_library_spectra', 'unique_spectra_in_mri']],
+            on="mri_id_int",
+            how="left"
+            )
+        
+
+
+        redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'] + redu_df['unique_spectra_in_mri'] - 2
+
+        # make integer
+        redu_df['similar_library_spectra'] = redu_df['similar_library_spectra'].astype('Int64')
+
+        # make character values from 0 to "9+"
+        s = redu_df["similar_library_spectra"].astype("Int64")       
+        b = s.clip(upper=9)                                          
+        redu_df["similar_library_spectra"] = b.astype("string").where(b < 9, "9+")
+
+
+        # rename cosine to Cosine and matching_peaks to Matching Peaks
+        redu_df = redu_df.rename(columns={
+            "cosine": "Cosine",
+            "matching_peaks": "Matching Peaks",
+            "USI": "mri"
+        })
+
+        redu_df['Delta Mass'] = 0
+
+        # make library usis for the links
+        redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
+            lambda x: (
+                f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
+                else f"mzspec:MASSBANK::accession:{x}" 
+            )
+        )                    
+        # in every row add USI + :scan: + scan_id (as str)
+        redu_df["scan_id"] = pd.to_numeric(redu_df["scan_id"], errors="raise").astype(int)
+        redu_df["USI"] = redu_df["mri"] + ":scan:" + redu_df["scan_id"].astype(str)
+        redu_df["best_spectral_match"] = redu_df.apply(
+            lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]),
+            axis=1
+            )
+
+        if "Check LC peak" not in redu_df.columns:
+            redu_df["Check LC peak"] = np.nan
+
+        # Make sure the destination column can hold strings
+        redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  
+
+        mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
+        redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
+            lambda row: build_dashboard_eic_url(
+                usi=row['USI'],
+                xic_mz=row['Precursor_MZ'],
+                xic_tolerance=0.05
+            ),
+            axis=1
+        )
+        
+
+    return pd.DataFrame(), redu_df
