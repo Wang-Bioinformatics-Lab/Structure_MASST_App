@@ -644,7 +644,28 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                     # Fixing levels
                     stages = ["msMassAnalyzer", "Ion_Mode", "Adduct", "collision_energy"]
-                    df_sankey = df_all[stages].dropna()
+
+                    # make a copy to avoid SettingWithCopyWarning
+                    df_sankey = df_all[stages].copy()
+
+                    # Define default fill values with suffixes
+                    fill_values = {
+                        "msMassAnalyzer": "Unknown_1",
+                        "Ion_Mode": "Unknown_2",
+                        "Adduct": "Unknown_3",
+                        "collision_energy": "Unknown_4",
+                    }
+
+                    # Convert collision_energy to string *before* filling to avoid dtype conflicts
+                    if pd.api.types.is_numeric_dtype(df_sankey["collision_energy"]):
+                        df_sankey["collision_energy"] = df_sankey["collision_energy"].astype(str)
+
+                    # Fill NaNs with the custom Unknown labels
+                    df_sankey = df_sankey.fillna(fill_values)
+
+                    # Fill "nan" strings if any
+                    for col, fill_val in fill_values.items():
+                        df_sankey.loc[df_sankey[col] == "nan", col] = fill_val
 
                     # Create labels for Sankey diagram
                     labels = []
