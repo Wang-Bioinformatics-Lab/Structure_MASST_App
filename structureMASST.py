@@ -565,6 +565,11 @@ if st.button("Get Available Spectra", icon=':material/search:'):
 
             st.session_state.molecule_overview[name] = pd.DataFrame(overview)
 
+        # if grouped_results is empty, inform user
+        if not grouped_results:
+            st.warning("No spectra available for this structure.")
+            st.stop()
+
         # get results into session state
         st.session_state.grouped_results = grouped_results
 
