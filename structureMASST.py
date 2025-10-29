@@ -425,8 +425,10 @@ elif searchtype_option == "Tanimoto similarity":
 # — run the search —
 if st.button("Get Available Spectra", icon=':material/search:'):
     # Tracking this action
-    umami.new_event(event_name="Get Available Spectra Clicked")
-
+    try:
+        umami.new_event(event_name="Get Available Spectra Clicked")
+    except Exception as e:
+        print(f"Error tracking event: {e}")
 
     # Use new_smiles from structure editor if available, otherwise use original input
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
@@ -1071,7 +1073,10 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
         # perform the raw data search
         if do_search:
             # Tracking this action
-            umami.new_event(event_name="Do Search Button Clicked")
+            try:
+                umami.new_event(event_name="Do Search Button Clicked")
+            except Exception as e:
+                print(f"Error tracking event: {e}")
 
             time.sleep(2)
             with st.spinner("Searching raw data…"): 

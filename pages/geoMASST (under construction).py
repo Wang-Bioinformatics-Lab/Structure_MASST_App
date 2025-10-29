@@ -49,7 +49,11 @@ if st.session_state.get("raw_results"):
 
     if st.button("Run GeoMASST", key="run_geomasst_btn"):
         # Tracking this action
-        umami.new_event(event_name="GeoMASST Button Clicked")
+        try:
+            umami.new_event(event_name="GeoMASST Button Clicked")
+        except Exception as e:
+            print(f"Error tracking event: {e}")
+        
 
         with st.spinner("Running GeoMASST…"): 
             df_redu = st.session_state.raw_results[selected_name]["redu"]

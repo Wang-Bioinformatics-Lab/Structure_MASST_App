@@ -309,7 +309,10 @@ with lifemasst_button:
         key="lifemasst_btn",
     ):
         # Tracking this action
-        umami.new_event(event_name="LifeMASST Button Clicked")
+        try:
+            umami.new_event(event_name="LifeMASST Button Clicked")
+        except Exception as e:
+            print(f"Error tracking event: {e}")
 
         try:
             with st.spinner("Running LifeMASST…"):
