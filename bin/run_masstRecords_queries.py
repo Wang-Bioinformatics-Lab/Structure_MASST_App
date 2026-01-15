@@ -104,7 +104,7 @@ def _fetch_csv(sql: str, api_endpoint: str, timeout: int,
 
     if want_json:
         # JSON path (safe blob handling)
-        print(f"[API ] Querying (JSON) with SQL: {sql}")
+        print(f"[API ] Querying (JSON) with remote SQL: {sql}")
         resp = requests.get(
             f"{api_endpoint}.json",
             params={"sql": sql, "_shape": "array"},
@@ -160,7 +160,7 @@ def _fetch_sqlite(sql: str, sqlite_path: str,
     """
     Read-only SQLite fetch. BLOBs stay as bytes, other cols coerced as before.
     """
-    print(f"[SQL ] Querying (RO) with SQL: {sql}")
+    print(f"[SQL ] Querying (RO) with local SQL: {sql}")
     with _sqlite_ro_connect(sqlite_path) as conn:
         # Enforce query-only mode at the connection level
         conn.execute("PRAGMA query_only=ON;")
@@ -345,6 +345,8 @@ def get_library_table(
     smiles: str,
     searchtype: str = "exact",
     tanimoto_threshold: float = 0.8,
+    allowed_formula: str | None = None,
+    allowed_elements: str | None = None,
     sqlite_path: str | None = None,
     api_endpoint: str = "http://127.0.0.1:8001/masst_records",
     timeout: int = 100
@@ -352,8 +354,8 @@ def get_library_table(
     """
     Given a SMILES, returns the library_table for its InChIKey prefix.
     """
-    if searchtype not in ["exact", "substructure", "tanimoto"]:
-        raise ValueError(f"Invalid search type: {searchtype}. Must be 'exact' or 'substructure'.")
+    if searchtype not in ["exact", "substructure", "tanimoto", "class_label"]:
+        raise ValueError(f"Invalid search type: {searchtype}.")
     
     if searchtype == "exact":
         mol = Chem.MolFromSmiles(smiles)
@@ -400,7 +402,7 @@ def get_library_table(
             library_df.rename(columns={'spectrum_id': 'query_spectrum_id'}, inplace=True)
 
         df_final = library_df.copy()
-    else:
+    elif searchtype in ["substructure", "tanimoto"]:
         structure_type = detect_smiles_or_smarts(smiles)
         fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
 
@@ -414,31 +416,35 @@ def get_library_table(
             fp_select = "l.fp_pattern, hex(l.fp_pattern) AS fp_pattern_hex"
 
         rep_sql = f"""
-        WITH reps AS (
-        SELECT MIN(l.spectrum_id_int) AS rep_id
-        FROM library_table AS l
-        WHERE l.ppmBetweenExpAndThMass <= 20
-            AND (l.msMassAnalyzer NOT IN ('quadrupole', 'ion trap') OR l.msMassAnalyzer IS NULL)
-            AND l.InChIKey_smiles_firstBlock IS NOT NULL
-            AND l.InChIKey_smiles_firstBlock != ''
-            AND l.InChIKey_smiles_firstBlock != 'NaN'
-            {fp_predicate}
-        GROUP BY l.InChIKey_smiles_firstBlock
-        )
-        SELECT l.spectrum_id_int,
-            l.InChIKey_smiles,
-            l.InChIKey_smiles_firstBlock,
-            l.Smiles,
-            {fp_select}
-        FROM library_table AS l
-        JOIN reps r ON l.spectrum_id_int = r.rep_id
+            WITH reps AS (
+                SELECT MIN(l.spectrum_id_int) AS rep_id
+                FROM library_table AS l
+                WHERE l.ppmBetweenExpAndThMass <= 20
+                AND (l.msMassAnalyzer NOT IN ('quadrupole', 'ion trap') OR l.msMassAnalyzer IS NULL)
+                AND (
+                    l.GNPS_library_membership NOT LIKE 'MULTIPLEX-SYNTHESIS-LIBRARY-%'
+                    AND l.InChIKey_smiles_firstBlock IS NOT NULL
+                    AND l.InChIKey_smiles_firstBlock != ''
+                    AND l.InChIKey_smiles_firstBlock != 'NaN'
+                    {fp_predicate}
+                )
+                GROUP BY l.InChIKey_smiles_firstBlock
+            )
+            SELECT 
+                l.spectrum_id_int,
+                l.InChIKey_smiles,
+                l.InChIKey_smiles_firstBlock,
+                l.Smiles,
+                {fp_select}
+            FROM library_table AS l
+            JOIN reps r ON l.spectrum_id_int = r.rep_id;
         """
         df_reps = fetch(rep_sql)
 
         # decode base64 blobs (Datasette JSON), no-op for local bytes
         _normalize_fp_columns(df_reps, fp_blob_cols)
 
-        # if still None (as your debug shows), backfill bytes from hex()
+        # if still None, backfill bytes from hex()
         for c in fp_blob_cols:
             _fill_bytes_from_hex(df_reps, c)
 
@@ -455,6 +461,8 @@ def get_library_table(
             smiles_type=structure_type,
             formula_base='any',
             element_diff='any',
+            allowed_formula=allowed_formula,
+            allowed_elements=allowed_elements,
             max_by_grp=None,
             max_overall=None,
             tanimoto_threshold=tanimoto_threshold
@@ -483,6 +491,7 @@ def get_library_table(
         AND ppmBetweenExpAndThMass <= 20
         AND (msMassAnalyzer NOT IN ('quadrupole', 'ion trap') OR msMassAnalyzer IS NULL)
         AND Smiles IS NOT NULL
+        AND GNPS_library_membership NOT LIKE 'MULTIPLEX-SYNTHESIS-LIBRARY-%'
         AND Smiles != ''
         AND Smiles != 'NaN'
         """
@@ -565,6 +574,44 @@ def get_library_table(
         df_final.rename(columns={'InChIKey_smiles_firstBlock': 'inchikey_first_block'}, inplace=True)
         df_final.rename(columns={'spectrum_id': 'query_spectrum_id'}, inplace=True)
 
+    elif searchtype == "class_label":
+
+        fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
+        sql = "SELECT name FROM pragma_table_info('library_table')"
+        library_columns = fetch(sql)
+        library_columns_list = library_columns['name'].tolist()
+        columns_to_exclude = ['fp_pattern', 'fp_morgan', 'fp_morgan_popcnt', 'fp_popcnt']
+
+        library_column_list = [c for c in library_columns_list if c not in columns_to_exclude]
+
+        #Exclude blob columns from the select statement
+        molecule_class = smiles
+        fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
+        lib_sql = (
+            "SELECT " + ", ".join(library_column_list) +
+            " FROM library_table "
+            "WHERE (msMassAnalyzer NOT IN ('quadrupole', 'ion trap') OR msMassAnalyzer IS NULL) "
+            f"AND ('{molecule_class}' IN (classyfire_superclass, classyfire_class, classyfire_subclass, classyfire_direct_parent))"
+        )
+
+        library_df = fetch(lib_sql)
+
+        if 'collision_energy' in library_df.columns:
+            library_df['collision_energy'] = library_df['collision_energy'].apply(lambda x: str(x) if pd.notna(x) else 'unknown')
+        if 'msMassAnalyzer' in library_df.columns:
+            library_df['msMassAnalyzer'] = library_df['msMassAnalyzer'].apply(lambda x: str(x) if pd.notna(x) else '_unknown')
+
+        library_df[['Adduct', 'msManufacturer', 'msMassAnalyzer', 'GNPS_library_membership']] = library_df[
+            ['Adduct', 'msManufacturer', 'msMassAnalyzer', 'GNPS_library_membership']
+        ].fillna('unknown')
+
+        if 'InChIKey_smiles_firstBlock' in library_df.columns:
+            library_df.rename(columns={'InChIKey_smiles_firstBlock': 'inchikey_first_block'}, inplace=True)
+
+        if 'spectrum_id' in library_df.columns:
+            library_df.rename(columns={'spectrum_id': 'query_spectrum_id'}, inplace=True)
+
+        df_final = library_df.copy()
 
     for col in ['spectrum_id_int']:
         if col in df_final.columns:
@@ -578,6 +625,7 @@ def get_masst_and_redu_tables(
     library_df: pd.DataFrame,
     cosine_threshold: float = 0.7,
     matching_peaks: int = 5,
+    min_annotation_rank: int = 0,
     sqlite_path: str | None = None,
     api_endpoint: str = "http://127.0.0.1:8001/masst_records",
     timeout: int = 10,
@@ -615,6 +663,15 @@ def get_masst_and_redu_tables(
     #     including all MASST fields for that representative hit plus
     #     a column 'unique_spectra_in_mri' giving how many distinct spectra
     #     from the query molecule matched that MRI.
+
+    if min_annotation_rank == 0:
+        annotation_rank_condition = ""
+    elif min_annotation_rank == 1:
+        annotation_rank_condition = " AND annotation_rank = 1"
+    else:
+        # smaller or equal to min_annotation_rank
+        annotation_rank_condition = f" AND annotation_rank <= {min_annotation_rank}"
+
     masst_sql_tmpl = (
         "WITH filtered AS ("
         "  SELECT * "
@@ -622,6 +679,7 @@ def get_masst_and_redu_tables(
         "  WHERE spectrum_id_int IN ({ids}) "
         f"    AND cosine >= {cosine_threshold} "
         f"    AND matching_peaks >= {matching_peaks}"
+        f"     {annotation_rank_condition}"
         "), ranked AS ("
         "  SELECT f.*, "
         "         ROW_NUMBER() OVER (PARTITION BY mri_id_int ORDER BY cosine DESC) AS rn "

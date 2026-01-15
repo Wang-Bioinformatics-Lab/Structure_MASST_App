@@ -1,3 +1,5 @@
+import importlib
+from socket import timeout
 import plotly.graph_objects as go
 import plotly.express as px
 import plotly.colors as pc
@@ -7,8 +9,8 @@ import numpy as np
 import json
 import os
 import pyarrow.dataset as ds
-
-
+from bin.shared_data import get_redu_table_cached
+from bin.run_masstRecords_queries import _get_fetcher
 
 def raw_data_sankey(df, col1, col2, col3, col4):
 
@@ -145,38 +147,68 @@ def export_hits_map(
       - "examples" → show up to max_mri_examples examples
     """
 
-    # -------- ReDU: load all possible MRIs (environmental, with coords), drop ones we've actually hit
-    df_redu = None
-    if os.path.exists(redu_feather):
-        dataset = ds.dataset(redu_feather, format="feather")
-        table = dataset.to_table(
-            filter=(
-                (ds.field("SampleType") == "environmental")
-                & (ds.field(env_col) != "missing value")
-                & (ds.field("LatitudeandLongitude") != "missing value")
-            )
-        )
-        df_redu = table.to_pandas()
-        if "USI" in df_redu.columns:
-            df_redu = df_redu.rename(columns={"USI": "mri"})
-        # Remove any we actually hit (by MRI)
-        if "mri" in df.columns:
-            hit_mris = set(df["mri"].astype(str))
-            df_redu = df_redu[~df_redu["mri"].astype(str).isin(hit_mris)].copy()
-    else:
-        df_redu = pd.read_csv("https://redu.gnps2.org/dump", sep = '\t')
-        if "USI" in df_redu.columns:
-            df_redu = df_redu.rename(columns={"USI": "mri"})
-        # Remove any we actually hit (by MRI)
-        if "mri" in df.columns:
-            hit_mris = set(df["mri"].astype(str))
-            df_redu = df_redu[~df_redu["mri"].astype(str).isin(hit_mris)].copy()
+    # — load config —
+    config_path = "config.py"
+    spec = importlib.util.spec_from_file_location("config", config_path)
+    config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config)
 
-            # filter for env and latlon and env
-            df_redu = df_redu[(df_redu["SampleType"] == "environmental") & 
-            (df_redu["LatitudeandLongitude"] != "missing value") & 
-            (df_redu[env_col] != "missing value")
-            ]
+    # -------- ReDU: load all possible MRIs (environmental, with coords), drop ones we've actually hit
+    fetch = _get_fetcher(config.PATH_TO_SQLITE, config.MASSTRECORDS_ENDPOINT, config.MASSTRECORDS_TIMEOUT)
+    sql = "SELECT name FROM pragma_table_info('redu_table')"
+    redu_columns = fetch(sql)
+    
+    redu_columns_list = redu_columns['name'].tolist()
+    columns_to_exclude = ['filename', 'TermsofPosition', 'ComorbidityListDOIDIndex', 'SampleCollectionDateandTime', 'ENVOBroadScale', 'ENVOLocalScale', 'ENVOMediumScale', 'qiita_sample_name',
+                          'UniqueSubjectID', 'UBERONOntologyIndex', 'DOIDOntologyIndex', 'ENVOEnvironmentBiomeIndex', 'ENVOEnvironmentMaterialIndex', 'ENVOLocalScaleIndex', 'ENVOBroadScaleIndex',
+                          'ENVOMediumScaleIndex', 'classification', 'MS2spectra_count', 'InternalStandardsUsed', 'HumanPopulationDensity']
+    redu_columns_list = [col for col in redu_columns_list if col not in columns_to_exclude]
+
+    df_redu = get_redu_table_cached(fetch, redu_columns_list, config.PATH_TO_SQLITE)
+    if "USI" in df_redu.columns:
+        df_redu = df_redu.rename(columns={"USI": "mri"})
+    # Remove any we actually hit (by MRI)
+    if "mri" in df.columns:
+        hit_mris = set(df["mri"].astype(str))
+        df_redu = df_redu[~df_redu["mri"].astype(str).isin(hit_mris)].copy()
+
+        # filter for env and latlon and env
+        df_redu = df_redu[(df_redu["SampleType"] == "environmental") & 
+        (df_redu["LatitudeandLongitude"] != "missing value") & 
+        (df_redu[env_col] != "missing value")
+        ]
+
+    # df_redu = None
+    # if os.path.exists(redu_feather):
+    #     dataset = ds.dataset(redu_feather, format="feather")
+    #     table = dataset.to_table(
+    #         filter=(
+    #             (ds.field("SampleType") == "environmental")
+    #             & (ds.field(env_col) != "missing value")
+    #             & (ds.field("LatitudeandLongitude") != "missing value")
+    #         )
+    #     )
+    #     df_redu = table.to_pandas()
+    #     if "USI" in df_redu.columns:
+    #         df_redu = df_redu.rename(columns={"USI": "mri"})
+    #     # Remove any we actually hit (by MRI)
+    #     if "mri" in df.columns:
+    #         hit_mris = set(df["mri"].astype(str))
+    #         df_redu = df_redu[~df_redu["mri"].astype(str).isin(hit_mris)].copy()
+    # else:
+    #     df_redu = pd.read_csv("https://redu.gnps2.org/dump", sep = '\t')
+    #     if "USI" in df_redu.columns:
+    #         df_redu = df_redu.rename(columns={"USI": "mri"})
+    #     # Remove any we actually hit (by MRI)
+    #     if "mri" in df.columns:
+    #         hit_mris = set(df["mri"].astype(str))
+    #         df_redu = df_redu[~df_redu["mri"].astype(str).isin(hit_mris)].copy()
+
+    #         # filter for env and latlon and env
+    #         df_redu = df_redu[(df_redu["SampleType"] == "environmental") & 
+    #         (df_redu["LatitudeandLongitude"] != "missing value") & 
+    #         (df_redu[env_col] != "missing value")
+    #         ]
 
     # -------- Validate input
     required = {"LatitudeandLongitude", "mri", env_col}

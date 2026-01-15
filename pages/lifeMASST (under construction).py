@@ -91,6 +91,7 @@ metadata_tsv_path = os.path.join(output_folder, "lifemasst", "merged_metadata.ts
 tree_nwk_files = [f for f in os.listdir(tree_directory) if f.endswith(".nwk")]
 tree_labels = {
     "trees/OTL_prepared/labelled_supertree_subset_prepped": "Open Tree of Life",
+    "trees/timetree_prepared/TimeTree_subset_prepped": "TimeTree",
     #"labelled_supertree_full_prepped": "Open Tree of Life (full) - not recommended",
     "trees/avian_prepared/OW2019_timetree_alltaxa_with_root_constraint": "Bird Tree (time tree)",
     "trees/avian_prepared/OW2019_CYB_ND2_estBL_alltaxa": "Bird Tree (molecular tree)",
@@ -129,6 +130,7 @@ if tree_choice not in ["trees/OTL_prepared/labelled_supertree_subset_prepped", "
         "NCBIFamily": "NCBI Family",
         "NCBI_ID": "NCBI ID",
         "NCBIGenus": "NCBI Genus",
+        "NCBISpecies": "NCBI Species",
         "NCBIClass": "NCBI Class",
         "NCBIOrder": "NCBI Order",
         "NCBIPhylum": "NCBI Phylum",
@@ -137,6 +139,7 @@ else:
     match_level_options = {
         "NCBIFamily": "NCBI Family",
         "NCBIGenus": "NCBI Genus",
+        "NCBISpecies": "NCBI Species",
         "NCBIClass": "NCBI Class",
         "NCBIOrder": "NCBI Order",
         "NCBIPhylum": "NCBI Phylum",
@@ -216,6 +219,14 @@ elif tree_choice in ["trees/OTL_prepared/labelled_supertree_subset_prepped", "tr
             "→ Subsetted comprehensive tree of life from Open Tree of Life, based on a synthesis of published phylogenies and taxonomies.<br/>"
             "Source: OpenTree et al. Open Tree of Life Synthetic Tree https://doi.org/10.5281/zenodo.3937741"
         )
+elif tree_choice == "trees/timetree_prepared/TimeTree_subset_prepped":
+    match_id = "Native_tree_label"
+    id_prefix = ""
+    message = (
+        "TimeTree<br/>"
+        "→ Time-calibrated tree of life from TimeTree database, based on published divergence time estimates.<br/>"
+        "Source: Kumar et al. (2017), <i>Nucleic Acids Research</i> 45(D1), D109–D114. https://doi.org/10.1093/nar/gkw938"
+    )
 
 if message != "":
     message_formatted = format_message(message)

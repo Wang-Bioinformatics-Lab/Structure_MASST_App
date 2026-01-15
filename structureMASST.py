@@ -17,7 +17,7 @@ from PIL import Image
 import base64
 import io
 from bin.workflow_stepwise import retrieve_raw_data_matches 
-from bin.run_masstRecords_queries import get_library_table, get_masst_and_redu_tables
+from bin.run_masstRecords_queries import get_library_table, get_masst_and_redu_tables, _get_fetcher
 from bin.match_smiles import detect_smiles_or_smarts, neutralize_atoms, tautomerize_smiles
 from bin.pubchem_handling  import pubchem_autocomplete, name_to_cid, cid_to_canonical_smiles
 from bin.plotting import raw_data_sankey, export_hits_map
@@ -26,6 +26,7 @@ from bin.smarts_api import query_smarts
 from bin.streamlit_fragment_domainMASST import domainmasst_fragment, domainmasst_intersection_fragment
 from bin.streamlit_fragment_LifeMASST import lifemasst_fragment
 from bin.api_health import test_fasst_api_search_nonblocking
+from bin.shared_data import get_molecule_classes_cached
 import matplotlib.pyplot as plt
 import matplotlib
 from collections import defaultdict
@@ -152,6 +153,7 @@ st.sidebar.markdown(
 
 try:
     from rdkit.Chem import Draw
+    from rdkit.Chem import rdMolDescriptors
     _RD_DRAW_AVAILABLE = True
 except ImportError:
     _RD_DRAW_AVAILABLE = False
@@ -180,9 +182,17 @@ os.makedirs(output_folder, exist_ok=True)
 
 st.session_state["_session_output_folder"] = output_folder
 
+# — preload molecule classes cache —
+sqlite_path = config.PATH_TO_SQLITE
+api_endpoint = config.MASSTRECORDS_ENDPOINT
+timeout = config.MASSTRECORDS_TIMEOUT
+
+# 🔹 Create the fetcher for SQLite or Datasette
+fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
+_molecule_classes_cache = get_molecule_classes_cached(fetch)
 
 # — SMILES or CSV input —
-col_name, col_or1, col_smiles, col_or2, col_csv = st.columns([4, 1, 4, 1, 4])
+col_name, col_or1, col_smiles, col_or2, col_class, col_or3, col_csv = st.columns([4, 1, 4, 1, 4, 1, 4])
 
 # ---------- state init ----------
 for k, v in [
@@ -194,6 +204,7 @@ for k, v in [
     ("name_warning", None),
     ("structure_editor_open", False),
     ("new_smiles", ""),
+    ("class_label", ""),
 ]:
     st.session_state.setdefault(k, v)
 
@@ -234,7 +245,7 @@ with col_name:
         "Type a chemical name to search PubChem",
         key="name_query",
         placeholder="e.g., diazepam, caffeine, etc.",
-        on_change=lambda: st.session_state.update({'structure_editor_open': False, 'new_smiles': '', 'smiles_input': ''})
+        on_change=lambda: st.session_state.update({'structure_editor_open': False, 'new_smiles': '', 'smiles_input': '', 'class_label': ""}),
     )
     # If the query changed (e.g., after Enter), fetch suggestions once
     if name_query and name_query != st.session_state["last_fetched_query"]:
@@ -282,7 +293,7 @@ with col_smiles:
         placeholder="Enter SMILES or SMARTS",
         help="Enter a valid SMILES or SMARTS string. For SMARTS string creation, you can use third-party tools like SMARTSPlus https://smarts.plus/create",
         #cleans session state on change and cleans name input and suggestions
-        on_change=lambda: st.session_state.update({'structure_editor_open': False, 'new_smiles': '', 'name_query': '', 'name_suggestions': []}),
+        on_change=lambda: st.session_state.update({'structure_editor_open': False, 'new_smiles': '', 'name_query': '', 'name_suggestions': [], 'class_label': ""}),
     )
     smiles_input = smiles_input.strip()
     # Use effective SMILES (from editor if available) for type detection
@@ -291,6 +302,23 @@ with col_smiles:
     
 
 with col_or2:
+    st.markdown("<div style='text-align:center; margin-top:2.5em;'>or</div>", unsafe_allow_html=True)
+
+with col_class:
+    # take class_label column from _molecule_classes_cache
+    if _molecule_classes_cache is not None:
+        class_labels = _molecule_classes_cache["class_label"].tolist()
+        class_labels.insert(0, "")
+        st.selectbox("Class Label", options=class_labels, key="class_label",
+                     help="Select a molecule class to find spectra for all molecules in this class.",
+                     on_change=lambda: st.session_state.update({'structure_editor_open': False, 'new_smiles': '', 'smiles_input': ''}))
+        
+        if st.session_state["class_label"] != "":
+            smiles_input = None  # clear smiles input if class label is selected
+            smiles_type = "class_label"
+            effective_smiles = None
+
+with col_or3:
     st.markdown("<div style='text-align:center; margin-top:2.5em;'>or</div>", unsafe_allow_html=True)
 
 with col_csv:
@@ -329,12 +357,9 @@ try:
 except ImportError:
     mol_to_base64_img = None
 
-
 # --- render logic ---
 smiles_type = None  # Ensure smiles_type is always defined
 default_search_index = 0 # default to exact match search
-
-
 
 if smiles_input:
     smiles_input = smiles_input.strip()
@@ -394,14 +419,21 @@ if smiles_input:
             st.warning("Failed to retrieve SMARTS image from the API. You can still go ahead.")
     else:
         st.warning("Not a valid SMILES/SMARTS")
+elif st.session_state.get("class_label", "") != "":
+    smiles_type = "class_label"
+    st.info(f"Class Label selected: {st.session_state['class_label']}. Proceed to find spectra for molecules in this class.")
+
+
 
 # — mode selection UI —
 search_options = ["Exact structure match", "Substructure match", "Tanimoto similarity"]
 default_search_index = 0 
-col_a1, col_b2, _ = st.columns([2,1,2])
+col_a1, col_allowedformula, col_tani, col_allowedelements, _ = st.columns([2,1,1,1,2])
 if smiles_type and smiles_type == 'smarts':
     #st.info("SMARTS input detected. Use 'Substructure match' for search.", icon=':material/info:')
     search_options = ["Substructure match"]
+if st.session_state.get("class_label", "") != "":
+    search_options = ["Exact structure match"]
 with col_a1:
     searchtype_option = st.radio(
         "Find available MS/MS spectra", 
@@ -409,8 +441,22 @@ with col_a1:
         horizontal=True, index=default_search_index
     )
 
+if searchtype_option != "Exact structure match":
+    with col_allowedformula:
+        allowed_formula = st.text_input(
+            "Fixed molecular formula (optional)", 
+            value="", 
+            key="allowed_formula"
+        )
+    with col_allowedelements:
+        allowed_elements = st.text_input(
+            "Allowed element difference (optional)", 
+            value="", 
+            key="allowed_elements"
+        )
+
 if searchtype_option == "Tanimoto similarity":
-    with col_b2:
+    with col_tani:
         tanimoto_cutoff = st.text_input("Tanimoto threshold", value="0.8", key="tanimoto_threshold")
 
 # Map UI option to backend value
@@ -471,6 +517,8 @@ if st.button("Get Available Spectra", icon=':material/search:'):
                     "name": ["Input_query"],
                     "type": [smiles_type],
                     "searchtype": [searchtype_option],
+                    "formula": [allowed_formula if searchtype_option == "substructure" else "any"],
+                    "allowed_elements": [allowed_elements if searchtype_option == "substructure" else "any"]
                 }
             )
 
@@ -479,6 +527,8 @@ if st.button("Get Available Spectra", icon=':material/search:'):
             smiles_list = [effective_smiles]
             name_list = ['Input_query']
             searchtype_list = [searchtype_option]
+            formula_list = [allowed_formula if searchtype_option == "substructure" else "any"]
+            allowed_elements_list = [allowed_elements if searchtype_option == "substructure" else "any"]
         elif uploaded_file is not None:
             df_input = pd.read_csv(uploaded_file)
             if "smiles" in df_input.columns and "name" in df_input.columns:
@@ -500,15 +550,45 @@ if st.button("Get Available Spectra", icon=':material/search:'):
                 if "searchtype" not in df_input.columns:
                     df_input["searchtype"] = df_input["type"].apply(lambda x: "exact" if x == "smiles" else "substructure")
 
+                if "formula" not in df_input.columns:
+                    df_input["formula"] = "any"
+
+                if "allowed_elements" not in df_input.columns:
+                    df_input["allowed_elements"] = "any"
+
                 print(df_input)
                 st.session_state.query_table = df_input
 
                 smiles_list = df_input["smiles"].dropna().tolist()
                 name_list = df_input["name"].dropna().tolist()
                 searchtype_list = df_input["searchtype"].dropna().tolist()
+                formula_list = df_input["formula"].dropna().tolist()
+                allowed_elements_list = df_input["allowed_elements"].dropna().tolist()
             else:
                 st.warning("CSV must contain a 'smiles' and 'name' column.")
                 st.stop()
+        elif st.session_state.get("class_label", "") != "":
+            class_label = st.session_state["class_label"]
+
+            df_input = pd.DataFrame(
+                {
+                    "smiles": [class_label],
+                    "name": [class_label],
+                    "type": ["class_label"],
+                    "searchtype": ["class_label"],
+                    "formula": ["any"],
+                    "allowed_elements": ["any"]
+                }
+            )
+
+            st.session_state.query_table = df_input
+
+            smiles_list = [class_label]
+            name_list = [class_label]
+            searchtype_list = ["class_label"]
+            formula_list = ["any"]
+            allowed_elements_list = ["any"]
+
         else:
             st.warning("Please enter a SMILES or upload a CSV.")
             st.stop()
@@ -516,10 +596,12 @@ if st.button("Get Available Spectra", icon=':material/search:'):
         # process each input structure query separately to retrieve spectra
         grouped_results = defaultdict(dict)
         molecule_overview = defaultdict(dict)
-        for smi, name, searchtype in zip(smiles_list, name_list, searchtype_list):
+        for smi, name, searchtype, formula, allowed_elements in zip(smiles_list, name_list, searchtype_list, formula_list, allowed_elements_list):
             try:
                 tanimoto_threshold = tanimoto_cutoff if searchtype == "tanimoto" else None
-                df_library_structurematch = tasks.run_get_library_table(smi, searchtype, tanimoto_threshold, config.PATH_TO_SQLITE, config.MASSTRECORDS_ENDPOINT, config.MASSTRECORDS_TIMEOUT)
+
+                print(f"Processing {name} with SMILES/SMARTS: {smi} and search type: {searchtype}")
+                df_library_structurematch = tasks.run_get_library_table(smi, searchtype, tanimoto_threshold, formula, allowed_elements, config.PATH_TO_SQLITE, config.MASSTRECORDS_ENDPOINT, config.MASSTRECORDS_TIMEOUT)
 
                 if df_library_structurematch.empty:
                     continue
@@ -751,6 +833,12 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                 if _RD_DRAW_AVAILABLE:
                     @st.cache_data
+                    def smiles_to_formula(smi: str) -> str:
+                        mol = Chem.MolFromSmiles(smi)
+                        if not mol:
+                            return ""
+                        return rdMolDescriptors.CalcMolFormula(mol)
+                    @st.cache_data
                     def smiles_to_datauri(smi: str, size=(500, 500)) -> str:
                         """Render a SMILES to PNG data URI."""
                         mol = Chem.MolFromSmiles(smi)
@@ -764,9 +852,14 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                     
                     molecule_overview_df = molecule_overview_df.copy()
                     molecule_overview_df["structure"] = molecule_overview_df["Smiles"].apply(smiles_to_datauri)
+                    molecule_overview_df["Molecular_Formula"] = (molecule_overview_df["Smiles"].apply(smiles_to_formula))
 
                     # reorder columns to Compound_Name, Structure, others
-                    cols = ["Compound_Name", "structure"] + [col for col in molecule_overview_df.columns if col not in ["Compound_Name", "structure"]]
+                    cols = (
+                                ["Compound_Name", "Molecular_Formula", "structure"]
+                                + [col for col in molecule_overview_df.columns
+                                if col not in ["Compound_Name", "Molecular_Formula", "structure"]]
+                            )
                     molecule_overview_df = molecule_overview_df[cols]
 
                     # display it with clickable links   
@@ -860,14 +953,27 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                             "conflicts": pd.DataFrame(),
                                         }
 
+                                    new_query_row = {
+                                        "smiles": row["Smiles"],
+                                        "name": new_name,
+                                        "type": "smiles",
+                                        "searchtype": "exact"
+                                    }
+
+                                    if "query_table" not in st.session_state or st.session_state.query_table is None:
+                                        st.session_state.query_table = pd.DataFrame([new_query_row])
+                                    else:
+                                        st.session_state.query_table = pd.concat(
+                                            [st.session_state.query_table, pd.DataFrame([new_query_row])],
+                                            ignore_index=True
+                                        )
+
                                 # remove the original group
                                 st.session_state.molecule_overview.pop(name, None)
                                 st.session_state.grouped_results.pop(name, None)
 
                             st.rerun()
 
-
-                
                 # update the session state with the filtered dataframe
                 st.session_state.molecule_overview[name] = molecule_overview_df
 
@@ -1042,7 +1148,17 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                 "Minimum Matching Peaks",
                 min_value=min_peaks_allowed, value=5, step=1,
                 key="raw_min_peaks_ui"   
-    )
+            )
+
+        col_par_fr_2, col_par_fr_3, _, _ = st.columns(4)
+
+        with col_par_fr_2:
+            min_rank = st.number_input(
+                "Minimum Annotation Rank (0 disables)",
+                min_value=0, max_value=10, value=0, step=1,
+                key="raw_min_rank_ui"
+            )
+        
 
         # Conditional input for FASST 
         if option == "FASST":
@@ -1129,6 +1245,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             df_for_name,
                             float(min_cosine),
                             int(min_peaks),
+                            int(min_rank),
                             config.PATH_TO_SQLITE,
                             config.MASSTRECORDS_ENDPOINT,
                             config.MASSTRECORDS_TIMEOUT,
@@ -1730,19 +1847,20 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                 }
 
                 
-                if len(redu_tables) > 1 and all(len(df) > 1 for df in redu_tables.values()):
+                if len(redu_tables) > 1 and any(len(df) > 1 for df in redu_tables.values()):
 
                     st.markdown(f"##### Downstream tooling for all molecules")
                     masst_by_query_button, message_space_masst_by_query = st.columns([4,4]) 
 
-                    with masst_by_query_button:
-                        domainmasst_intersection_fragment(
-                            redu_tables=redu_tables,
-                            output_folder=output_folder,
-                            # Optional overrides:
-                            button_label="Populate DomainMASST with Molecule Co-occurrence",
-                            job_name="moleculeIntersection",
-                        )
+                    if all(len(df) > 1 for df in redu_tables.values()):
+                        with masst_by_query_button:
+                            domainmasst_intersection_fragment(
+                                redu_tables=redu_tables,
+                                output_folder=output_folder,
+                                # Optional overrides:
+                                button_label="Populate DomainMASST with Molecule Co-occurrence",
+                                job_name="moleculeIntersection",
+                            )
 
                     life_button_all, message_space_life = st.columns([4,4])
 

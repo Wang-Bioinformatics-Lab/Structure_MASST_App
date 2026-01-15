@@ -119,6 +119,54 @@ def tautomerize_smiles(smiles):
     del mol
     return standard_smiles
 
+
+def contains_only_allowed_elements(
+    formula_object_to_test,
+    allowed_elements_object,
+    require_all_allowed: bool = False,
+) -> bool:
+    """
+    Checks element-type compatibility between two Formula objects.
+
+    Parameters
+    ----------
+    formula_object_to_test : Formula
+        Formula being tested.
+    allowed_elements_object : Formula
+        Formula defining allowed element types.
+    require_all_allowed : bool
+        If True, every allowed element (except H) must be present
+        at least once in formula_object_to_test.
+
+    Returns
+    -------
+    bool
+    """
+
+    test_elements = formula_object_to_test.get_elements()
+    allowed_elements = allowed_elements_object.get_elements()
+
+    # element names, ignoring H
+    test_names = {
+        el._name_ for el in test_elements.keys()
+        if el._name_ != "H"
+    }
+    allowed_names = {
+        el._name_ for el in allowed_elements.keys()
+        if el._name_ != "H"
+    }
+
+    # 1) test must not contain disallowed elements
+    if not test_names.issubset(allowed_names):
+        return False
+
+    # 2) optionally require all allowed elements to be present
+    if require_all_allowed and not allowed_names.issubset(test_names):
+        return False
+
+    return True
+
+
 def detect_smiles_or_smarts(s: str) -> str:
     """
     Heuristically detect whether a string is a SMILES, SMARTS, or Invalid.
@@ -152,9 +200,10 @@ def detect_smiles_or_smarts(s: str) -> str:
     else:
         return "Invalid"
 
-def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='only', smiles_type='unknown', formula_base='any', element_diff='any', tanimoto_threshold=0.8, max_by_grp = None, max_overall = None):
+def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='only', smiles_type='unknown', formula_base='any', element_diff='any', allowed_formula = 'any', allowed_elements='any', tanimoto_threshold=0.8, max_by_grp = None, max_overall = None):
 
-    
+    if allowed_formula is None:
+        allowed_formula = 'any'
     #make all column names lower case
     # df.columns = df.columns.str.lower()
 
@@ -172,9 +221,27 @@ def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='o
 
     # Parse formula_base and element_diff
     if formula_base != 'any':
-        formula_base = Formula.formula_from_str(formula_base)
+        try:
+            formula_base = Formula.formula_from_str(formula_base)
+        except:
+            formula_base = 'any'
     if element_diff != 'any':
-        element_diff = Formula.formula_from_str(element_diff)
+        try:
+            element_diff = Formula.formula_from_str(element_diff)
+        except:
+            element_diff = 'any'
+    if allowed_formula != 'any':
+        try:
+            allowed_formula = Formula.formula_from_str(allowed_formula)
+        except:
+            allowed_formula = 'any'
+    if allowed_elements != 'any':
+        try:
+            base_formula = Formula.formula_from_smiles(target_smiles)
+            allowed_elements = Formula.formula_from_str(allowed_elements)
+        except:
+            allowed_elements = 'any'
+            base_formula = None
 
     df['inchikey_first_block'] = df['InChIKey_smiles'].apply(
     lambda inchi: str(inchi).split('-')[0] if pd.notnull(inchi) else None
@@ -229,6 +296,30 @@ def fetch_and_match_smiles(df, target_smiles, match_type='exact', smiles_name='o
             matching_smiles = []
             for s, m in tqdm(smiles_to_mol.items(),
                             desc=f"Confirming substructure on {len(smiles_to_mol)} candidates"):
+                
+                if allowed_formula != "any":
+                    try:
+                        smi_formula = Formula.formula_from_str(
+                            rdMolDescriptors.CalcMolFormula(m)
+                        )
+                        diff = allowed_formula - smi_formula
+                        if len(diff.get_final_formula_with_adduct()) != 0:
+                            continue
+                    except Exception:
+                        # subtraction invalid → negative elements → no match
+                        continue
+
+                if allowed_elements != "any":
+                    try:
+                        smi_formula = Formula.formula_from_str(
+                            rdMolDescriptors.CalcMolFormula(m)
+                        )
+                        element_diff = smi_formula - base_formula
+                        if not contains_only_allowed_elements(element_diff, allowed_elements, require_all_allowed=True):
+                            continue
+                    except Exception:
+                        continue
+
                 if m.HasSubstructMatch(target_mol):
                     matching_smiles.append(s)
 
