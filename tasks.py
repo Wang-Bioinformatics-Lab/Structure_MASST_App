@@ -228,7 +228,8 @@ def run_retrieve_raw_data_matches(
     modification_condition,
     sqlite_path,
     api_endpoint,
-    timeout
+    timeout,
+    output_folder=None
 ):
     try:
         # Serialize the DataFrame to JSON
@@ -249,7 +250,8 @@ def run_retrieve_raw_data_matches(
             modification_condition,
             sqlite_path,
             api_endpoint,
-            timeout
+            timeout,
+            output_folder=output_folder
         )
 
         # Waiting
@@ -280,7 +282,8 @@ def run_retrieve_raw_data_matches(
             modification_condition,
             sqlite_path,
             api_endpoint,
-            timeout
+            timeout,
+            output_folder=output_folder
         )
 
         redu_df = pd.read_json(result_dict["redu"])
@@ -302,7 +305,8 @@ def _run_retrieve_raw_data_matches(
     modification_condition,
     sqlite_path,
     api_endpoint,
-    timeout
+    timeout,
+    output_folder=None
 ):
 
 
@@ -325,6 +329,7 @@ def _run_retrieve_raw_data_matches(
         sqlite_path=sqlite_path,
         api_endpoint=api_endpoint,
         timeout=timeout,
+        output_folder=output_folder
     )
 
     # Return both DataFrames serialized as JSON

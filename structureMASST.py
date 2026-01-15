@@ -1218,6 +1218,11 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             except AttributeError:
                                 modification_mass = modification_mass if 'modification_mass' in locals() else None
 
+                            if config.DEBUGMODE == True:
+                                export_masst_to = st.session_state["_session_output_folder"]
+                            else:
+                                export_masst_to = None
+
                             # retrieve raw data matches through MASST
                             redu_df = tasks.run_retrieve_raw_data_matches(
                                 df_for_name,
@@ -1234,6 +1239,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 config.PATH_TO_SQLITE,
                                 config.MASSTRECORDS_ENDPOINT,
                                 config.MASSTRECORDS_TIMEOUT,
+                                output_folder=export_masst_to
                             )
 
                             if len(redu_df) > 0:

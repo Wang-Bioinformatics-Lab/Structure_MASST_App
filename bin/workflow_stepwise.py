@@ -52,6 +52,7 @@ def retrieve_raw_data_matches(
     sqlite_path: str | None = None,
     api_endpoint: str = "http://127.0.0.1:8001/masst_records",
     timeout: int = 10,
+    output_folder: str | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Query FASST for each spectrum in library_subset and optionally merge ReDU metadata.
@@ -126,6 +127,11 @@ def retrieve_raw_data_matches(
         # combine
         redu_df = pd.concat(dfs, ignore_index=True)
 
+    if output_folder:
+        redu_df.to_csv(
+            os.path.join(output_folder, "redu_table.tsv"),
+            sep="\t", index=False
+        )
 
     TTL_SEC = 60*5-15                 # token freshness time (seconds)
     MAX_BATCH_REQUESTS = 50           # max new requests per batch
@@ -199,6 +205,13 @@ def retrieve_raw_data_matches(
         return pd.DataFrame(), pd.DataFrame()
 
     raw_matches = pd.concat(responses, ignore_index=True)
+
+    if output_folder:
+        raw_matches.to_csv(
+            os.path.join(output_folder, "debug_raw_matches.tsv"),
+            sep="\t", index=False
+        )
+
     raw_matches.rename(columns={'GNPSLibraryAccession': 'spectrum_id'}, inplace=True)
 
     print(f"Retrieved {len(raw_matches)} raw data matches.")
