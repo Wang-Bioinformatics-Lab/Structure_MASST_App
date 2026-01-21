@@ -20,7 +20,7 @@ celery_app.conf.update(
 
 
 from celery.signals import worker_init
-from bin.shared_data import get_redu_table_cached
+from bin.shared_data import get_redu_table_cached, get_molecule_classes_cached
 from bin.run_masstRecords_queries import _get_fetcher
 import importlib.util
 
@@ -65,6 +65,29 @@ def preload_redu_table(**kwargs):
     print("[INIT] Worker preload complete.")
     
 
+@worker_init.connect
+def load_molecule_classes(**kwargs):
+
+    # 🔹 Load config.py dynamically (Celery runs in its own context)
+    config_path = "/app/config.py"
+    spec = importlib.util.spec_from_file_location("config", config_path)
+    config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config)
+
+    sqlite_path = config.PATH_TO_SQLITE
+    api_endpoint = config.MASSTRECORDS_ENDPOINT
+    timeout = config.MASSTRECORDS_TIMEOUT
+
+    # 🔹 Create the fetcher for SQLite or Datasette
+    fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
+
+    # 🔹 Preload molecule classes cache once per worker
+    print("[INIT] Preloading molecule classes for this worker...")
+    get_molecule_classes_cached(fetch)
+    print("[INIT] Worker preload complete.")
+    
+
+
 @celery_app.task()
 def heartbeat_task():
     return "Structure MASST worker is alive."
@@ -73,6 +96,8 @@ def run_get_library_table(
     smiles,
     searchtype,
     tanimoto_threshold,
+    allowed_formula,
+    allowed_elements,
     sqlite_path,
     api_endpoint,
     timeout
@@ -84,6 +109,8 @@ def run_get_library_table(
             smiles,
             searchtype,
             tanimoto_threshold,
+            allowed_formula,
+            allowed_elements,
             sqlite_path,
             api_endpoint,
             timeout
@@ -106,6 +133,8 @@ def run_get_library_table(
             smiles,
             searchtype,
             tanimoto_threshold,
+            allowed_formula,
+            allowed_elements,
             sqlite_path,
             api_endpoint,
             timeout
@@ -117,11 +146,13 @@ def run_get_library_table(
 
 
 @celery_app.task()
-def _run_get_library_table(smiles, searchtype, tanimoto_threshold, sqlite_path, api_endpoint, timeout):
+def _run_get_library_table(smiles, searchtype, tanimoto_threshold, allowed_formula, allowed_elements, sqlite_path, api_endpoint, timeout):
     df = get_library_table(
         smiles=smiles,
         searchtype=searchtype,
         tanimoto_threshold=tanimoto_threshold,
+        allowed_formula=allowed_formula,
+        allowed_elements=allowed_elements,
         sqlite_path=sqlite_path,
         api_endpoint=api_endpoint,
         timeout=timeout
@@ -133,6 +164,7 @@ def run_get_masst_and_redu_tables(
     df_for_name,
     cosine_threshold,
     matching_peaks,
+    min_annotation_rank,
     sqlite_path,
     api_endpoint,
     timeout,
@@ -147,6 +179,7 @@ def run_get_masst_and_redu_tables(
             df_for_name_json,
             cosine_threshold,
             matching_peaks,
+            min_annotation_rank,
             sqlite_path,
             api_endpoint,
             timeout,
@@ -172,6 +205,7 @@ def run_get_masst_and_redu_tables(
             df_for_name.to_json(orient="records"),
             cosine_threshold,
             matching_peaks,
+            min_annotation_rank,
             sqlite_path,
             api_endpoint,
             timeout,
@@ -188,6 +222,7 @@ def _run_get_masst_and_redu_tables(
     df_for_name_json,
     cosine_threshold,
     matching_peaks,
+    min_annotation_rank,
     sqlite_path,
     api_endpoint,
     timeout,
@@ -201,6 +236,7 @@ def _run_get_masst_and_redu_tables(
         df_for_name,
         cosine_threshold=cosine_threshold,
         matching_peaks=matching_peaks,
+        min_annotation_rank=min_annotation_rank,
         sqlite_path=sqlite_path,
         api_endpoint=api_endpoint,
         timeout=timeout,

@@ -552,9 +552,13 @@ if st.button("Get Available Spectra", icon=':material/search:'):
 
                 if "formula" not in df_input.columns:
                     df_input["formula"] = "any"
+                # set to any if missing
+                df_input["formula"] = df_input["formula"].fillna("any")
 
                 if "allowed_elements" not in df_input.columns:
                     df_input["allowed_elements"] = "any"
+                # set to any if missing
+                df_input["allowed_elements"] = df_input["allowed_elements"].fillna("any")
 
                 print(df_input)
                 st.session_state.query_table = df_input
