@@ -200,6 +200,7 @@ for k, v in [
     ("last_fetched_query", None),
     ("name_suggestions", []),
     ("name_choice", None),
+    ("usi_input", ""), 
     ("smiles_input", ""),
     ("name_warning", None),
     ("structure_editor_open", False),
@@ -300,6 +301,19 @@ with col_smiles:
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
     smiles_type = detect_smiles_or_smarts(effective_smiles)
     
+    usi_input = st.text_input(
+        "USI (mzspec:...)",
+        key="usi_input",
+        placeholder="mzspec:GNPS:...",
+        help="Provide a USI to directly inspect this spectrum. No structure is required.",
+        on_change=lambda: st.session_state.update({
+            "smiles_input": "",
+            "new_smiles": "",
+            "structure_editor_open": False,
+            "class_label": ""
+        }),
+    ).strip()
+
 
 with col_or2:
     st.markdown("<div style='text-align:center; margin-top:2.5em;'>or</div>", unsafe_allow_html=True)
@@ -361,7 +375,9 @@ except ImportError:
 smiles_type = None  # Ensure smiles_type is always defined
 default_search_index = 0 # default to exact match search
 
-if smiles_input:
+if usi_input:
+    smiles_type = "usi"
+elif smiles_input:
     smiles_input = smiles_input.strip()
     # Use effective SMILES (from editor if available) for type detection
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
@@ -501,163 +517,203 @@ if st.button("Get Available Spectra", icon=':material/search:'):
         st.session_state.molecule_overview = {}
         st.session_state.query_table = {}
 
-        # organize input structure queries
-        smiles_list = []
-        if smiles_input:
-            # Use new_smiles from structure editor if available, otherwise use original input
-            effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
+        # -------------------------
+        # CANONICAL INPUT TABLE (ALWAYS)
+        # -------------------------
+        df_input = None
 
-            smiles_type = detect_smiles_or_smarts(effective_smiles)
-            if smiles_type == "smiles":
-                effective_smiles = tautomerize_neutralize_smiles(effective_smiles)
+        # Priority: USI > SMILES/SMARTS > Batch CSV > Class label
+        if usi_input:
+            df_input = pd.DataFrame([{
+                "query": usi_input.strip(),
+                "name": "USI_Query",
+                "type": "usi",
+                "searchtype": "usi",
+                "formula": "any",
+                "allowed_elements": "any",
+            }])
 
-            df_input = pd.DataFrame(
-                {
-                    "smiles": [effective_smiles],
-                    "name": ["Input_query"],
-                    "type": [smiles_type],
-                    "searchtype": [searchtype_option],
-                    "formula": [allowed_formula if searchtype_option == "substructure" else "any"],
-                    "allowed_elements": [allowed_elements if searchtype_option == "substructure" else "any"]
-                }
-            )
+        elif smiles_input:
+            effective = (st.session_state.get("new_smiles", "") or smiles_input).strip()
+            t = detect_smiles_or_smarts(effective)
 
-            st.session_state.query_table = df_input
+            if t == "smiles":
+                effective = tautomerize_neutralize_smiles(effective)
 
-            smiles_list = [effective_smiles]
-            name_list = ['Input_query']
-            searchtype_list = [searchtype_option]
-            formula_list = [allowed_formula if searchtype_option == "substructure" else "any"]
-            allowed_elements_list = [allowed_elements if searchtype_option == "substructure" else "any"]
+            df_input = pd.DataFrame([{
+                "query": effective,
+                "name": "Input_query",
+                "type": t,
+                "searchtype": ("substructure" if t == "smarts" else searchtype_option),
+                "formula": (allowed_formula if searchtype_option == "substructure" else "any"),
+                "allowed_elements": (allowed_elements if searchtype_option == "substructure" else "any"),
+            }])
+
         elif uploaded_file is not None:
             df_input = pd.read_csv(uploaded_file)
-            if "smiles" in df_input.columns and "name" in df_input.columns:
-                
-                # drop rows with na in either column
-                df_input = df_input.dropna(subset=["smiles", "name"])
 
-                # add column with type detection
-                df_input["type"] = df_input["smiles"].apply(detect_smiles_or_smarts)
+            # support either legacy (smiles,name) or new (query,name)
+            if "query" not in df_input.columns:
+                if "smiles" in df_input.columns:
+                    df_input = df_input.rename(columns={"smiles": "query"})
+                else:
+                    st.warning("CSV must contain either ('query','name') or ('smiles','name').")
+                    st.stop()
 
-                # harmonize smiles if type is smiles (tautomerize + neutralize)
-                df_input["smiles"] = df_input.apply(
-                    lambda row: tautomerize_neutralize_smiles(row["smiles"]) 
-                    if row["type"] == "smiles" else row["smiles"],
-                    axis=1)
+            if "name" not in df_input.columns:
+                df_input["name"] = [f"Input_{i+1}" for i in range(len(df_input))]
 
+            df_input = df_input.dropna(subset=["query", "name"]).copy()
+            df_input["query"] = df_input["query"].astype(str).str.strip()
+            df_input["name"] = df_input["name"].astype(str).str.strip()
 
-                # for smiles set to exact match, for smarts set to substructure match
-                if "searchtype" not in df_input.columns:
-                    df_input["searchtype"] = df_input["type"].apply(lambda x: "exact" if x == "smiles" else "substructure")
+            # infer type if missing
+            if "type" not in df_input.columns:
+                def _infer_type(q):
+                    q = str(q).strip()
+                    if q.startswith("mzspec:"):
+                        return "usi"
+                    return detect_smiles_or_smarts(q)
+                df_input["type"] = df_input["query"].apply(_infer_type)
 
-                if "formula" not in df_input.columns:
-                    df_input["formula"] = "any"
-                # set to any if missing
-                df_input["formula"] = df_input["formula"].fillna("any")
+            # harmonize SMILES rows
+            def _harmonize_query(row):
+                if row["type"] == "smiles":
+                    return tautomerize_neutralize_smiles(row["query"])
+                return row["query"]
 
-                if "allowed_elements" not in df_input.columns:
-                    df_input["allowed_elements"] = "any"
-                # set to any if missing
-                df_input["allowed_elements"] = df_input["allowed_elements"].fillna("any")
+            df_input["query"] = df_input.apply(_harmonize_query, axis=1)
 
-                print(df_input)
-                st.session_state.query_table = df_input
+            # infer searchtype if missing
+            if "searchtype" not in df_input.columns:
+                def _infer_searchtype(t):
+                    if t == "usi": return "usi"
+                    if t == "smarts": return "substructure"
+                    if t == "class_label": return "class_label"
+                    return "exact"
+                df_input["searchtype"] = df_input["type"].apply(_infer_searchtype)
 
-                smiles_list = df_input["smiles"].dropna().tolist()
-                name_list = df_input["name"].dropna().tolist()
-                searchtype_list = df_input["searchtype"].dropna().tolist()
-                formula_list = df_input["formula"].dropna().tolist()
-                allowed_elements_list = df_input["allowed_elements"].dropna().tolist()
-            else:
-                st.warning("CSV must contain a 'smiles' and 'name' column.")
-                st.stop()
+            if "formula" not in df_input.columns:
+                df_input["formula"] = "any"
+            df_input["formula"] = df_input["formula"].fillna("any")
+
+            if "allowed_elements" not in df_input.columns:
+                df_input["allowed_elements"] = "any"
+            df_input["allowed_elements"] = df_input["allowed_elements"].fillna("any")
+
         elif st.session_state.get("class_label", "") != "":
-            class_label = st.session_state["class_label"]
-
-            df_input = pd.DataFrame(
-                {
-                    "smiles": [class_label],
-                    "name": [class_label],
-                    "type": ["class_label"],
-                    "searchtype": ["class_label"],
-                    "formula": ["any"],
-                    "allowed_elements": ["any"]
-                }
-            )
-
-            st.session_state.query_table = df_input
-
-            smiles_list = [class_label]
-            name_list = [class_label]
-            searchtype_list = ["class_label"]
-            formula_list = ["any"]
-            allowed_elements_list = ["any"]
+            class_label = st.session_state["class_label"].strip()
+            df_input = pd.DataFrame([{
+                "query": class_label,
+                "name": class_label,
+                "type": "class_label",
+                "searchtype": "class_label",
+                "formula": "any",
+                "allowed_elements": "any",
+            }])
 
         else:
-            st.warning("Please enter a SMILES or upload a CSV.")
+            st.warning("Please enter a USI, SMILES/SMARTS, upload a CSV, or select a class label.")
             st.stop()
 
-        # process each input structure query separately to retrieve spectra
+        # store canonical input table (batch-style always)
+        st.session_state.query_table = df_input
+
+        # lists ALWAYS defined (fixes your NameError)
+        query_list = df_input["query"].tolist()
+        name_list = df_input["name"].tolist()
+        type_list = df_input["type"].tolist()
+        searchtype_list = df_input["searchtype"].tolist()
+        formula_list = df_input["formula"].tolist()
+        allowed_elements_list = df_input["allowed_elements"].tolist()
+
+
         grouped_results = defaultdict(dict)
-        molecule_overview = defaultdict(dict)
-        for smi, name, searchtype, formula, allowed_elements in zip(smiles_list, name_list, searchtype_list, formula_list, allowed_elements_list):
+        molecule_overview = defaultdict(list)
+
+        for q, name, typ, searchtype, formula, allowed_elements in zip(
+            query_list, name_list, type_list, searchtype_list, formula_list, allowed_elements_list
+        ):
+            # -------------------------
+            # USI ROWS: skip structure steps entirely
+            # -------------------------
+            if typ == "usi" or searchtype == "usi":
+                ik = hashlib.sha1(q.encode()).hexdigest()[:12]  # fake IK bucket
+
+                df_struct = pd.DataFrame([{
+                    "inchikey_first_block": ik,
+                    "Compound_Name": name,
+                    "Smiles": "",
+                    "Precursor_MZ": np.nan,
+                    "query_spectrum_id": q,   # store FULL mzspec:... here
+                    "USI": q,
+                }])
+
+                grouped_results[name][ik] = {"structure": df_struct, "conflicts": pd.DataFrame()}
+                st.session_state.selected_queries[ik] = [q]
+
+                molecule_overview[name].append({
+                    "Compound_Name": name,
+                    "inchikey_first_block": ik,
+                    "Smiles": "",
+                    "USI": q,
+                })
+                continue
+
+            # -------------------------
+            # STRUCTURE / CLASS LABEL ROWS: existing path
+            # -------------------------
             try:
                 tanimoto_threshold = tanimoto_cutoff if searchtype == "tanimoto" else None
 
-                print(f"Processing {name} with SMILES/SMARTS: {smi} and search type: {searchtype}")
-                df_library_structurematch = tasks.run_get_library_table(smi, searchtype, tanimoto_threshold, formula, allowed_elements, config.PATH_TO_SQLITE, config.MASSTRECORDS_ENDPOINT, config.MASSTRECORDS_TIMEOUT)
+                df_library_structurematch = tasks.run_get_library_table(
+                    q,
+                    searchtype,
+                    tanimoto_threshold,
+                    formula,
+                    allowed_elements,
+                    config.PATH_TO_SQLITE,
+                    config.MASSTRECORDS_ENDPOINT,
+                    config.MASSTRECORDS_TIMEOUT,
+                )
 
                 if df_library_structurematch.empty:
                     continue
 
-                # Setup for library conflicts. this is currently not doing anything
                 df_library_conflicts = pd.DataFrame()
                 df_library_conflicts["inchikey_first_block"] = pd.Series(dtype=str)
-            except Exception as e:
-                st.error(f"Error for {smi}: {e}")
 
-            # Setup for library conflicts. this is currently not doing anything
-            print(f"Processing {name} with {len(df_library_structurematch)} matches")
-            overview = []
+            except Exception as e:
+                st.error(f"Error for {name}: {e}")
+                continue
+
             for ik in df_library_structurematch["inchikey_first_block"].unique():
                 sub_struct = df_library_structurematch[df_library_structurematch["inchikey_first_block"] == ik].copy()
-                sub_conf   = df_library_conflicts[df_library_conflicts["inchikey_first_block"] == ik].copy()
+                sub_conf = df_library_conflicts[df_library_conflicts["inchikey_first_block"] == ik].copy()
+
                 grouped_results[name][ik] = {"structure": sub_struct, "conflicts": sub_conf}
                 st.session_state.selected_queries[ik] = list(sub_struct["query_spectrum_id"].unique())
 
-                # pick most common Compound_Name (tie-break by len≈10 & fewest special chars)
-                names = sub_struct["Compound_Name"].dropna().astype(str)
-                if not names.empty:
-                    vc = names.value_counts()
-                    top = vc.iloc[0]
-                    cands = vc[vc == top].index.tolist()
-                    def special_count(s): 
-                        return len(re.findall(r"[^A-Za-z0-9]", s))
-                    best_name = min(cands, key=lambda s: (abs(len(s) - 10), special_count(s)))
-                else:
-                    best_name = ""
+                names = sub_struct["Compound_Name"].dropna().astype(str) if "Compound_Name" in sub_struct.columns else pd.Series([], dtype=str)
+                best_name = names.iloc[0] if len(names) else ""
 
-                # grab first SMILES
-                smiles = sub_struct["Smiles"].dropna().astype(str)
-                inchikey_first_block = sub_struct["inchikey_first_block"].dropna().astype(str)
-                first_smi = smiles.iloc[0] if not smiles.empty else ""
-                ikb = inchikey_first_block.iloc[0] if not inchikey_first_block.empty else ""
+                smiles = sub_struct["Smiles"].dropna().astype(str) if "Smiles" in sub_struct.columns else pd.Series([], dtype=str)
+                first_smi = smiles.iloc[0] if len(smiles) else ""
 
-                overview.append({
+                molecule_overview[name].append({
                     "Compound_Name": best_name,
-                    "inchikey_first_block": ikb,
+                    "inchikey_first_block": ik,
                     "Smiles": first_smi
                 })
 
-            st.session_state.molecule_overview[name] = pd.DataFrame(overview)
-
-        # if grouped_results is empty, inform user
+        # finalize session state
         if not grouped_results:
-            st.warning("No spectra available for this structure.")
+            st.warning("No spectra available for this input.")
             st.stop()
 
-        # get results into session state
         st.session_state.grouped_results = grouped_results
+        st.session_state.molecule_overview = {k: pd.DataFrame(v) for k, v in molecule_overview.items()}
+
 
         for var in ["df_library_structurematch", "result"]:
             try:
@@ -1000,12 +1056,27 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             df0 = data["structure"].copy()
 
 
-                            df0["spectrum_link"] = df0["query_spectrum_id"].apply(
-                                lambda x: (
-                                    f"http://metabolomics-usi.gnps2.org/dashinterface?usi1=mzspec%3AGNPS%3AGNPS-LIBRARY%3Aaccession%3A{x}&width=10.0&height=6.0&mz_min=None&mz_max=None&max_intensity=125&annotate_precision=4&annotation_rotation=90&cosine=standard&fragment_mz_tolerance=0.02&grid=True&annotate_peaks=%5B%5B%5D%2C%20%5B%5D%5D" if x.startswith("CCMSLIB")
-                                    else f"http://metabolomics-usi.gnps2.org/dashinterface?usi1=mzspec%3AMASSBANK%3A%3Aaccession%3A{x}&width=10.0&height=6.0&mz_min=None&mz_max=None&max_intensity=125&annotate_precision=4&annotation_rotation=90&cosine=standard&fragment_mz_tolerance=0.02&grid=True&annotate_peaks=%5B%5B%5D%2C%20%5B%5D%5D"
+                            def make_dashinterface_link(x: str) -> str:
+                                x = str(x)
+
+                                # If already a USI, use it directly
+                                if x.startswith("mzspec:"):
+                                    usi = x
+                                elif x.startswith("CCMSLIB"):
+                                    usi = f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}"
+                                else:
+                                    usi = f"mzspec:MASSBANK::accession:{x}"
+
+                                return (
+                                    "http://metabolomics-usi.gnps2.org/dashinterface?"
+                                    f"usi1={_url.quote(usi, safe='')}"
+                                    "&width=10.0&height=6.0&mz_min=None&mz_max=None&max_intensity=125"
+                                    "&annotate_precision=4&annotation_rotation=90&cosine=standard"
+                                    "&fragment_mz_tolerance=0.02&grid=True&annotate_peaks=%5B%5B%5D%2C%20%5B%5D%5D"
                                 )
-                            )  
+
+                            df0["spectrum_link"] = df0["query_spectrum_id"].apply(make_dashinterface_link)
+
 
                             # Make the spectrum column the first column
                             col_order = ['spectrum_link', 'Compound_Name', 'Precursor_MZ']
@@ -1068,14 +1139,35 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
         st.markdown(f"##### Next, search all {spectra_across_all_molecules} spectra of {number_of_molecules} molecule(s) across public metabolomics raw data to retrieve matching samples:")
 
+
+        # --- detect direct USI queries (no library int IDs available) ---
+        has_direct_usi = any(
+            (not data["structure"].empty)
+            and ("query_spectrum_id" in data["structure"].columns)
+            and (data["structure"]["query_spectrum_id"].astype(str).str.startswith("mzspec:").any())
+            for ik_dict in st.session_state.grouped_results.values()
+            for data in ik_dict.values()
+        )
+
         col_a, col_b = st.columns(2)
         with col_a:
-            option = st.radio(
-                "Mode",
-                ["FASSTrecords", "FASST"],
-                horizontal=True,
-                key="mode"
-            )
+            if has_direct_usi:
+                # USI-only queries cannot use FASSTrecords (needs spectrum_id_int / representative_spectrum_int)
+                option = st.radio(
+                    "Mode",
+                    ["FASSTrecords", "FASST"],
+                    horizontal=True,
+                    key="mode",
+                    index=1,          # force FASST
+                    disabled=True
+                )
+            else:
+                option = st.radio(
+                    "Mode",
+                    ["FASSTrecords", "FASST"],
+                    horizontal=True,
+                    key="mode"
+                )
         with col_b:
             st.empty()
 
@@ -1206,6 +1298,10 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
             time.sleep(2)
             with st.spinner("Searching raw data…"): 
 
+                if option == "FASSTrecords" and has_direct_usi:
+                    st.error("FASSTrecords cannot run for USI input (no library spectrum_id_int available). Use FASST.")
+                    st.stop()
+
                 new_results = {}
 
                 if option == "FASSTrecords":
@@ -1214,27 +1310,33 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         sel_frames = []
                         for ik, data in ik_dict.items():
                             
-                            df_struct = data["structure"]
+                            df_struct = data["structure"].copy()
 
-                            df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
-                            df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
-                            df_struct["similar_library_spectra"] = (
-                                df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
-                                        .transform("size")
-                                        .astype("int64")
-                            )
+                            # --- dereplicate spectra only if library integer IDs exist ---
+                            required = {"spectrum_id_int", "representative_spectrum_int"}
+                            if required.issubset(df_struct.columns):
+                                df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
+                                df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
+                                df_struct["similar_library_spectra"] = (
+                                    df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
+                                            .transform("size")
+                                            .astype("int64")
+                                )
 
-                            # add column with difference between spectrum_id_int and representative_spectrum_int
-                            df_struct["spectrum_difference"] = df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
+                                df_struct["spectrum_difference"] = (
+                                    df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
+                                )
 
-                            #sort so that smallest difference is kept by falcon_cluster (closest to representative spectrum)
-                            df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
-
-                            #keep first per falcon cluster
-                            df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
-
-                            # set spectrum_id_int value to representative_spectrum_int value
-                            df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
+                                df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
+                                df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
+                                df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
+                            else:
+                                # USI-only / non-library rows: keep as-is (no derep possible)
+                                df_struct = df_struct.copy()
+                                if "similar_library_spectra" not in df_struct.columns:
+                                    df_struct["similar_library_spectra"] = 1
+                                if "unique_spectra_in_mri" not in df_struct.columns:
+                                    df_struct["unique_spectra_in_mri"] = 1
 
                             if not df_struct.empty:
                                 sel_frames.append(df_struct)
@@ -1301,27 +1403,33 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         for name, ik_dict in st.session_state.grouped_results.items():
                             sel_frames = []
                             for ik, data in ik_dict.items():
-                                df_struct = data["structure"]
+                                df_struct = data["structure"].copy()
 
-                                # dereplicate spectra
-                                df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
-                                df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
-                                df_struct["similar_library_spectra"] = (
-                                    df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
-                                            .transform("size")
-                                            .astype("int64")
-                                )
-                                # add column with difference between spectrum_id_int and representative_spectrum_int
-                                df_struct["spectrum_difference"] = df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
+                                # --- dereplicate spectra only if library integer IDs exist ---
+                                required = {"spectrum_id_int", "representative_spectrum_int"}
+                                if required.issubset(df_struct.columns):
+                                    df_struct["spectrum_id_int"] = df_struct["spectrum_id_int"].astype("int64")
+                                    df_struct["representative_spectrum_int"] = df_struct["representative_spectrum_int"].astype("int64")
+                                    df_struct["similar_library_spectra"] = (
+                                        df_struct.groupby("representative_spectrum_int")["spectrum_id_int"]
+                                                .transform("size")
+                                                .astype("int64")
+                                    )
 
-                                #sort so that smallest difference is kept by falcon_cluster (closest to representative spectrum)
-                                df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
+                                    df_struct["spectrum_difference"] = (
+                                        df_struct["spectrum_id_int"] - df_struct["representative_spectrum_int"]
+                                    )
 
-                                #keep first per falcon cluster
-                                df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
-
-                                # set spectrum_id_int value to representative_spectrum_int value
-                                df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
+                                    df_struct = df_struct.sort_values(by=["representative_spectrum_int", "spectrum_difference"])
+                                    df_struct = df_struct.groupby("representative_spectrum_int").first().reset_index()
+                                    df_struct["spectrum_id_int"] = df_struct["representative_spectrum_int"]
+                                else:
+                                    # USI-only / non-library rows: keep as-is (no derep possible)
+                                    df_struct = df_struct.copy()
+                                    if "similar_library_spectra" not in df_struct.columns:
+                                        df_struct["similar_library_spectra"] = 1
+                                    if "unique_spectra_in_mri" not in df_struct.columns:
+                                        df_struct["unique_spectra_in_mri"] = 1
 
                                 if not df_struct.empty:
                                     sel_frames.append(df_struct)

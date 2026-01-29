@@ -9,4 +9,4 @@
 [submodule "external/LifeMASST"]
 	path = external/LifeMASST
 	url = https://github.com/YasinEl/LifeMASST.git
-	branch = main
+	branch = big_update

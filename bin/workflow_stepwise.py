@@ -29,6 +29,24 @@ from gnpsdata import fasst
 
 FASST_API_SERVER_URL = "https://api.fasst.gnps2.org"
 
+def _as_usi(x: str) -> str:
+    """Return a full mzspec USI given either a full USI or a library accession."""
+    x = str(x).strip()
+    if x.startswith("mzspec:"):
+        return x
+    # fallback to your existing logic for CCMSLIB / MassBank accessions
+    return make_library_usi(x)
+
+
+def _as_lib_usi(x: str) -> str:
+    """Return the 'library-side' USI for linkouts (works for full USIs too)."""
+    x = str(x).strip()
+    if x.startswith("mzspec:"):
+        return x
+    if x.startswith("CCMSLIB"):
+        return f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}"
+    return f"mzspec:MASSBANK::accession:{x}"
+
 
 def make_library_usi(lib_id):
     if lib_id.startswith("CCMSLIB"):
@@ -131,7 +149,7 @@ def retrieve_raw_data_matches(
     MAX_BATCH_REQUESTS = 50           # max new requests per batch
 
     # 0) build queue of all IDs to request
-    all_ids = list(library_subset['query_spectrum_id'])
+    all_ids = library_subset["query_spectrum_id"].astype(str).tolist()
     to_request = deque(all_ids)
 
     in_flight = {}   # sid -> {"token": str, "submitted_at": float}
@@ -145,8 +163,9 @@ def retrieve_raw_data_matches(
             sid = to_request.popleft()
             if sid in done:
                 continue
-            usi_full = make_library_usi(sid)
+            usi_full = _as_usi(sid)
             print("submitted", usi_full)
+
             token = fasst.query_fasst_api_usi(
                 usi_full, database,
                 host=FASST_API_SERVER_URL,
@@ -158,6 +177,7 @@ def retrieve_raw_data_matches(
                 cache=cache,
                 blocking=False
             )
+
             in_flight[sid] = {"token": token, "submitted_at": time.time()}
 
         # 2) attempt to collect EACH in-flight EXACTLY ONCE
@@ -210,6 +230,21 @@ def retrieve_raw_data_matches(
     print(f"Enriching {len(raw_matches)} raw matches with ReDU metadata...")
     redu_enriched = add_redu(raw_matches, redu_df, modification_condition=modification_condition)
     
+
+    library_subset = library_subset.copy()
+
+    fill_empty = {
+        "Smiles": "",                 # will become query_smiles
+        "Adduct": "Unknown",
+        "Precursor_MZ": np.nan,
+        "similar_library_spectra": 0,
+        "inchikey_first_block": "UNKNOWN",
+    }
+
+    for col, default in fill_empty.items():
+        if col not in library_subset.columns:
+            library_subset[col] = default
+            
     # add Smiles column from library_subset to redu_enriched
     if 'Smiles' in library_subset.columns:
         redu_enriched = redu_enriched.merge(
@@ -232,12 +267,7 @@ def retrieve_raw_data_matches(
         redu_enriched["similar_library_spectra"] = b.astype("string").where(b < 9, "9+")
 
     # make library usis for the links
-    redu_enriched["lib_usi"] = redu_enriched["query_spectrum_id"].apply(
-        lambda x: (
-            f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
-            else f"mzspec:MASSBANK::accession:{x}" 
-        )
-    )
+    redu_enriched["lib_usi"] = redu_enriched["query_spectrum_id"].apply(_as_lib_usi)
 
     if 'Modified' in redu_enriched.columns:
         def build_modifinder_link(row):
