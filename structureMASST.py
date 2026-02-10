@@ -143,7 +143,7 @@ st.sidebar.markdown(
     """
     <span style="font-size:0.85em;">
     <strong>Contributors</strong><br>
-    Yasin El Abiead (UCSD)<br>
+    Yasin El Abiead (BOKU University)<br>
     Wilhan Nunes (UCSD)<br>
     Mingxun Wang (UCR)<br>
     </span>
@@ -208,6 +208,23 @@ for k, v in [
     ("class_label", ""),
 ]:
     st.session_state.setdefault(k, v)
+
+# ---------- state init (add) ----------
+st.session_state.setdefault("append_library_results", False)
+
+def _uniquify_names(incoming: list[str], used: set[str]) -> list[str]:
+    """Make top-level query names unique against existing tabs + within incoming batch."""
+    out = []
+    for base in incoming:
+        base = str(base).strip() or "Input_query"
+        cand = base
+        i = 2
+        while cand in used:
+            cand = f"{base}_{i}"
+            i += 1
+        used.add(cand)
+        out.append(cand)
+    return out
 
 def tautomerize_neutralize_smiles(smiles: str) -> str:
     """Tautomerize and neutralize a SMILES string."""
@@ -304,7 +321,7 @@ with col_smiles:
     usi_input = st.text_input(
         "USI (mzspec:...)",
         key="usi_input",
-        placeholder="mzspec:GNPS:...",
+        placeholder="mzspec:...",
         help="Provide a USI to directly inspect this spectrum. No structure is required.",
         on_change=lambda: st.session_state.update({
             "smiles_input": "",
@@ -484,8 +501,28 @@ elif searchtype_option == "Tanimoto similarity":
     searchtype_option = "tanimoto"
 
 
-# — run the search —
-if st.button("Get Available Spectra", icon=':material/search:'):
+# — run the search — (replace whole block) —
+
+has_prev_library = bool(st.session_state.get("grouped_results"))
+
+btn_col, chk_col, _ = st.columns([2, 2, 4])
+
+with chk_col:
+    # Only show the checkbox if there are already results
+    if has_prev_library:
+        append_mode = st.checkbox(
+            "Add to existing",
+            key="append_library_results",
+            help="Molecule will be added to previous ones as additional query, rather than replacing previously requested molecules."
+        )
+    else:
+        append_mode = False
+        st.empty()
+
+with btn_col:
+    do_get_spectra = st.button("Get Available Spectra", icon=":material/search:")
+
+if do_get_spectra:
     # Tracking this action
     try:
         umami.new_event(event_name="Get Available Spectra Clicked")
@@ -493,29 +530,40 @@ if st.button("Get Available Spectra", icon=':material/search:'):
         print(f"Error tracking event: {e}")
 
     # Use new_smiles from structure editor if available, otherwise use original input
-    effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
+    effective_smiles = st.session_state.get("new_smiles", "") or smiles_input
     if smiles_type == "smiles":
         effective_smiles = tautomerize_neutralize_smiles(effective_smiles)
 
-    
-    with st.spinner("Finding spectra..."): 
-        # Reset upstream & downstream state
-        for key in [
-            "selected_queries",
-            "df_library_conflicts",
-            "grouped_results",
-            "raw_results",
-            "molecule_overview",
-            "query_table"
-        ]:
-            st.session_state.pop(key, None)
+    with st.spinner("Finding spectra..."):
 
-        # initialize what's needed 
-        st.session_state.selected_queries = {}
-        st.session_state.df_library_conflicts = None
-        st.session_state.grouped_results = {}
-        st.session_state.molecule_overview = {}
-        st.session_state.query_table = {}
+        # Always clear downstream raw results (they're stale after changing library entries)
+        st.session_state.pop("raw_results", None)
+
+        if not append_mode:
+            # Reset upstream state (original behavior)
+            for key in [
+                "selected_queries",
+                "df_library_conflicts",
+                "grouped_results",
+                "raw_results",
+                "molecule_overview",
+                "query_table",
+            ]:
+                st.session_state.pop(key, None)
+
+            st.session_state.selected_queries = {}
+            st.session_state.df_library_conflicts = None
+            st.session_state.grouped_results = {}
+            st.session_state.molecule_overview = {}
+            st.session_state.query_table = pd.DataFrame()
+
+        else:
+            # Append mode: keep existing, but ensure required containers exist
+            st.session_state.setdefault("selected_queries", {})
+            st.session_state.setdefault("grouped_results", {})
+            st.session_state.setdefault("molecule_overview", {})
+            if "query_table" not in st.session_state or not isinstance(st.session_state["query_table"], pd.DataFrame):
+                st.session_state["query_table"] = pd.DataFrame()
 
         # -------------------------
         # CANONICAL INPUT TABLE (ALWAYS)
@@ -552,7 +600,6 @@ if st.button("Get Available Spectra", icon=':material/search:'):
         elif uploaded_file is not None:
             df_input = pd.read_csv(uploaded_file)
 
-            # support either legacy (smiles,name) or new (query,name)
             if "query" not in df_input.columns:
                 if "smiles" in df_input.columns:
                     df_input = df_input.rename(columns={"smiles": "query"})
@@ -567,7 +614,6 @@ if st.button("Get Available Spectra", icon=':material/search:'):
             df_input["query"] = df_input["query"].astype(str).str.strip()
             df_input["name"] = df_input["name"].astype(str).str.strip()
 
-            # infer type if missing
             if "type" not in df_input.columns:
                 def _infer_type(q):
                     q = str(q).strip()
@@ -576,7 +622,6 @@ if st.button("Get Available Spectra", icon=':material/search:'):
                     return detect_smiles_or_smarts(q)
                 df_input["type"] = df_input["query"].apply(_infer_type)
 
-            # harmonize SMILES rows
             def _harmonize_query(row):
                 if row["type"] == "smiles":
                     return tautomerize_neutralize_smiles(row["query"])
@@ -584,7 +629,6 @@ if st.button("Get Available Spectra", icon=':material/search:'):
 
             df_input["query"] = df_input.apply(_harmonize_query, axis=1)
 
-            # infer searchtype if missing
             if "searchtype" not in df_input.columns:
                 def _infer_searchtype(t):
                     if t == "usi": return "usi"
@@ -616,10 +660,25 @@ if st.button("Get Available Spectra", icon=':material/search:'):
             st.warning("Please enter a USI, SMILES/SMARTS, upload a CSV, or select a class label.")
             st.stop()
 
-        # store canonical input table (batch-style always)
-        st.session_state.query_table = df_input
+        # --- IMPORTANT: in append mode, avoid tab name collisions ---
+        if append_mode:
+            used_names = set(st.session_state.get("grouped_results", {}).keys())
+        else:
+            used_names = set()
 
-        # lists ALWAYS defined (fixes your NameError)
+        df_input = df_input.copy()
+        df_input["name"] = _uniquify_names(df_input["name"].tolist(), used_names)
+
+        # store / append canonical input table
+        if append_mode and isinstance(st.session_state.get("query_table"), pd.DataFrame) and not st.session_state["query_table"].empty:
+            st.session_state["query_table"] = (
+                pd.concat([st.session_state["query_table"], df_input], ignore_index=True)
+                  .drop_duplicates()
+            )
+        else:
+            st.session_state["query_table"] = df_input
+
+        # lists ALWAYS defined
         query_list = df_input["query"].tolist()
         name_list = df_input["name"].tolist()
         type_list = df_input["type"].tolist()
@@ -627,16 +686,13 @@ if st.button("Get Available Spectra", icon=':material/search:'):
         formula_list = df_input["formula"].tolist()
         allowed_elements_list = df_input["allowed_elements"].tolist()
 
-
-        grouped_results = defaultdict(dict)
-        molecule_overview = defaultdict(list)
+        # Build ONLY the new results, then merge if append_mode
+        new_grouped_results = defaultdict(dict)
+        new_molecule_overview = defaultdict(list)
 
         for q, name, typ, searchtype, formula, allowed_elements in zip(
             query_list, name_list, type_list, searchtype_list, formula_list, allowed_elements_list
         ):
-            # -------------------------
-            # USI ROWS: skip structure steps entirely
-            # -------------------------
             if typ == "usi" or searchtype == "usi":
                 ik = hashlib.sha1(q.encode()).hexdigest()[:12]  # fake IK bucket
 
@@ -645,14 +701,16 @@ if st.button("Get Available Spectra", icon=':material/search:'):
                     "Compound_Name": name,
                     "Smiles": "",
                     "Precursor_MZ": np.nan,
-                    "query_spectrum_id": q,   # store FULL mzspec:... here
+                    "query_spectrum_id": q,
                     "USI": q,
                 }])
 
-                grouped_results[name][ik] = {"structure": df_struct, "conflicts": pd.DataFrame()}
-                st.session_state.selected_queries[ik] = [q]
+                new_grouped_results[name][ik] = {"structure": df_struct, "conflicts": pd.DataFrame()}
 
-                molecule_overview[name].append({
+                prev = st.session_state["selected_queries"].get(ik, [])
+                st.session_state["selected_queries"][ik] = list(dict.fromkeys(prev + [q]))
+
+                new_molecule_overview[name].append({
                     "Compound_Name": name,
                     "inchikey_first_block": ik,
                     "Smiles": "",
@@ -660,9 +718,6 @@ if st.button("Get Available Spectra", icon=':material/search:'):
                 })
                 continue
 
-            # -------------------------
-            # STRUCTURE / CLASS LABEL ROWS: existing path
-            # -------------------------
             try:
                 tanimoto_threshold = tanimoto_cutoff if searchtype == "tanimoto" else None
 
@@ -691,8 +746,11 @@ if st.button("Get Available Spectra", icon=':material/search:'):
                 sub_struct = df_library_structurematch[df_library_structurematch["inchikey_first_block"] == ik].copy()
                 sub_conf = df_library_conflicts[df_library_conflicts["inchikey_first_block"] == ik].copy()
 
-                grouped_results[name][ik] = {"structure": sub_struct, "conflicts": sub_conf}
-                st.session_state.selected_queries[ik] = list(sub_struct["query_spectrum_id"].unique())
+                new_grouped_results[name][ik] = {"structure": sub_struct, "conflicts": sub_conf}
+
+                new_qs = list(sub_struct["query_spectrum_id"].unique())
+                prev = st.session_state["selected_queries"].get(ik, [])
+                st.session_state["selected_queries"][ik] = list(dict.fromkeys(prev + new_qs))
 
                 names = sub_struct["Compound_Name"].dropna().astype(str) if "Compound_Name" in sub_struct.columns else pd.Series([], dtype=str)
                 best_name = names.iloc[0] if len(names) else ""
@@ -700,20 +758,28 @@ if st.button("Get Available Spectra", icon=':material/search:'):
                 smiles = sub_struct["Smiles"].dropna().astype(str) if "Smiles" in sub_struct.columns else pd.Series([], dtype=str)
                 first_smi = smiles.iloc[0] if len(smiles) else ""
 
-                molecule_overview[name].append({
+                new_molecule_overview[name].append({
                     "Compound_Name": best_name,
                     "inchikey_first_block": ik,
                     "Smiles": first_smi
                 })
 
-        # finalize session state
-        if not grouped_results:
-            st.warning("No spectra available for this input.")
-            st.stop()
+        # finalize: if append_mode and nothing new, keep old results visible
+        if not new_grouped_results:
+            st.warning("No spectra available for this input. Existing results were kept." if append_mode else "No spectra available for this input.")
+        else:
+            if append_mode:
+                merged = dict(st.session_state.grouped_results)
+                merged.update(new_grouped_results)
+                st.session_state.grouped_results = merged
 
-        st.session_state.grouped_results = grouped_results
-        st.session_state.molecule_overview = {k: pd.DataFrame(v) for k, v in molecule_overview.items()}
-
+                mo = dict(st.session_state.molecule_overview)
+                for k, v in new_molecule_overview.items():
+                    mo[k] = pd.DataFrame(v)
+                st.session_state.molecule_overview = mo
+            else:
+                st.session_state.grouped_results = new_grouped_results
+                st.session_state.molecule_overview = {k: pd.DataFrame(v) for k, v in new_molecule_overview.items()}
 
         for var in ["df_library_structurematch", "result"]:
             try:
@@ -721,6 +787,7 @@ if st.button("Get Available Spectra", icon=':material/search:'):
             except KeyError:
                 pass
         gc.collect()
+
 
 # render outer tabs for each structure query
 if "grouped_results" in st.session_state and st.session_state["grouped_results"]:
