@@ -174,7 +174,7 @@ def retrieve_raw_data_matches(
                 precursor_mz_tol=precursor_mz_tol,
                 fragment_mz_tol=fragment_mz_tol,
                 min_cos=min_cos,
-                cache=cache,
+                #cache=cache,
                 blocking=False
             )
 

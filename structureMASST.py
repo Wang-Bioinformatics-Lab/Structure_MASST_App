@@ -301,6 +301,15 @@ with col_name:
     if st.session_state["name_warning"]:
         st.warning(st.session_state["name_warning"])
 
+    #add spacer to align widgets
+    st.markdown("<div style='height: 1.5em;'></div>", unsafe_allow_html=True)
+    # if st.checkbox("Upload Batch file", key="batch_search"):
+    with st.popover("Add batch file", icon=":material/file_upload:"):
+        uploaded_file = st.file_uploader(
+            """Drop CSV file for batch search (smiles and name columns). We recommend to stay below 100 molecules or reach out to us to run locally.""",
+            type=["csv"]
+        )
+
 with col_or1:
     st.markdown("<div style='text-align:center; margin-top:2.5em;'>or</div>", unsafe_allow_html=True)
 
@@ -317,19 +326,7 @@ with col_smiles:
     # Use effective SMILES (from editor if available) for type detection
     effective_smiles = st.session_state.get('new_smiles', '') or smiles_input
     smiles_type = detect_smiles_or_smarts(effective_smiles)
-    
-    usi_input = st.text_input(
-        "USI (mzspec:...)",
-        key="usi_input",
-        placeholder="mzspec:...",
-        help="Provide a USI to directly inspect this spectrum. No structure is required.",
-        on_change=lambda: st.session_state.update({
-            "smiles_input": "",
-            "new_smiles": "",
-            "structure_editor_open": False,
-            "class_label": ""
-        }),
-    ).strip()
+
 
 
 with col_or2:
@@ -353,14 +350,20 @@ with col_or3:
     st.markdown("<div style='text-align:center; margin-top:2.5em;'>or</div>", unsafe_allow_html=True)
 
 with col_csv:
-    #add spacer to align widgets
-    st.markdown("<div style='height: 1.5em;'></div>", unsafe_allow_html=True)
-    # if st.checkbox("Upload Batch file", key="batch_search"):
-    with st.popover("Add batch file", icon=":material/file_upload:"):
-        uploaded_file = st.file_uploader(
-            """Drop CSV file for batch search (smiles and name columns). We recommend to stay below 100 molecules or reach out to us to run locally.""",
-            type=["csv"]
-        )
+
+    usi_input = st.text_input(
+        "USI (mzspec:...)",
+        key="usi_input",
+        placeholder="mzspec:...",
+        help="Provide a USI to directly inspect this spectrum. No structure is required.",
+        on_change=lambda: st.session_state.update({
+            "smiles_input": "",
+            "new_smiles": "",
+            "structure_editor_open": False,
+            "class_label": ""
+        }),
+    ).strip()
+
 
 # — Display molecule if valid SMILES/SMARTS —
 #@st.dialog("Visualize Structure")

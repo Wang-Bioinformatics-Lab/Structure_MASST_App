@@ -25,6 +25,8 @@ dependencies:
   - black                
   - pytest
 
+  - setuptools<81
+
   # Nextflow & Java (for nextflow)
   - openjdk=11  
   - nextflow                
@@ -35,7 +37,6 @@ dependencies:
   - pip
   - pip:
       - formula_validation
-      - wikidata-dl
       - git+https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage.git
       - dash_extensions
       - python-dotenv
