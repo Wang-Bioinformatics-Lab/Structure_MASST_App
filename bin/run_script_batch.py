@@ -316,212 +316,276 @@ def main():
 
     summary_rows = []
 
-    for i, row in df.iterrows():
-        raw_query = str(row["query"]).strip()
-        name = str(row["name"]).strip()
-
-        folder = outroot / f"{i:04d}_{_safe_name(name)}_{_short_hash(raw_query)}"
+    # Group rows with the same name and treat them as one combined "library query"
+    for g_idx, (name, gdf) in enumerate(df.groupby("name", sort=False), start=0):
+        raw_queries = gdf["query"].astype(str).str.strip().tolist()
+        group_hash = _short_hash("||".join(raw_queries))
+        folder = outroot / f"{g_idx:04d}_{_safe_name(name)}_{group_hash}"
         folder.mkdir(parents=True, exist_ok=True)
 
         try:
-            # --- infer / normalize type + searchtype ---
-            typ = _norm_type(row.get("type"))
-            if typ is None:
-                typ = _infer_type_from_query(raw_query)
+            query_meta = []
+            lib_parts = []
+            has_any_usi = False
 
-            st = _norm_searchtype(row.get("searchtype"))
-            if st is None:
-                st = _infer_searchtype(typ)
+            # --- build one combined library table for this name ---
+            for _, row in gdf.iterrows():
+                raw_query = str(row["query"]).strip()
 
-            # --- canonicalize query (app behavior) ---
-            query = raw_query
-            if typ == "smiles":
-                query = tautomerize_neutralize_smiles(query)
+                # infer / normalize type + searchtype
+                typ = _norm_type(row.get("type"))
+                if typ is None:
+                    typ = _infer_type_from_query(raw_query)
 
-            # --- per-row knobs (app behavior) ---
-            tan_th = None
-            if st == "tanimoto":
-                v = row.get("tanimoto_threshold")
-                try:
-                    tan_th = float(v) if pd.notna(v) else float(args.default_tanimoto)
-                except Exception:
-                    tan_th = float(args.default_tanimoto)
+                st = _norm_searchtype(row.get("searchtype"))
+                if st is None:
+                    st = _infer_searchtype(typ)
 
-            formula = _ensure_any(row.get("formula")) if st == "substructure" else "any"
-            allowed_elements = _ensure_any(row.get("allowed_elements")) if st == "substructure" else "any"
-            if st == "substructure":
-                if formula == "any":
-                    formula = _ensure_any(args.default_formula)
-                if allowed_elements == "any":
-                    allowed_elements = _ensure_any(args.default_allowed_elements)
+                # canonicalize query (app behavior)
+                query = raw_query
+                if typ == "smiles":
+                    query = tautomerize_neutralize_smiles(query)
 
-            # --- mode override for USI (matches app) ---
-            effective_mode = args.mode
-            if typ == "usi" and effective_mode == "fasstrecords":
-                effective_mode = "fasst"
+                # per-row knobs
+                tan_th = None
+                if st == "tanimoto":
+                    v = row.get("tanimoto_threshold")
+                    try:
+                        tan_th = float(v) if pd.notna(v) else float(args.default_tanimoto)
+                    except Exception:
+                        tan_th = float(args.default_tanimoto)
 
-            (folder / "input.txt").write_text(
-                "\n".join([
-                    f"name\t{name}",
-                    f"query_raw\t{raw_query}",
-                    f"query_used\t{query}",
-                    f"type\t{typ}",
-                    f"searchtype\t{st}",
-                    f"tanimoto_threshold\t{tan_th}",
-                    f"formula\t{formula}",
-                    f"allowed_elements\t{allowed_elements}",
-                    f"mode_requested\t{args.mode}",
-                    f"mode_used\t{effective_mode}",
-                ]) + "\n",
-                encoding="utf-8",
-            )
+                formula = _ensure_any(row.get("formula")) if st == "substructure" else "any"
+                allowed_elements = _ensure_any(row.get("allowed_elements")) if st == "substructure" else "any"
+                if st == "substructure":
+                    if formula == "any":
+                        formula = _ensure_any(args.default_formula)
+                    if allowed_elements == "any":
+                        allowed_elements = _ensure_any(args.default_allowed_elements)
 
-            # --- LIBRARY STEP (app: get_library_table), except USI ---
-            if typ == "usi" or st == "usi":
-                ik = hashlib.sha1(query.encode()).hexdigest()[:12]  # fake IK bucket (same idea as app)
-                df_lib = pd.DataFrame([{
-                    "inchikey_first_block": ik,
-                    "Compound_Name": name,
-                    "Smiles": "",
-                    "Precursor_MZ": np.nan,
-                    "query_spectrum_id": query,
-                    "USI": query,
-                }])
-            else:
-                df_lib = get_library_table(
-                    smiles=query,
-                    searchtype=st,
-                    tanimoto_threshold=tan_th,
-                    allowed_formula=formula,
-                    allowed_elements=allowed_elements,
-                    sqlite_path=sqlite_path,
-                    api_endpoint=api_endpoint,
-                    timeout=timeout,
+                # mode override for USI (matches app)
+                effective_mode = args.mode
+                if typ == "usi" and effective_mode == "fasstrecords":
+                    effective_mode = "fasst"
+
+                if typ == "usi" or st == "usi":
+                    has_any_usi = True
+
+                query_meta.append(
+                    {
+                        "query_raw": raw_query,
+                        "query_used": query,
+                        "type": typ,
+                        "searchtype": st,
+                        "tanimoto_threshold": tan_th,
+                        "formula": formula,
+                        "allowed_elements": allowed_elements,
+                        "mode_used": effective_mode,
+                    }
                 )
 
-                if df_lib is None:
-                    df_lib = pd.DataFrame()
-                if not isinstance(df_lib, pd.DataFrame):
-                    raise RuntimeError("get_library_table() did not return a pandas DataFrame")
+                # LIBRARY STEP (per sub-query), then combine
+                if typ == "usi" or st == "usi":
+                    ik = hashlib.sha1(query.encode()).hexdigest()[:12]
+                    df_lib_part = pd.DataFrame([{
+                        "inchikey_first_block": ik,
+                        "Compound_Name": name,
+                        "Smiles": "",
+                        "Precursor_MZ": np.nan,
+                        "query_spectrum_id": query,
+                        "USI": query,
+                    }])
+                else:
+                    df_lib_part = get_library_table(
+                        smiles=query,
+                        searchtype=st,
+                        tanimoto_threshold=tan_th,
+                        allowed_formula=formula,
+                        allowed_elements=allowed_elements,
+                        sqlite_path=sqlite_path,
+                        api_endpoint=api_endpoint,
+                        timeout=timeout,
+                    )
+                    if df_lib_part is None:
+                        df_lib_part = pd.DataFrame()
+                    if not isinstance(df_lib_part, pd.DataFrame):
+                        raise RuntimeError("get_library_table() did not return a pandas DataFrame")
 
-            # write library outputs
-            df_lib.to_csv(folder / "library_all_spectra.tsv", sep="\t", index=False)
+                # keep a temp marker so we can run RAW STEP per mode if needed
+                df_lib_part["__effective_mode"] = effective_mode
+                lib_parts.append(df_lib_part)
 
-            if not df_lib.empty and "inchikey_first_block" in df_lib.columns:
-                overview = _make_library_overview(df_lib)
+            df_lib = pd.concat(lib_parts, ignore_index=True, sort=False) if lib_parts else pd.DataFrame()
+            df_lib_clean = df_lib.drop(columns=["__effective_mode"], errors="ignore")
+
+            # write group input.txt (all sub-queries)
+            lines = [
+                f"name\t{name}",
+                f"n_queries\t{len(query_meta)}",
+                f"mode_requested\t{args.mode}",
+            ]
+            for j, m in enumerate(query_meta):
+                lines.extend([
+                    f"query{j}_raw\t{m['query_raw']}",
+                    f"query{j}_used\t{m['query_used']}",
+                    f"query{j}_type\t{m['type']}",
+                    f"query{j}_searchtype\t{m['searchtype']}",
+                    f"query{j}_tanimoto_threshold\t{m['tanimoto_threshold']}",
+                    f"query{j}_formula\t{m['formula']}",
+                    f"query{j}_allowed_elements\t{m['allowed_elements']}",
+                    f"query{j}_mode_used\t{m['mode_used']}",
+                ])
+            (folder / "input.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            # write combined library outputs
+            df_lib_clean.to_csv(folder / "library_all_spectra.tsv", sep="\t", index=False)
+
+            if not df_lib_clean.empty and "inchikey_first_block" in df_lib_clean.columns:
+                overview = _make_library_overview(df_lib_clean)
                 overview.to_csv(folder / "library_overview.tsv", sep="\t", index=False)
 
                 for ik_val in overview["inchikey_first_block"].astype(str).tolist():
-                    sub = df_lib[df_lib["inchikey_first_block"].astype(str) == str(ik_val)].copy()
+                    sub = df_lib_clean[df_lib_clean["inchikey_first_block"].astype(str) == str(ik_val)].copy()
                     safe_ik = re.sub(r"[^A-Za-z0-9._-]+", "_", str(ik_val))
                     sub.to_csv(folder / f"library_{safe_ik}.tsv", sep="\t", index=False)
 
-            n_lib = int(len(df_lib))
+            n_lib = int(len(df_lib_clean))
 
-            # if no library spectra and not USI, stop here
-            if n_lib == 0 and typ != "usi":
-                (folder / "note.txt").write_text("No library spectra found for this input.\n", encoding="utf-8")
+            # if no library spectra and no USI fallback, stop here
+            if n_lib == 0 and not has_any_usi:
+                (folder / "note.txt").write_text("No library spectra found for this name-group.\n", encoding="utf-8")
                 summary_rows.append(
-                    {"idx": i, "name": name, "n_library_spectra": 0, "n_raw_matches": 0, "n_unique_mri": 0, "folder": str(folder)}
+                    {
+                        "idx": g_idx,
+                        "name": name,
+                        "n_inputs": int(len(gdf)),
+                        "n_library_spectra": 0,
+                        "n_raw_matches": 0,
+                        "n_unique_mri": 0,
+                        "folder": str(folder),
+                        "mode_used": "",
+                    }
                 )
                 continue
 
             # map IK -> best Compound_Name for later merge
             ik_to_name = None
-            if not df_lib.empty and "inchikey_first_block" in df_lib.columns:
-                if "Compound_Name" in df_lib.columns:
+            if not df_lib_clean.empty and "inchikey_first_block" in df_lib_clean.columns:
+                if "Compound_Name" in df_lib_clean.columns:
                     ik_to_name = (
-                        df_lib[["inchikey_first_block", "Compound_Name"]]
+                        df_lib_clean[["inchikey_first_block", "Compound_Name"]]
                         .dropna(subset=["inchikey_first_block"])
                         .drop_duplicates()
                     )
 
-            # --- RAW DATA STEP ---
-            df_for_name = _dereplicate_library_spectra(df_lib)
+            # --- RAW DATA STEP (run once if all same mode; otherwise per-mode then concat) ---
+            # preserve order of first appearance of each mode
+            modes_in_group = []
+            for m in query_meta:
+                if m["mode_used"] not in modes_in_group:
+                    modes_in_group.append(m["mode_used"])
 
-            masst_df = pd.DataFrame()
-            redu_df = pd.DataFrame()
+            masst_parts = []
+            redu_parts = []
 
-            if effective_mode == "fasstrecords":
-                masst_df, redu_df = get_masst_and_redu_tables(
-                    df_for_name,
-                    cosine_threshold=float(args.min_cos),
-                    matching_peaks=int(args.min_peaks),
-                    min_annotation_rank=int(args.min_rank),
-                    sqlite_path=sqlite_path,
-                    api_endpoint=api_endpoint,
-                    timeout=timeout,
-                    chunk_size=int(args.max_returned_rows),
-                )
+            for mode_used in modes_in_group:
+                df_lib_mode = df_lib[df_lib["__effective_mode"] == mode_used].drop(columns=["__effective_mode"], errors="ignore")
+                df_for_name = _dereplicate_library_spectra(df_lib_mode)
 
-                # app behavior: if key columns missing -> treat as empty
-                if not isinstance(redu_df, pd.DataFrame) or ("Cosine" not in redu_df.columns or "Matching Peaks" not in redu_df.columns):
-                    masst_df = pd.DataFrame()
-                    redu_df = pd.DataFrame()
+                masst_df_part = pd.DataFrame()
+                redu_df_part = pd.DataFrame()
 
-            else:  # FASST
-                modification_mass = args.mod_mass
-                if args.mod_search and args.mod_formula:
-                    if Formula is not None:
-                        try:
-                            modification_mass = Formula.formula_from_str(args.mod_formula).get_monoisotopic_mass()
-                        except Exception:
-                            pass
+                if mode_used == "fasstrecords":
+                    masst_df_part, redu_df_part = get_masst_and_redu_tables(
+                        df_for_name,
+                        cosine_threshold=float(args.min_cos),
+                        matching_peaks=int(args.min_peaks),
+                        min_annotation_rank=int(args.min_rank),
+                        sqlite_path=sqlite_path,
+                        api_endpoint=api_endpoint,
+                        timeout=timeout,
+                        chunk_size=int(args.max_returned_rows),
+                    )
 
-                _, redu_df = retrieve_raw_data_matches(
-                    df_for_name,
-                    database=args.database,
-                    precursor_mz_tol=float(args.precursor_tol),
-                    fragment_mz_tol=float(args.fragment_tol),
-                    min_cos=float(args.min_cos),
-                    matching_peaks=int(args.min_peaks),
-                    analog=bool(args.mod_search),
-                    modimass=modification_mass,
-                    elimination=bool(args.elimination),
-                    addition=bool(args.addition),
-                    modification_condition=args.mod_condition,
-                    sqlite_path=sqlite_path,
-                    api_endpoint=api_endpoint,
-                    timeout=timeout,
-                    output_folder=str(folder),
-                )
+                    if (not isinstance(redu_df_part, pd.DataFrame)) or ("Cosine" not in redu_df_part.columns) or ("Matching Peaks" not in redu_df_part.columns):
+                        masst_df_part = pd.DataFrame()
+                        redu_df_part = pd.DataFrame()
 
-                if redu_df is None or not isinstance(redu_df, pd.DataFrame):
-                    redu_df = pd.DataFrame()
+                else:  # FASST
+                    modification_mass = args.mod_mass
+                    if args.mod_search and args.mod_formula:
+                        if Formula is not None:
+                            try:
+                                modification_mass = Formula.formula_from_str(args.mod_formula).get_monoisotopic_mass()
+                            except Exception:
+                                pass
 
-                # optional link columns (same as app; best-effort)
-                if not redu_df.empty:
-                    if "query_spectrum_id" in redu_df.columns:
-                        redu_df["lib_usi"] = redu_df["query_spectrum_id"].astype(str).apply(
-                            lambda x: (
-                                x if x.startswith("mzspec:")
-                                else f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
-                                else f"mzspec:MASSBANK::accession:{x}"
+                    # if we have multiple mode runs, avoid clobbering any mode-specific side outputs
+                    out_folder_for_mode = str(folder) if len(modes_in_group) == 1 else str((folder / f"_mode_{mode_used}").resolve())
+                    Path(out_folder_for_mode).mkdir(parents=True, exist_ok=True)
+
+                    _, redu_df_part = retrieve_raw_data_matches(
+                        df_for_name,
+                        database=args.database,
+                        precursor_mz_tol=float(args.precursor_tol),
+                        fragment_mz_tol=float(args.fragment_tol),
+                        min_cos=float(args.min_cos),
+                        matching_peaks=int(args.min_peaks),
+                        analog=bool(args.mod_search),
+                        modimass=modification_mass,
+                        elimination=bool(args.elimination),
+                        addition=bool(args.addition),
+                        modification_condition=args.mod_condition,
+                        sqlite_path=sqlite_path,
+                        api_endpoint=api_endpoint,
+                        timeout=timeout,
+                        output_folder=out_folder_for_mode,
+                    )
+
+                    if redu_df_part is None or not isinstance(redu_df_part, pd.DataFrame):
+                        redu_df_part = pd.DataFrame()
+
+                    # optional link columns (same as app; best-effort)
+                    if not redu_df_part.empty:
+                        if "query_spectrum_id" in redu_df_part.columns:
+                            redu_df_part["lib_usi"] = redu_df_part["query_spectrum_id"].astype(str).apply(
+                                lambda x: (
+                                    x if x.startswith("mzspec:")
+                                    else f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
+                                    else f"mzspec:MASSBANK::accession:{x}"
+                                )
                             )
-                        )
 
-                        if build_spectraresolver_link is not None and "USI" in redu_df.columns:
-                            redu_df["best_spectral_match"] = redu_df.apply(
-                                lambda r: build_spectraresolver_link(r["USI"], r["lib_usi"]),
-                                axis=1,
-                            )
+                            if build_spectraresolver_link is not None and "USI" in redu_df_part.columns:
+                                redu_df_part["best_spectral_match"] = redu_df_part.apply(
+                                    lambda r: build_spectraresolver_link(r["USI"], r["lib_usi"]),
+                                    axis=1,
+                                )
 
-                    if build_dashboard_eic_url is not None and "USI" in redu_df.columns and "Precursor_MZ" in redu_df.columns:
-                        if "Check LC peak" not in redu_df.columns:
-                            redu_df["Check LC peak"] = np.nan
-                        redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)
-                        mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
-                        try:
-                            redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
-                                lambda r: build_dashboard_eic_url(
-                                    usi=r["USI"],
-                                    xic_mz=r["Precursor_MZ"],
-                                    xic_tolerance=0.05,
-                                ),
-                                axis=1,
-                            )
-                        except Exception:
-                            pass
+                        if build_dashboard_eic_url is not None and "USI" in redu_df_part.columns and "Precursor_MZ" in redu_df_part.columns:
+                            if "Check LC peak" not in redu_df_part.columns:
+                                redu_df_part["Check LC peak"] = np.nan
+                            redu_df_part["Check LC peak"] = redu_df_part["Check LC peak"].astype(object)
+                            mask = redu_df_part["Check LC peak"].isna() | (redu_df_part["Check LC peak"].astype(str).str.strip() == "")
+                            try:
+                                redu_df_part.loc[mask, "Check LC peak"] = redu_df_part.loc[mask].apply(
+                                    lambda r: build_dashboard_eic_url(
+                                        usi=r["USI"],
+                                        xic_mz=r["Precursor_MZ"],
+                                        xic_tolerance=0.05,
+                                    ),
+                                    axis=1,
+                                )
+                            except Exception:
+                                pass
+
+                if isinstance(masst_df_part, pd.DataFrame) and not masst_df_part.empty:
+                    masst_parts.append(masst_df_part)
+                if isinstance(redu_df_part, pd.DataFrame) and not redu_df_part.empty:
+                    redu_parts.append(redu_df_part)
+
+            masst_df = pd.concat(masst_parts, ignore_index=True, sort=False) if masst_parts else pd.DataFrame()
+            redu_df = pd.concat(redu_parts, ignore_index=True, sort=False) if redu_parts else pd.DataFrame()
 
             # merge Compound_Name like app (only if useful)
             if isinstance(redu_df, pd.DataFrame) and not redu_df.empty:
@@ -547,7 +611,7 @@ def main():
             else:
                 n_mri = 0
 
-            # optional sankey export (default columns match the app’s default preset)
+            # optional sankey export
             if isinstance(redu_df, pd.DataFrame) and not redu_df.empty:
                 sankey_path = folder / f"rawdata_sankey.{args.sankey_ext.lower()}"
                 _export_sankey_if_possible(
@@ -561,20 +625,30 @@ def main():
 
             summary_rows.append(
                 {
-                    "idx": i,
+                    "idx": g_idx,
                     "name": name,
+                    "n_inputs": int(len(gdf)),
                     "n_library_spectra": n_lib,
                     "n_raw_matches": n_raw,
                     "n_unique_mri": n_mri,
                     "folder": str(folder),
-                    "mode_used": effective_mode,
+                    "mode_used": ",".join(modes_in_group),
                 }
             )
 
         except Exception as e:
             (folder / "error.txt").write_text(f"{type(e).__name__}: {e}\n", encoding="utf-8")
             summary_rows.append(
-                {"idx": i, "name": name, "n_library_spectra": None, "n_raw_matches": None, "n_unique_mri": None, "folder": str(folder)}
+                {
+                    "idx": g_idx,
+                    "name": name,
+                    "n_inputs": int(len(gdf)),
+                    "n_library_spectra": None,
+                    "n_raw_matches": None,
+                    "n_unique_mri": None,
+                    "folder": str(folder),
+                    "mode_used": None,
+                }
             )
 
     pd.DataFrame(summary_rows).to_csv(outroot / "batch_summary.tsv", sep="\t", index=False)
