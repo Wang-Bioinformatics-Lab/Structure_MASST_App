@@ -20,19 +20,41 @@ from gnpsdata import fasst
 
 
 def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
-                    matching_peaks=6, modimass=None, elimination=False, addition=False):
+                    matching_peaks=6, modimass=None, elimination=False, addition=False, log_output=None):
 
-   
+    #print(f"Querying FASST for USI {usi} with status {status} and parameters: analog={analog}, precursor_mz_tol={precursor_mz_tol}, matching_peaks={matching_peaks}, modimass={modimass}, elimination={elimination}, addition={addition}")
     try:
         modimass_val = float(modimass)
     except (TypeError, ValueError):
         modimass_val = None
 
     try:
-        response = fasst.get_results(status, host="https://api.fasst.gnps2.org", blocking=True)
+        print(f"Submitting FASST query for USI {usi} with status {status}")
         
+        # minimal NOT_FOUND grace retries
+        response = None
+        for _ in range(10):  # ~10s grace window
+            response = fasst.get_results(status, blocking=True)  # pass the SAME host you submitted to
+            if response.get("status") == "NOT_FOUND" and response.get("error") == "Invalid Task ID":
+                time.sleep(1)
+                continue
+            elif 'error' in response:
+                if log_output:
+                    with open(os.path.join(log_output, f"{usi}_error.log"), "w") as f:
+                        json.dump(response, f)
 
-        response_list = response['results']
+                raise RuntimeError(response['error'])
+            break
+
+        print(f"Response keys: {response.keys()}")
+
+        # minimal safety: if no results, bail out (don’t crash)
+        if "results" not in response:
+            print(f"FASST returned no results payload: {response}")
+            # return empty dataframe / None / raise — whatever your function expects
+            raise RuntimeError(response.get("error", "No results in response"))
+
+        response_list = response["results"]
 
         
         if len(response_list) > 0:

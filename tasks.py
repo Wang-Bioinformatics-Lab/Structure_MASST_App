@@ -1,4 +1,6 @@
 # tasks.py
+from turtle import st
+
 from celery import Celery
 from bin.run_masstRecords_queries import get_library_table, get_masst_and_redu_tables
 from bin.workflow_stepwise import retrieve_raw_data_matches
@@ -264,7 +266,8 @@ def run_retrieve_raw_data_matches(
     modification_condition,
     sqlite_path,
     api_endpoint,
-    timeout
+    timeout,
+    output_folder=None
 ):
     try:
         # Serialize the DataFrame to JSON
@@ -285,7 +288,8 @@ def run_retrieve_raw_data_matches(
             modification_condition,
             sqlite_path,
             api_endpoint,
-            timeout
+            timeout,
+            output_folder,
         )
 
         # Waiting
@@ -316,7 +320,8 @@ def run_retrieve_raw_data_matches(
             modification_condition,
             sqlite_path,
             api_endpoint,
-            timeout
+            timeout,
+            output_folder,
         )
 
         redu_df = pd.read_json(result_dict["redu"])
@@ -338,7 +343,8 @@ def _run_retrieve_raw_data_matches(
     modification_condition,
     sqlite_path,
     api_endpoint,
-    timeout
+    timeout,
+    output_folder=None
 ):
 
 
@@ -361,6 +367,7 @@ def _run_retrieve_raw_data_matches(
         sqlite_path=sqlite_path,
         api_endpoint=api_endpoint,
         timeout=timeout,
+        output_folder=output_folder
     )
 
     # Return both DataFrames serialized as JSON

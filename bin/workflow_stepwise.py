@@ -16,6 +16,7 @@ from urllib.parse import quote_plus
 import sys
 import time
 import numpy as np
+from bin.shared_data import get_redu_table_cached
 
 HERE = os.path.dirname(__file__)  
 PKG_PATH = os.path.abspath(os.path.join(HERE, '..', 'external', 'GNPSDataPackage'))
@@ -70,6 +71,7 @@ def retrieve_raw_data_matches(
     sqlite_path: str | None = None,
     api_endpoint: str = "http://127.0.0.1:8001/masst_records",
     timeout: int = 10,
+    output_folder: str | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Query FASST for each spectrum in library_subset and optionally merge ReDU metadata.
@@ -83,23 +85,22 @@ def retrieve_raw_data_matches(
         min_cos: Minimum cosine score.
         matching_peaks: Minimum number of matching peaks.
         cache: Cache policy.
-
+        output_folder: Folder to save output files.
     Returns:
         raw_matches: concatenated FASST responses with 'spectrum_id' column.
         redu_enriched: raw_matches merged with redu_df (empty if redu_df is None/empty).
     """
-
 
     # 0. load redu data
     print("Loading ReDU table...")
 
     fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
 
-    # get the column names
+    # # get the column names
     redu_columns = fetch("SELECT name FROM pragma_table_info('redu_table')")
     redu_columns_list = redu_columns["name"].tolist()
 
-    # exclude unwanted columns
+    # # exclude unwanted columns
     columns_to_exclude = [
         "filename","TermsofPosition","ComorbidityListDOIDIndex","SampleCollectionDateandTime",
         "ENVOBroadScale","ENVOLocalScale","ENVOMediumScale","qiita_sample_name","UniqueSubjectID",
@@ -107,42 +108,10 @@ def retrieve_raw_data_matches(
         "ENVOEnvironmentMaterialIndex","ENVOLocalScaleIndex","ENVOBroadScaleIndex",
         "ENVOMediumScaleIndex","classification","MS2spectra_count"
     ]
-    cols = [c for c in redu_columns_list if c not in columns_to_exclude]
-    col_sql = ", ".join([f'"{c}"' for c in cols])
+    redu_columns_list = [c for c in redu_columns_list if c not in columns_to_exclude]
 
-    # count total rows
-    total_rows = int(fetch("SELECT COUNT(*) as n FROM redu_table")["n"].iloc[0])
-
-
-    if os.path.exists("database/redu.feather"):
-        print("Loading ReDU table from feather file...")
-        # First, peek at all available columns without loading everything
-        all_columns = pd.read_feather("database/redu.feather", columns=[]).columns
-
-        # Keep only the ones not excluded
-        columns_to_keep = [c for c in all_columns if c not in columns_to_exclude]
-
-        # Load only the required subset
-        redu_df = pd.read_feather("database/redu.feather", columns=columns_to_keep)
-
-    else:
-        print("Loading ReDU table from database...")
-
-        # function to fetch one page
-        def fetch_page(offset, limit):
-            sql = f"SELECT {col_sql} FROM redu_table LIMIT {limit} OFFSET {offset}"
-            return fetch(sql)
-
-        # loop in batches
-        chunk_size = int(1E5)  # adjust as needed
-        dfs = []
-        for offset in range(0, total_rows, chunk_size):
-            print(f"[PAGE] offset {offset} / {total_rows}")
-            df_chunk = fetch_page(offset, chunk_size)
-            dfs.append(df_chunk)
-
-        # combine
-        redu_df = pd.concat(dfs, ignore_index=True)
+    redu_df = get_redu_table_cached(fetch, redu_columns_list, sqlite_path)
+   
 
 
     TTL_SEC = 60*5-15                 # token freshness time (seconds)
@@ -190,7 +159,8 @@ def retrieve_raw_data_matches(
                 to_request.appendleft(sid)   # prioritize next batch
                 del in_flight[sid]
                 continue
-
+            
+            # print(f"Attempting to collect SID {sid} with token {token} (age {age:.1f}s)")
             # single collection attempt
             df = query_fasst_usi(
                 token,
@@ -200,7 +170,8 @@ def retrieve_raw_data_matches(
                 matching_peaks=matching_peaks,
                 modimass=modimass,
                 elimination=elimination,
-                addition=addition
+                addition=addition,
+                log_output=output_folder
             )
             print(f"Returned {len(df)} rows for SID {sid}")
             if not df.empty:

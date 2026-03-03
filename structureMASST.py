@@ -338,7 +338,7 @@ with col_class:
         class_labels = _molecule_classes_cache["class_label"].tolist()
         class_labels.insert(0, "")
         st.selectbox("Class Label", options=class_labels, key="class_label",
-                     help="Select a molecule class to find spectra for all molecules in this class.",
+                     help="Select a (Classyfire) molecule class to find spectra for all molecules in this class. This is under development and not comprehensive yet.",
                      on_change=lambda: st.session_state.update({'structure_editor_open': False, 'new_smiles': '', 'smiles_input': ''}))
         
         if st.session_state["class_label"] != "":
@@ -352,10 +352,10 @@ with col_or3:
 with col_csv:
 
     usi_input = st.text_input(
-        "USI (mzspec:...)",
+        "USI",
         key="usi_input",
         placeholder="mzspec:...",
-        help="Provide a USI to directly inspect this spectrum. No structure is required.",
+        help="Provide a USI to directly search this spectrum. No structure is required.",
         on_change=lambda: st.session_state.update({
             "smiles_input": "",
             "new_smiles": "",
@@ -1533,14 +1533,16 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 config.PATH_TO_SQLITE,
                                 config.MASSTRECORDS_ENDPOINT,
                                 config.MASSTRECORDS_TIMEOUT,
+                                st.session_state["_session_output_folder"],
                             )
 
                             if len(redu_df) > 0:
                                 # make library usis for the links
                                 redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
                                     lambda x: (
-                                        f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
-                                        else f"mzspec:MASSBANK::accession:{x}" 
+                                        x if x.startswith("mzspec:")
+                                        else f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
+                                        else f"mzspec:MASSBANK::accession:{x}"
                                     )
                                 )
 
