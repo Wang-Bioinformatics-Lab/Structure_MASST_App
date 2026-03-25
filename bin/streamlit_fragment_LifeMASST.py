@@ -19,6 +19,71 @@ import summarize_by_molecule
 NF_PATH = os.path.abspath(os.path.join(HERE, '..', 'external', 'LifeMASST', 'nf_workflow.nf'))
 
 
+def setup_lifemasst_files(
+    input_file: pd.DataFrame,
+    structureMASST_op_folder: str,
+    redu_tables: Dict[str, pd.DataFrame],
+):
+    out_dir = os.path.join(structureMASST_op_folder, "lifemasst")
+    os.makedirs(out_dir, exist_ok=True)
+
+    input_file = input_file.copy()
+
+    in_path = os.path.join(out_dir, "structuremasst_input.tsv")
+    name_enum = {
+        str(n).strip(): i
+        for i, n in enumerate(input_file["name"].astype(str).str.strip().tolist(), start=1)
+    }
+    input_file["id"] = input_file["name"].astype(str).str.strip().map(name_enum)
+    input_file.to_csv(in_path, sep="\t", index=False)
+
+    collect_dfs = []
+
+    for key, df in redu_tables.items():
+        if "query_name" not in df.columns or df.empty:
+            continue
+
+        uniq = df["query_name"].dropna().astype(str).str.strip().unique()
+        if len(uniq) != 1:
+            continue
+
+        df_organism_summary_by_id = summarize_by_molecule.main(df, "ncbi", uniq[0])
+        collect_dfs.append(df_organism_summary_by_id)
+
+    if not collect_dfs:
+        return in_path, None
+
+    merged_summary = collect_dfs[0]
+    first_col = merged_summary.columns[0]
+
+    for df in collect_dfs[1:]:
+        merged_summary = pd.merge(merged_summary, df, on=first_col, how="outer")
+
+    for col in merged_summary.columns:
+        if col.startswith("masstCounts_"):
+            merged_summary[col] = merged_summary[col].astype("Int64")
+
+    if "OpenTreeOfLifeTaxonomyID" in merged_summary.columns:
+        merged_summary["OpenTreeOfLifeTaxonomyID"] = (
+            merged_summary["OpenTreeOfLifeTaxonomyID"]
+            .astype(str)
+            .str.replace("ott", "", regex=False)
+        )
+        merged_summary["OpenTreeOfLifeTaxonomyID"] = merged_summary["OpenTreeOfLifeTaxonomyID"].astype("Int64")
+
+    if "NCBI_ID" in merged_summary.columns:
+        merged_summary["NCBI_ID"] = (
+            merged_summary["NCBI_ID"]
+            .astype(str)
+            .str.replace(".0", "", regex=False)
+        )
+        merged_summary["NCBI_ID"] = merged_summary["NCBI_ID"].astype("Int64")
+
+    out_path = os.path.join(out_dir, "lifemasst_input_summary.tsv")
+    merged_summary.to_csv(out_path, sep="\t", index=False)
+
+    return in_path, out_path
+
 def prepare_lifemasst_input(query_table: pd.DataFrame) -> pd.DataFrame:
     """
     Return a copy of query_table where SMILES queries are restored to the
@@ -69,71 +134,38 @@ def lifemasst_fragment(input_file: pd.DataFrame, structureMASST_op_folder: str, 
     ):
         try:
             with st.spinner("Setting up LifeMASSTs…"):
-                out_dir = os.path.join(structureMASST_op_folder, "lifemasst")
-                os.makedirs(out_dir, exist_ok=True)
+                in_path, out_path = setup_lifemasst_files(
+                    input_file=input_file,
+                    structureMASST_op_folder=structureMASST_op_folder,
+                    redu_tables=redu_tables,
+                )
 
-                # Save the input table
-                in_path = os.path.join(out_dir, "structuremasst_input.tsv")
-                name_enum = {str(n).strip(): i for i, n in enumerate(input_file["name"].astype(str).str.strip().tolist(), start=1)}
-                input_file["id"] = input_file["name"].astype(str).str.strip().map(name_enum)
-                input_file.to_csv(in_path, sep="\t", index=False)
-
-                saved, skipped = 0, 0
-                collect_dfs = []
-
-                for key, df in redu_tables.items():
-                    if "query_name" not in df.columns or df.empty:
-                        skipped += 1
-                        st.warning(f"[{key}] skipped: missing 'query_name' or empty table.")
-                        continue
-
-                    uniq = df["query_name"].dropna().astype(str).str.strip().unique()
-                    if len(uniq) != 1:
-                        skipped += 1
-                        st.warning(f"[{key}] skipped: expected exactly one unique query_name, found {len(uniq)}.")
-                        continue
-
-                    df_organism_summary_by_id = summarize_by_molecule.main(df, 'ncbi', uniq[0])
-
-                    collect_dfs.append(df_organism_summary_by_id)   
-
-                    cname = uniq[0]
-                    idx = name_enum.get(cname)
-                    if idx is None:
-                        skipped += 1
-                        st.warning(f"[{key}] skipped: '{cname}' not found in input_file['name'].")
-                        continue
-
-                    saved += 1
-                
-                if not collect_dfs:
+                if out_path is None:
                     st.warning("No valid tables to process for LifeMASST.")
                     return
-                
-                # merge all summaries by id
-                merged_summary = collect_dfs[0]
-                first_col = merged_summary.columns[0]
-                for df in collect_dfs[1:]:
-                    merged_summary = pd.merge(merged_summary, df, on=first_col, how="outer")
 
-                # make sure all columns starting with masstCounts are integer
-                for col in merged_summary.columns:
-                    if col.startswith("masstCounts_"):
-                        merged_summary[col] = merged_summary[col].astype("Int64")
+                st.session_state["lifemasst_prepared_source"] = "structuremasst"
 
-                # IMPORTANT UNTIL FIXED IN REDU: remove OpenTreeOfLifeTaxonomyID ott prefix
-                if 'OpenTreeOfLifeTaxonomyID' in merged_summary.columns:
-                    merged_summary['OpenTreeOfLifeTaxonomyID'] = merged_summary['OpenTreeOfLifeTaxonomyID'].astype(str).str.replace('ott', '', regex=False)
-                    merged_summary['OpenTreeOfLifeTaxonomyID'] = merged_summary['OpenTreeOfLifeTaxonomyID'].astype("Int64")
-                if 'NCBI_ID' in merged_summary.columns:
-                    merged_summary['NCBI_ID'] = merged_summary['NCBI_ID'].astype(str).str.replace('.0', '', regex=False)
-                    merged_summary['NCBI_ID'] = merged_summary['NCBI_ID'].astype("Int64")
-                out_path = os.path.join(out_dir, f"lifemasst_input_summary.tsv")
-                merged_summary.to_csv(out_path, sep="\t", index=False)
+                # Clear any stale shortcut inputs from the LifeMASST page
+                for key, value in [
+                    ("lm_name_query", ""),
+                    ("lm_last_fetched_query", None),
+                    ("lm_name_suggestions", []),
+                    ("lm_name_choice", None),
+                    ("lm_usi_input", ""),
+                    ("lm_smiles_input", ""),
+                    ("lm_name_warning", None),
+                    ("lm_structure_editor_open", False),
+                    ("lm_new_smiles", ""),
+                    ("lm_class_label", ""),
+                    ("lifemasst_shortcut_query_table", None),
+                    ("lifemasst_shortcut_raw_results", None),
+                ]:
+                    st.session_state[key] = value
 
-                st.success(f"LifeMASST setup completed.")
+                st.success("LifeMASST setup completed.")
                 st.page_link(
-                    "pages/lifeMASST (under construction).py",
+                    "pages/lifeMASST.py",
                     label="➡️ Click for LifeMASST Workspace",
                 )
         except subprocess.CalledProcessError as e:
