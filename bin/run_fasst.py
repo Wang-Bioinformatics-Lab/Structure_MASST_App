@@ -77,7 +77,7 @@ def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
                 df['Delta Mass'] = df['Delta Mass'].astype(float)
                 df['Delta Mass'] = df['Delta Mass'] * -1
                 df['Unit Delta Mass'] = df['Delta Mass'].round(0).astype(int)
-                df = df[(df['Delta Mass'].abs() >= 5) | (df['Delta Mass'].abs() <= precursor_mz_tol)]
+                df = df[(df['Delta Mass'].abs() >= 0.5) | (df['Delta Mass'].abs() <= precursor_mz_tol)]
                 df.loc[df['Delta Mass'].abs() <= precursor_mz_tol, 'Modified'] = 'no'
                 df.loc[df['Delta Mass'] > precursor_mz_tol, 'Modified'] = 'addition'
                 df.loc[df['Delta Mass'] < -precursor_mz_tol, 'Modified'] = 'elimination'

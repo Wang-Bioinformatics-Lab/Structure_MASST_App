@@ -102,6 +102,13 @@ tree_labels = {
     "upload": "Custom Uploaded Tree",
 }
 
+# read molecule_path file make unique by 'name' column and save new file
+
+df_molecule = pd.read_csv(molecule_path, sep="\t")
+df_molecule_unique = df_molecule.drop_duplicates(subset=["name"])
+molecule_path = os.path.join(lifemasst_folder, "structuremasst_input_unique.tsv")
+df_molecule_unique.to_csv(molecule_path, sep="\t", index=False)
+
 molecule_path_abs = os.path.abspath(molecule_path)
 out_dir_abs = os.path.abspath(lifemasst_folder)
 structuremasst_path_abs = os.path.abspath(structuremasst_path)
@@ -127,10 +134,10 @@ with tree_selection:
 # if tree choice does not start with Open Tree of Life
 if tree_choice not in ["trees/OTL_prepared/labelled_supertree_subset_prepped", "trees/OTL_prepared/labelled_supertree_full_prepped"]:
     match_level_options = {
+        "NCBISpecies": "NCBI Species",
         "NCBIFamily": "NCBI Family",
         "NCBI_ID": "NCBI ID",
         "NCBIGenus": "NCBI Genus",
-        "NCBISpecies": "NCBI Species",
         "NCBIClass": "NCBI Class",
         "NCBIOrder": "NCBI Order",
         "NCBIPhylum": "NCBI Phylum",

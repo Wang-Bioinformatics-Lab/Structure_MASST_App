@@ -24,7 +24,7 @@ from bin.plotting import raw_data_sankey, export_hits_map
 from bin.linkouts import build_dashboard_eic_url, build_spectraresolver_link
 from bin.smarts_api import query_smarts
 from bin.streamlit_fragment_domainMASST import domainmasst_fragment, domainmasst_intersection_fragment
-from bin.streamlit_fragment_LifeMASST import lifemasst_fragment
+from bin.streamlit_fragment_LifeMASST import lifemasst_fragment, prepare_lifemasst_input
 from bin.api_health import test_fasst_api_search_nonblocking
 from bin.shared_data import get_molecule_classes_cached
 import matplotlib.pyplot as plt
@@ -482,13 +482,15 @@ if searchtype_option != "Exact structure match":
         allowed_formula = st.text_input(
             "Fixed molecular formula (optional)", 
             value="", 
-            key="allowed_formula"
+            key="allowed_formula",
+            help="Specify a fixed molecular formula that must be matched by returned molecules."
         )
     with col_allowedelements:
         allowed_elements = st.text_input(
             "Allowed element difference (optional)", 
             value="", 
-            key="allowed_elements"
+            key="allowed_elements",
+            help="Specify what elements can differ between input structure (if specied as SMILES) and library structures (e.g. 'NO' allows for difference in nitrogen and oxygen content)"
         )
 
 if searchtype_option == "Tanimoto similarity":
@@ -582,11 +584,13 @@ if do_get_spectra:
                 "searchtype": "usi",
                 "formula": "any",
                 "allowed_elements": "any",
+                "original_smiles": "",
             }])
 
         elif smiles_input:
             effective = (st.session_state.get("new_smiles", "") or smiles_input).strip()
             t = detect_smiles_or_smarts(effective)
+            original_smiles = effective if t == "smiles" else ""
 
             if t == "smiles":
                 effective = tautomerize_neutralize_smiles(effective)
@@ -598,6 +602,7 @@ if do_get_spectra:
                 "searchtype": ("substructure" if t == "smarts" else searchtype_option),
                 "formula": (allowed_formula if searchtype_option == "substructure" else "any"),
                 "allowed_elements": (allowed_elements if searchtype_option == "substructure" else "any"),
+                "original_smiles": original_smiles,
             }])
 
         elif uploaded_file is not None:
@@ -617,6 +622,9 @@ if do_get_spectra:
             df_input["query"] = df_input["query"].astype(str).str.strip()
             df_input["name"] = df_input["name"].astype(str).str.strip()
 
+            # replace all spaces and special characters in 'name' with underscores to avoid issues with tab names and grouping
+            df_input["name"] = df_input["name"].str.replace(r"[^\w]", "_", regex=True)
+
             if "type" not in df_input.columns:
                 def _infer_type(q):
                     q = str(q).strip()
@@ -624,6 +632,10 @@ if do_get_spectra:
                         return "usi"
                     return detect_smiles_or_smarts(q)
                 df_input["type"] = df_input["query"].apply(_infer_type)
+
+            df_input["original_smiles"] = ""
+            mask_smiles = df_input["type"].astype(str).str.strip().eq("smiles")
+            df_input.loc[mask_smiles, "original_smiles"] = df_input.loc[mask_smiles, "query"]
 
             def _harmonize_query(row):
                 if row["type"] == "smiles":
@@ -657,6 +669,7 @@ if do_get_spectra:
                 "searchtype": "class_label",
                 "formula": "any",
                 "allowed_elements": "any",
+                "original_smiles": "",
             }])
 
         else:
@@ -664,13 +677,10 @@ if do_get_spectra:
             st.stop()
 
         # --- IMPORTANT: in append mode, avoid tab name collisions ---
-        if append_mode:
-            used_names = set(st.session_state.get("grouped_results", {}).keys())
-        else:
-            used_names = set()
-
+        # Keep original names so identical names are grouped into the same top-level query/tab
         df_input = df_input.copy()
-        df_input["name"] = _uniquify_names(df_input["name"].tolist(), used_names)
+        df_input["name"] = df_input["name"].astype(str).str.strip()
+        df_input.loc[df_input["name"] == "", "name"] = "Input_query"
 
         # store / append canonical input table
         if append_mode and isinstance(st.session_state.get("query_table"), pd.DataFrame) and not st.session_state["query_table"].empty:
@@ -688,6 +698,23 @@ if do_get_spectra:
         searchtype_list = df_input["searchtype"].tolist()
         formula_list = df_input["formula"].tolist()
         allowed_elements_list = df_input["allowed_elements"].tolist()
+
+
+        def _concat_dedup(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
+            if a is None or not isinstance(a, pd.DataFrame) or a.empty:
+                return b.copy() if isinstance(b, pd.DataFrame) else pd.DataFrame()
+            if b is None or not isinstance(b, pd.DataFrame) or b.empty:
+                return a
+            out = pd.concat([a, b], ignore_index=True, sort=False)
+            try:
+                if "query_spectrum_id" in out.columns:
+                    out = out.drop_duplicates(subset=["query_spectrum_id"])
+                else:
+                    out = out.drop_duplicates()
+            except Exception:
+                pass
+            return out
+
 
         # Build ONLY the new results, then merge if append_mode
         new_grouped_results = defaultdict(dict)
@@ -708,7 +735,12 @@ if do_get_spectra:
                     "USI": q,
                 }])
 
-                new_grouped_results[name][ik] = {"structure": df_struct, "conflicts": pd.DataFrame()}
+                if ik in new_grouped_results[name]:
+                    new_grouped_results[name][ik]["structure"] = _concat_dedup(
+                        new_grouped_results[name][ik]["structure"], df_struct
+                    )
+                else:
+                    new_grouped_results[name][ik] = {"structure": df_struct, "conflicts": pd.DataFrame()}
 
                 prev = st.session_state["selected_queries"].get(ik, [])
                 st.session_state["selected_queries"][ik] = list(dict.fromkeys(prev + [q]))
@@ -749,7 +781,15 @@ if do_get_spectra:
                 sub_struct = df_library_structurematch[df_library_structurematch["inchikey_first_block"] == ik].copy()
                 sub_conf = df_library_conflicts[df_library_conflicts["inchikey_first_block"] == ik].copy()
 
-                new_grouped_results[name][ik] = {"structure": sub_struct, "conflicts": sub_conf}
+                if ik in new_grouped_results[name]:
+                    new_grouped_results[name][ik]["structure"] = _concat_dedup(
+                        new_grouped_results[name][ik]["structure"], sub_struct
+                    )
+                    new_grouped_results[name][ik]["conflicts"] = _concat_dedup(
+                        new_grouped_results[name][ik]["conflicts"], sub_conf
+                    )
+                else:
+                    new_grouped_results[name][ik] = {"structure": sub_struct, "conflicts": sub_conf}
 
                 new_qs = list(sub_struct["query_spectrum_id"].unique())
                 prev = st.session_state["selected_queries"].get(ik, [])
@@ -772,14 +812,43 @@ if do_get_spectra:
             st.warning("No spectra available for this input. Existing results were kept." if append_mode else "No spectra available for this input.")
         else:
             if append_mode:
-                merged = dict(st.session_state.grouped_results)
-                merged.update(new_grouped_results)
-                st.session_state.grouped_results = merged
+                # merge grouped_results by name, then by inchikey
+                st.session_state.setdefault("grouped_results", {})
+                for nm, ik_dict in new_grouped_results.items():
+                    if nm not in st.session_state.grouped_results:
+                        st.session_state.grouped_results[nm] = ik_dict
+                    else:
+                        for ik, payload in ik_dict.items():
+                            if ik not in st.session_state.grouped_results[nm]:
+                                st.session_state.grouped_results[nm][ik] = payload
+                            else:
+                                st.session_state.grouped_results[nm][ik]["structure"] = _concat_dedup(
+                                    st.session_state.grouped_results[nm][ik]["structure"],
+                                    payload.get("structure", pd.DataFrame()),
+                                )
+                                st.session_state.grouped_results[nm][ik]["conflicts"] = _concat_dedup(
+                                    st.session_state.grouped_results[nm][ik]["conflicts"],
+                                    payload.get("conflicts", pd.DataFrame()),
+                                )
 
-                mo = dict(st.session_state.molecule_overview)
-                for k, v in new_molecule_overview.items():
-                    mo[k] = pd.DataFrame(v)
-                st.session_state.molecule_overview = mo
+                # merge molecule_overview per name
+                st.session_state.setdefault("molecule_overview", {})
+                for nm, rows in new_molecule_overview.items():
+                    new_df = pd.DataFrame(rows)
+                    old_df = st.session_state.molecule_overview.get(nm)
+                    if isinstance(old_df, pd.DataFrame) and not old_df.empty:
+                        merged_df = pd.concat([old_df, new_df], ignore_index=True, sort=False)
+                    else:
+                        merged_df = new_df
+                    try:
+                        if "inchikey_first_block" in merged_df.columns:
+                            merged_df = merged_df.drop_duplicates(subset=["inchikey_first_block"])
+                        else:
+                            merged_df = merged_df.drop_duplicates()
+                    except Exception:
+                        pass
+                    st.session_state.molecule_overview[nm] = merged_df
+
             else:
                 st.session_state.grouped_results = new_grouped_results
                 st.session_state.molecule_overview = {k: pd.DataFrame(v) for k, v in new_molecule_overview.items()}
@@ -1084,10 +1153,13 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                         }
 
                                     new_query_row = {
-                                        "smiles": row["Smiles"],
+                                        "query": row["Smiles"],
                                         "name": new_name,
                                         "type": "smiles",
-                                        "searchtype": "exact"
+                                        "searchtype": "exact",
+                                        "formula": "any",
+                                        "allowed_elements": "any",
+                                        "original_smiles": row["Smiles"],
                                     }
 
                                     if "query_table" not in st.session_state or st.session_state.query_table is None:
@@ -1103,6 +1175,9 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 st.session_state.grouped_results.pop(name, None)
 
                             st.rerun()
+
+                # make sure inchikey_first_block is string for consistent handling
+                molecule_overview_df["inchikey_first_block"] = molecule_overview_df["inchikey_first_block"].astype(str)
 
                 # update the session state with the filtered dataframe
                 st.session_state.molecule_overview[name] = molecule_overview_df
@@ -1568,6 +1643,10 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     axis=1
                                 )
 
+                                #make sure inchikey_first_block is string
+                                redu_df["inchikey_first_block"] = redu_df["inchikey_first_block"].astype(str)
+
+
                                 redu_df = redu_df.merge(
                                     st.session_state.molecule_overview[name][["inchikey_first_block", "Compound_Name"]],
                                     on="inchikey_first_block",
@@ -2012,7 +2091,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                                 with life_button:
 
-                                    ip_table = st.session_state.query_table
+                                    ip_table = prepare_lifemasst_input(st.session_state.query_table)
                                     ip_table = ip_table[ip_table["name"].astype(str).str.strip() == name]
 
                                     lifemasst_fragment(
@@ -2050,7 +2129,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
 
                     with life_button_all:
                         lifemasst_fragment(
-                            input_file=st.session_state.query_table,
+                            input_file=prepare_lifemasst_input(st.session_state.query_table),
                             structureMASST_op_folder=output_folder,
                             redu_tables=redu_tables
                         )

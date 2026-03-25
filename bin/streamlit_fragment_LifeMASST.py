@@ -19,6 +19,32 @@ import summarize_by_molecule
 NF_PATH = os.path.abspath(os.path.join(HERE, '..', 'external', 'LifeMASST', 'nf_workflow.nf'))
 
 
+def prepare_lifemasst_input(query_table: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return a copy of query_table where SMILES queries are restored to the
+    original user-facing SMILES before harmonization.
+    """
+    if query_table is None or not isinstance(query_table, pd.DataFrame) or query_table.empty:
+        return query_table
+
+    out = query_table.copy()
+
+    if "original_smiles" in out.columns and "type" in out.columns:
+        mask = (
+            out["type"].astype(str).str.strip().eq("smiles")
+            & out["original_smiles"].fillna("").astype(str).str.strip().ne("")
+        )
+
+        if "query" in out.columns:
+            out.loc[mask, "query"] = out.loc[mask, "original_smiles"]
+
+        if "smiles" not in out.columns:
+            out["smiles"] = ""
+
+        out.loc[mask, "smiles"] = out.loc[mask, "original_smiles"]
+
+    return out
+
 def run_LifeMASST(input_tsv, output_folder, query_indicator):
     #TODO: change to life_masst when available
     workdir = Path("external/microbe_masst/code")
