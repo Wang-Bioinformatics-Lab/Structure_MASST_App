@@ -309,6 +309,9 @@ def main():
     df["query"] = df["query"].astype(str).str.strip()
     df["name"] = df["name"].astype(str).str.strip()
 
+    # replace all spaces and special chars in name with underscores
+    df["name"] = df["name"].str.replace(" ", "_").str.replace("[^a-zA-Z0-9_]", "", regex=True)
+
     # optional columns
     for col in ["type", "searchtype", "tanimoto_threshold", "formula", "allowed_elements"]:
         if col not in df.columns:

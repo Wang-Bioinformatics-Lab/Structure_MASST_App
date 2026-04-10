@@ -53,9 +53,47 @@ st.set_page_config(
     layout="wide",
 )
 
-left, right = st.columns([6, 1])
-with left:
-    st.title("LifeMASST")
+st.logo("logo_LifeMASST.png", icon_image="logo_LifeMASST.png")
+
+
+st.markdown("""
+<style>
+/* Make the sidebar header area taller so the logo has room */
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] {
+  height: 140px;              /* adjust as needed */
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+/* Enlarge the logo image in the sidebar header */
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] img {
+  height: 120px !important;   /* main control: set the target height */
+  width: auto !important;     /* keep aspect ratio */
+  display: block;
+  margin: 0 auto;             /* center horizontally */
+}
+
+/* (Optional) control the tiny icon when the sidebar is collapsed */
+[data-testid="stSidebarCollapsedControl"] img {
+  height: 28px !important;
+  width: auto !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# This will have to be added to every page, or imported from a common module
+st.sidebar.markdown(
+    """
+    <span style="font-size:0.85em;">
+    <strong>Contributors</strong><br>
+    Yasin El Abiead (BOKU University)<br>
+    Mingxun Wang (UCR)<br>
+    </span>
+    """,
+    unsafe_allow_html=True
+)
+
 
 # ------------------------------
 # Load config
@@ -449,9 +487,6 @@ show_shortcut_inputs = not lifemasst_already_prepared_from_structuremasst
 
 def render_shortcut_inputs_and_advanced():
     global uploaded_file, shortcut_smiles_type, effective_smiles
-
-    st.markdown("### Metabolite input")
-    st.caption("Optional. This allows less customization than running StructureMASST first and importing results from there.")
 
     # Row 1: name | or | smiles | or | class | or | usi
     col_name, col_or1, col_smiles, col_or2, col_class, col_or3, col_usi = st.columns([4, 1, 4, 1, 4, 1, 4])
@@ -1097,6 +1132,11 @@ with lifemasst_button:
                         df_input["query"] = df_input["query"].astype(str).str.strip()
                         df_input["name"] = df_input["name"].astype(str).str.strip()
                         df_input["name"] = df_input["name"].str.replace(r"[^\w]", "_", regex=True)
+
+                        # replace all spaces and special characters in names with underscores and quotes with nothing
+                        df_input["name"] = df_input["name"].str.replace(r'[\s\W]+', '_', regex=True)
+                        df_input["name"] = df_input["name"].str.replace(r'^_+|_+$', '', regex=True)
+
 
                         if "type" not in df_input.columns:
                             def _infer_type(q):
