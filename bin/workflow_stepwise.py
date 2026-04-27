@@ -491,8 +491,18 @@ def retrieve_raw_data_matches_from_peaks(
     redu_enriched = add_redu(raw_matches, redu_df, modification_condition=modification_condition)
 
     # No library_subset merge: MGF spectra have no SMILES / Adduct / InChIKey
-    # lib_usi is left empty since there is no library USI for direct peak queries
-    redu_enriched["lib_usi"] = ""
+    # Build lib_usi from GNPSLibraryAccession (available as spectrum_id after rename)
+    if "spectrum_id" in redu_enriched.columns:
+        redu_enriched["lib_usi"] = redu_enriched["spectrum_id"].apply(
+            lambda x: (
+                x if isinstance(x, str) and x.startswith("mzspec:")
+                else f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if isinstance(x, str) and x.startswith("CCMSLIB")
+                else f"mzspec:MASSBANK::accession:{x}" if isinstance(x, str) and x.strip()
+                else ""
+            )
+        )
+    else:
+        redu_enriched["lib_usi"] = ""
 
     return raw_matches, redu_enriched
 

@@ -1688,27 +1688,28 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     st.session_state["_session_output_folder"],
                                 )
 
-                            if len(redu_df) > 0 and not _is_mgf_group:
-                                # make library usis for the links
-                                redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
-                                    lambda x: (
-                                        x if x.startswith("mzspec:")
-                                        else f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
-                                        else f"mzspec:MASSBANK::accession:{x}"
+                            if len(redu_df) > 0:
+                                # Build lib_usi for non-MGF groups (MGF path sets it in workflow_stepwise)
+                                if "lib_usi" not in redu_df.columns:
+                                    redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
+                                        lambda x: (
+                                            x if x.startswith("mzspec:")
+                                            else f"mzspec:GNPS:GNPS-LIBRARY:accession:{x}" if x.startswith("CCMSLIB")
+                                            else f"mzspec:MASSBANK::accession:{x}"
+                                        )
                                     )
-                                )
 
                                 redu_df["best_spectral_match"] = redu_df.apply(
-                                    lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]),
+                                    lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"])
+                                    if row.get("lib_usi") else "",
                                     axis=1
-                                    )
-
+                                )
 
                                 if "Check LC peak" not in redu_df.columns:
                                     redu_df["Check LC peak"] = np.nan
 
                                 # Make sure the destination column can hold strings
-                                redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)  
+                                redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)
 
                                 mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
                                 redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
@@ -1720,15 +1721,16 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                     axis=1
                                 )
 
-                                #make sure inchikey_first_block is string
-                                redu_df["inchikey_first_block"] = redu_df["inchikey_first_block"].astype(str)
+                                if not _is_mgf_group:
+                                    #make sure inchikey_first_block is string
+                                    redu_df["inchikey_first_block"] = redu_df["inchikey_first_block"].astype(str)
 
-                                if name in st.session_state.get("molecule_overview", {}):
-                                    redu_df = redu_df.merge(
-                                        st.session_state.molecule_overview[name][["inchikey_first_block", "Compound_Name"]],
-                                        on="inchikey_first_block",
-                                        how="left"
-                                    )
+                                    if name in st.session_state.get("molecule_overview", {}):
+                                        redu_df = redu_df.merge(
+                                            st.session_state.molecule_overview[name][["inchikey_first_block", "Compound_Name"]],
+                                            on="inchikey_first_block",
+                                            how="left"
+                                        )
 
                             if len(redu_df) > 0:
                                 redu_df["query_name"] = name
