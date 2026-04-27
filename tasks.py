@@ -3,7 +3,7 @@ from turtle import st
 
 from celery import Celery
 from bin.run_masstRecords_queries import get_library_table, get_masst_and_redu_tables
-from bin.workflow_stepwise import retrieve_raw_data_matches
+from bin.workflow_stepwise import retrieve_raw_data_matches, retrieve_raw_data_matches_from_peaks
 import pandas as pd
 import gc
 import time
@@ -374,4 +374,87 @@ def _run_retrieve_raw_data_matches(
     return {
         "redu": redu_df.to_json(orient="records"),
     }
+
+
+def run_retrieve_raw_data_matches_from_peaks(
+    spectra: list,
+    database,
+    precursor_mz_tol,
+    fragment_mz_tol,
+    min_cos,
+    matching_peaks,
+    analog,
+    modimass,
+    elimination,
+    addition,
+    modification_condition,
+    sqlite_path,
+    api_endpoint,
+    timeout,
+    output_folder=None,
+):
+    """Celery-aware wrapper for retrieve_raw_data_matches_from_peaks.
+
+    Falls back to a direct call if Celery is unavailable (same pattern as the USI variant).
+    """
+    import json
+
+    spectra_json = json.dumps(spectra)
+
+    try:
+        result = _run_retrieve_raw_data_matches_from_peaks.delay(
+            spectra_json,
+            database, precursor_mz_tol, fragment_mz_tol, min_cos, matching_peaks,
+            analog, modimass, elimination, addition, modification_condition,
+            sqlite_path, api_endpoint, timeout, output_folder,
+        )
+
+        while True:
+            if result.ready():
+                break
+            time.sleep(0.1)
+
+        result_dict = result.get()
+        return pd.read_json(result_dict["redu"])
+
+    except Exception:
+        result_dict = _run_retrieve_raw_data_matches_from_peaks(
+            spectra_json,
+            database, precursor_mz_tol, fragment_mz_tol, min_cos, matching_peaks,
+            analog, modimass, elimination, addition, modification_condition,
+            sqlite_path, api_endpoint, timeout, output_folder,
+        )
+        return pd.read_json(result_dict["redu"])
+
+
+@celery_app.task()
+def _run_retrieve_raw_data_matches_from_peaks(
+    spectra_json,
+    database, precursor_mz_tol, fragment_mz_tol, min_cos, matching_peaks,
+    analog, modimass, elimination, addition, modification_condition,
+    sqlite_path, api_endpoint, timeout, output_folder=None,
+):
+    import json
+
+    spectra = json.loads(spectra_json)
+
+    _, redu_df = retrieve_raw_data_matches_from_peaks(
+        spectra,
+        database=database,
+        precursor_mz_tol=precursor_mz_tol,
+        fragment_mz_tol=fragment_mz_tol,
+        min_cos=min_cos,
+        matching_peaks=matching_peaks,
+        analog=analog,
+        modimass=modimass,
+        elimination=elimination,
+        addition=addition,
+        modification_condition=modification_condition,
+        sqlite_path=sqlite_path,
+        api_endpoint=api_endpoint,
+        timeout=timeout,
+        output_folder=output_folder,
+    )
+
+    return {"redu": redu_df.to_json(orient="records")}
 

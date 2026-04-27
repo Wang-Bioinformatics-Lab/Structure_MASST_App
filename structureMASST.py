@@ -16,7 +16,8 @@ from rdkit import Chem
 from PIL import Image
 import base64
 import io
-from bin.workflow_stepwise import retrieve_raw_data_matches 
+from bin.workflow_stepwise import retrieve_raw_data_matches
+from bin.mgf_utils import parse_mgf_bytes
 from bin.run_masstRecords_queries import get_library_table, get_masst_and_redu_tables, _get_fetcher
 from bin.match_smiles import detect_smiles_or_smarts, neutralize_atoms, tautomerize_smiles
 from bin.pubchem_handling  import pubchem_autocomplete, name_to_cid, cid_to_canonical_smiles
@@ -306,8 +307,9 @@ with col_name:
     # if st.checkbox("Upload Batch file", key="batch_search"):
     with st.popover("Add batch file", icon=":material/file_upload:"):
         uploaded_file = st.file_uploader(
-            """Drop CSV file for batch search (smiles and name columns). We recommend to stay below 100 molecules or reach out to us to run locally.""",
-            type=["csv"]
+            """Drop a CSV (name + query/smiles columns) or MGF file for batch search. """
+            """We recommend staying below 100 molecules/spectra or reach out to us to run locally.""",
+            type=["csv", "mgf"]
         )
 
 with col_or1:
@@ -606,59 +608,89 @@ if do_get_spectra:
             }])
 
         elif uploaded_file is not None:
-            df_input = pd.read_csv(uploaded_file)
-
-            if "query" not in df_input.columns:
-                if "smiles" in df_input.columns:
-                    df_input = df_input.rename(columns={"smiles": "query"})
-                else:
-                    st.warning("CSV must contain either ('query','name') or ('smiles','name').")
+            if uploaded_file.name.lower().endswith(".mgf"):
+                # --- MGF upload ---
+                mgf_spectra = parse_mgf_bytes(uploaded_file.read())
+                if not mgf_spectra:
+                    st.warning("No valid spectra found in the uploaded MGF file.")
                     st.stop()
 
-            if "name" not in df_input.columns:
-                df_input["name"] = [f"Input_{i+1}" for i in range(len(df_input))]
+                # Store peaks keyed by spectrum_id for retrieval at search time
+                st.session_state.setdefault("mgf_spectra_store", {})
+                for spec in mgf_spectra:
+                    st.session_state["mgf_spectra_store"][spec["spectrum_id"]] = {
+                        "precursor_mz": spec["precursor_mz"],
+                        "peaks": spec["peaks"],
+                    }
 
-            df_input = df_input.dropna(subset=["query", "name"]).copy()
-            df_input["query"] = df_input["query"].astype(str).str.strip()
-            df_input["name"] = df_input["name"].astype(str).str.strip()
+                df_input = pd.DataFrame([
+                    {
+                        "query": spec["spectrum_id"],
+                        "name": re.sub(r"[^\w]", "_", spec["name"]),
+                        "type": "mgf_spectrum",
+                        "searchtype": "mgf_spectrum",
+                        "formula": "any",
+                        "allowed_elements": "any",
+                        "original_smiles": "",
+                    }
+                    for spec in mgf_spectra
+                ])
 
-            # replace all spaces and special characters in 'name' with underscores to avoid issues with tab names and grouping
-            df_input["name"] = df_input["name"].str.replace(r"[^\w]", "_", regex=True)
+            else:
+                # --- CSV upload ---
+                df_input = pd.read_csv(uploaded_file)
 
-            if "type" not in df_input.columns:
-                def _infer_type(q):
-                    q = str(q).strip()
-                    if q.startswith("mzspec:"):
-                        return "usi"
-                    return detect_smiles_or_smarts(q)
-                df_input["type"] = df_input["query"].apply(_infer_type)
+                if "query" not in df_input.columns:
+                    if "smiles" in df_input.columns:
+                        df_input = df_input.rename(columns={"smiles": "query"})
+                    else:
+                        st.warning("CSV must contain either ('query','name') or ('smiles','name').")
+                        st.stop()
 
-            df_input["original_smiles"] = ""
-            mask_smiles = df_input["type"].astype(str).str.strip().eq("smiles")
-            df_input.loc[mask_smiles, "original_smiles"] = df_input.loc[mask_smiles, "query"]
+                if "name" not in df_input.columns:
+                    df_input["name"] = [f"Input_{i+1}" for i in range(len(df_input))]
 
-            def _harmonize_query(row):
-                if row["type"] == "smiles":
-                    return tautomerize_neutralize_smiles(row["query"])
-                return row["query"]
+                df_input = df_input.dropna(subset=["query", "name"]).copy()
+                df_input["query"] = df_input["query"].astype(str).str.strip()
+                df_input["name"] = df_input["name"].astype(str).str.strip()
 
-            df_input["query"] = df_input.apply(_harmonize_query, axis=1)
+                # replace all spaces and special characters in 'name' with underscores
+                df_input["name"] = df_input["name"].str.replace(r"[^\w]", "_", regex=True)
 
-            if "searchtype" not in df_input.columns:
-                def _infer_searchtype(t):
-                    if t == "usi": return "usi"
-                    if t == "smarts": return "substructure"
-                    if t == "class_label": return "class_label"
-                    return "exact"
-                df_input["searchtype"] = df_input["type"].apply(_infer_searchtype)
+                if "type" not in df_input.columns:
+                    def _infer_type(q):
+                        q = str(q).strip()
+                        if q.startswith("mzspec:"):
+                            return "usi"
+                        return detect_smiles_or_smarts(q)
+                    df_input["type"] = df_input["query"].apply(_infer_type)
 
-            if "formula" not in df_input.columns:
-                df_input["formula"] = "any"
-            df_input["formula"] = df_input["formula"].fillna("any")
+                df_input["original_smiles"] = ""
+                mask_smiles = df_input["type"].astype(str).str.strip().eq("smiles")
+                df_input.loc[mask_smiles, "original_smiles"] = df_input.loc[mask_smiles, "query"]
 
-            if "allowed_elements" not in df_input.columns:
-                df_input["allowed_elements"] = "any"
-            df_input["allowed_elements"] = df_input["allowed_elements"].fillna("any")
+                def _harmonize_query(row):
+                    if row["type"] == "smiles":
+                        return tautomerize_neutralize_smiles(row["query"])
+                    return row["query"]
+
+                df_input["query"] = df_input.apply(_harmonize_query, axis=1)
+
+                if "searchtype" not in df_input.columns:
+                    def _infer_searchtype(t):
+                        if t == "usi": return "usi"
+                        if t == "smarts": return "substructure"
+                        if t == "class_label": return "class_label"
+                        return "exact"
+                    df_input["searchtype"] = df_input["type"].apply(_infer_searchtype)
+
+                if "formula" not in df_input.columns:
+                    df_input["formula"] = "any"
+                df_input["formula"] = df_input["formula"].fillna("any")
+
+                if "allowed_elements" not in df_input.columns:
+                    df_input["allowed_elements"] = "any"
+                df_input["allowed_elements"] = df_input["allowed_elements"].fillna("any")
 
         elif st.session_state.get("class_label", "") != "":
             class_label = st.session_state["class_label"].strip()
@@ -723,16 +755,19 @@ if do_get_spectra:
         for q, name, typ, searchtype, formula, allowed_elements in zip(
             query_list, name_list, type_list, searchtype_list, formula_list, allowed_elements_list
         ):
-            if typ == "usi" or searchtype == "usi":
+            if typ in ("usi", "mgf_spectrum") or searchtype in ("usi", "mgf_spectrum"):
                 ik = hashlib.sha1(q.encode()).hexdigest()[:12]  # fake IK bucket
 
                 df_struct = pd.DataFrame([{
                     "inchikey_first_block": ik,
                     "Compound_Name": name,
                     "Smiles": "",
-                    "Precursor_MZ": np.nan,
+                    "Precursor_MZ": (
+                        st.session_state.get("mgf_spectra_store", {}).get(q, {}).get("precursor_mz", np.nan)
+                        if typ == "mgf_spectrum" else np.nan
+                    ),
                     "query_spectrum_id": q,
-                    "USI": q,
+                    "USI": q if typ == "usi" else "",
                 }])
 
                 if ik in new_grouped_results[name]:
@@ -1285,11 +1320,15 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
         st.markdown(f"##### Next, search all {spectra_across_all_molecules} spectra of {number_of_molecules} molecule(s) across public metabolomics raw data to retrieve matching samples:")
 
 
-        # --- detect direct USI queries (no library int IDs available) ---
+        # --- detect direct USI or MGF-spectrum queries (no library int IDs available) ---
+        _mgf_store = st.session_state.get("mgf_spectra_store", {})
         has_direct_usi = any(
             (not data["structure"].empty)
             and ("query_spectrum_id" in data["structure"].columns)
-            and (data["structure"]["query_spectrum_id"].astype(str).str.startswith("mzspec:").any())
+            and (
+                data["structure"]["query_spectrum_id"].astype(str).str.startswith("mzspec:").any()
+                or data["structure"]["query_spectrum_id"].isin(_mgf_store).any()
+            )
             for ik_dict in st.session_state.grouped_results.values()
             for data in ik_dict.values()
         )
@@ -1592,26 +1631,64 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                             except AttributeError:
                                 modification_mass = modification_mass if 'modification_mass' in locals() else None
 
-                            # retrieve raw data matches through MASST
-                            redu_df = tasks.run_retrieve_raw_data_matches(
-                                df_for_name,
-                                "metabolomicspanrepo_index_nightly",
-                                float(prec_tol),
-                                float(frag_tol),
-                                float(min_cosine),
-                                int(min_peaks),
-                                do_modification_search,
-                                modification_mass,
-                                do_elimination if "do_elimination" in locals() else False,
-                                do_addition if "do_addition" in locals() else False,
-                                modification_condition if "modification_condition" in locals() else None,
-                                config.PATH_TO_SQLITE,
-                                config.MASSTRECORDS_ENDPOINT,
-                                config.MASSTRECORDS_TIMEOUT,
-                                st.session_state["_session_output_folder"],
+                            # --- detect whether this name-group contains MGF spectra ---
+                            _mgf_store = st.session_state.get("mgf_spectra_store", {})
+                            _group_spectrum_ids = (
+                                df_for_name["query_spectrum_id"].astype(str).tolist()
+                                if "query_spectrum_id" in df_for_name.columns else []
                             )
+                            _is_mgf_group = any(sid in _mgf_store for sid in _group_spectrum_ids)
 
-                            if len(redu_df) > 0:
+                            if _is_mgf_group:
+                                # Build spectra list from stored peaks
+                                _spectra_for_fasst = [
+                                    {
+                                        "spectrum_id": sid,
+                                        "precursor_mz": _mgf_store[sid]["precursor_mz"],
+                                        "peaks": _mgf_store[sid]["peaks"],
+                                    }
+                                    for sid in _group_spectrum_ids
+                                    if sid in _mgf_store
+                                ]
+                                redu_df = tasks.run_retrieve_raw_data_matches_from_peaks(
+                                    _spectra_for_fasst,
+                                    "metabolomicspanrepo_index_nightly",
+                                    float(prec_tol),
+                                    float(frag_tol),
+                                    float(min_cosine),
+                                    int(min_peaks),
+                                    do_modification_search,
+                                    modification_mass,
+                                    do_elimination if "do_elimination" in locals() else False,
+                                    do_addition if "do_addition" in locals() else False,
+                                    modification_condition if "modification_condition" in locals() else None,
+                                    config.PATH_TO_SQLITE,
+                                    config.MASSTRECORDS_ENDPOINT,
+                                    config.MASSTRECORDS_TIMEOUT,
+                                    st.session_state["_session_output_folder"],
+                                )
+                                # No SpectraResolver / Dashboard linkouts for MGF spectra (no USI available)
+                            else:
+                                # retrieve raw data matches through MASST (USI-based)
+                                redu_df = tasks.run_retrieve_raw_data_matches(
+                                    df_for_name,
+                                    "metabolomicspanrepo_index_nightly",
+                                    float(prec_tol),
+                                    float(frag_tol),
+                                    float(min_cosine),
+                                    int(min_peaks),
+                                    do_modification_search,
+                                    modification_mass,
+                                    do_elimination if "do_elimination" in locals() else False,
+                                    do_addition if "do_addition" in locals() else False,
+                                    modification_condition if "modification_condition" in locals() else None,
+                                    config.PATH_TO_SQLITE,
+                                    config.MASSTRECORDS_ENDPOINT,
+                                    config.MASSTRECORDS_TIMEOUT,
+                                    st.session_state["_session_output_folder"],
+                                )
+
+                            if len(redu_df) > 0 and not _is_mgf_group:
                                 # make library usis for the links
                                 redu_df["lib_usi"] = redu_df["query_spectrum_id"].apply(
                                     lambda x: (
@@ -1622,7 +1699,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 )
 
                                 redu_df["best_spectral_match"] = redu_df.apply(
-                                    lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]), 
+                                    lambda row: build_spectraresolver_link(row["USI"], row["lib_usi"]),
                                     axis=1
                                     )
 
@@ -1646,15 +1723,15 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 #make sure inchikey_first_block is string
                                 redu_df["inchikey_first_block"] = redu_df["inchikey_first_block"].astype(str)
 
+                                if name in st.session_state.get("molecule_overview", {}):
+                                    redu_df = redu_df.merge(
+                                        st.session_state.molecule_overview[name][["inchikey_first_block", "Compound_Name"]],
+                                        on="inchikey_first_block",
+                                        how="left"
+                                    )
 
-                                redu_df = redu_df.merge(
-                                    st.session_state.molecule_overview[name][["inchikey_first_block", "Compound_Name"]],
-                                    on="inchikey_first_block",
-                                    how="left"
-                                )
-
+                            if len(redu_df) > 0:
                                 redu_df["query_name"] = name
-
 
                             new_results[name] = {"masst": pd.DataFrame(), "redu": redu_df}
 

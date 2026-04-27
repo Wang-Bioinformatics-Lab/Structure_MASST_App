@@ -370,6 +370,133 @@ def add_redu(
 
     return merged
 
+def retrieve_raw_data_matches_from_peaks(
+    spectra: list,
+    analog: bool = False,
+    elimination: bool = False,
+    addition: bool = False,
+    modimass: float | None = None,
+    modification_condition: str = None,
+    database: str = 'metabolomicspanrepo_index_nightly',
+    precursor_mz_tol: float = 0.05,
+    fragment_mz_tol: float = 0.05,
+    min_cos: float = 0.7,
+    matching_peaks: int = 6,
+    sqlite_path: str | None = None,
+    api_endpoint: str = "http://127.0.0.1:8001/masst_records",
+    timeout: int = 10,
+    output_folder: str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Like retrieve_raw_data_matches but submits spectra by peaks instead of USI.
+
+    Args:
+        spectra: list of dicts, each with keys:
+            - spectrum_id (str)   unique label used as query_spectrum_id in results
+            - precursor_mz (float)
+            - peaks (list of [mz, intensity])
+    Returns:
+        raw_matches, redu_enriched  (same shape as retrieve_raw_data_matches)
+    """
+    print("Loading ReDU table...")
+    fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
+
+    redu_columns = fetch("SELECT name FROM pragma_table_info('redu_table')")
+    redu_columns_list = redu_columns["name"].tolist()
+    columns_to_exclude = [
+        "filename", "TermsofPosition", "ComorbidityListDOIDIndex", "SampleCollectionDateandTime",
+        "ENVOBroadScale", "ENVOLocalScale", "ENVOMediumScale", "qiita_sample_name", "UniqueSubjectID",
+        "UBERONOntologyIndex", "DOIDOntologyIndex", "ENVOEnvironmentBiomeIndex",
+        "ENVOEnvironmentMaterialIndex", "ENVOLocalScaleIndex", "ENVOBroadScaleIndex",
+        "ENVOMediumScaleIndex", "classification", "MS2spectra_count",
+    ]
+    redu_columns_list = [c for c in redu_columns_list if c not in columns_to_exclude]
+    redu_df = get_redu_table_cached(fetch, redu_columns_list, sqlite_path)
+
+    TTL_SEC = 60 * 5 - 15
+    MAX_BATCH_REQUESTS = 50
+
+    spec_lookup = {s["spectrum_id"]: s for s in spectra}
+    all_ids = [s["spectrum_id"] for s in spectra]
+    to_request = deque(all_ids)
+    in_flight = {}
+    done = set()
+    responses = []
+
+    while len(done) < len(all_ids):
+        n_submit = min(MAX_BATCH_REQUESTS, len(to_request))
+        for _ in range(n_submit):
+            sid = to_request.popleft()
+            if sid in done:
+                continue
+            spec = spec_lookup[sid]
+            print(f"Submitting peaks query for spectrum {sid}")
+            token = fasst.query_fasst_api_peaks(
+                spec["precursor_mz"],
+                spec["peaks"],
+                database,
+                host=FASST_API_SERVER_URL,
+                analog=analog,
+                lower_delta=170,
+                upper_delta=170,
+                precursor_mz_tol=precursor_mz_tol,
+                fragment_mz_tol=fragment_mz_tol,
+                min_cos=min_cos,
+                blocking=False,
+            )
+            in_flight[sid] = {"token": token, "submitted_at": time.time()}
+
+        for sid, rec in list(in_flight.items()):
+            token = rec["token"]
+            age = time.time() - rec["submitted_at"]
+
+            if age >= TTL_SEC:
+                to_request.appendleft(sid)
+                del in_flight[sid]
+                continue
+
+            df = query_fasst_usi(
+                token,
+                sid,
+                precursor_mz_tol=precursor_mz_tol,
+                analog=analog,
+                matching_peaks=matching_peaks,
+                modimass=modimass,
+                elimination=elimination,
+                addition=addition,
+                log_output=output_folder,
+            )
+            print(f"Returned {len(df)} rows for spectrum {sid}")
+            if not df.empty:
+                responses.append(df)
+            else:
+                to_request.append(sid)
+
+            done.add(sid)
+            del in_flight[sid]
+
+    if not responses:
+        print("No raw data matches found.")
+        return pd.DataFrame(), pd.DataFrame()
+
+    raw_matches = pd.concat(responses, ignore_index=True)
+    raw_matches.rename(columns={"GNPSLibraryAccession": "spectrum_id"}, inplace=True)
+
+    print(f"Retrieved {len(raw_matches)} raw data matches.")
+
+    if redu_df is None or redu_df.empty:
+        return raw_matches, pd.DataFrame()
+
+    print(f"Enriching {len(raw_matches)} raw matches with ReDU metadata...")
+    redu_enriched = add_redu(raw_matches, redu_df, modification_condition=modification_condition)
+
+    # No library_subset merge: MGF spectra have no SMILES / Adduct / InChIKey
+    # lib_usi is left empty since there is no library USI for direct peak queries
+    redu_enriched["lib_usi"] = ""
+
+    return raw_matches, redu_enriched
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Query FASST USI')
