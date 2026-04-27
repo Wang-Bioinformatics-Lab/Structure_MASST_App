@@ -1711,15 +1711,20 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 # Make sure the destination column can hold strings
                                 redu_df["Check LC peak"] = redu_df["Check LC peak"].astype(object)
 
-                                mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
-                                redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
-                                    lambda row: build_dashboard_eic_url(
-                                        usi=row['USI'],
-                                        xic_mz=row['Precursor_MZ'],
-                                        xic_tolerance=0.05
-                                    ),
-                                    axis=1
-                                )
+                                if "Precursor_MZ" not in redu_df.columns and _is_mgf_group and "query_spectrum_id" in redu_df.columns:
+                                    redu_df["Precursor_MZ"] = redu_df["query_spectrum_id"].map(
+                                        {sid: info["precursor_mz"] for sid, info in _mgf_store.items()}
+                                    )
+                                if "Precursor_MZ" in redu_df.columns:
+                                    mask = redu_df["Check LC peak"].isna() | (redu_df["Check LC peak"].astype(str).str.strip() == "")
+                                    redu_df.loc[mask, "Check LC peak"] = redu_df.loc[mask].apply(
+                                        lambda row: build_dashboard_eic_url(
+                                            usi=row['USI'],
+                                            xic_mz=row['Precursor_MZ'],
+                                            xic_tolerance=0.05
+                                        ),
+                                        axis=1
+                                    )
 
                                 if not _is_mgf_group:
                                     #make sure inchikey_first_block is string
