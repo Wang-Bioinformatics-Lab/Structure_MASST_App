@@ -160,14 +160,16 @@ def _fetch_sqlite(sql: str, sqlite_path: str,
     """
     Read-only SQLite fetch. BLOBs stay as bytes, other cols coerced as before.
     """
-    print(f"[SQL ] Querying (RO) with local SQL: {sql}")
+    import time as _time
+    t0 = _time.time()
+    print(f"[SQL ] Querying (RO): {sql[:120]}")
     with _sqlite_ro_connect(sqlite_path) as conn:
         # Enforce query-only mode at the connection level
         conn.execute("PRAGMA query_only=ON;")
         # Keep blobs as bytes while preventing TEXT→str coercion
         conn.text_factory = bytes
         df = pd.read_sql_query(sql, conn)
-    print(f"[SQL ] returned {len(df)} rows")
+    print(f"[SQL ] returned {len(df)} rows in {_time.time()-t0:.3f}s")
 
     if blob_cols:
         df = _coerce_types_except_blobs(df, tuple(blob_cols), normalize_types=normalize_types)
@@ -371,7 +373,6 @@ def get_library_table(
         library_columns = fetch(sql)
         library_columns_list = library_columns['name'].tolist()
         columns_to_exclude = ['fp_pattern', 'fp_morgan', 'fp_morgan_popcnt', 'fp_popcnt']
-
         library_column_list = [c for c in library_columns_list if c not in columns_to_exclude]
 
         #Exclude blob columns from the select statement
@@ -733,7 +734,7 @@ def get_masst_and_redu_tables(
     fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
     sql = "SELECT name FROM pragma_table_info('redu_table')"
     redu_columns = fetch(sql)
-    
+
     redu_columns_list = redu_columns['name'].tolist()
     columns_to_exclude = ['filename', 'TermsofPosition', 'ComorbidityListDOIDIndex', 'SampleCollectionDateandTime', 'ENVOBroadScale', 'ENVOLocalScale', 'ENVOMediumScale', 'qiita_sample_name',
                           'UniqueSubjectID', 'UBERONOntologyIndex', 'DOIDOntologyIndex', 'ENVOEnvironmentBiomeIndex', 'ENVOEnvironmentMaterialIndex', 'ENVOLocalScaleIndex', 'ENVOBroadScaleIndex',

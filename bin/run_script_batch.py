@@ -44,9 +44,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import json
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -158,6 +160,127 @@ def _ensure_any(x: Optional[str]) -> str:
         return "any"
     x = str(x).strip()
     return x if x else "any"
+
+
+def _json_ready(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_ready(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(v) for v in value]
+    return value
+
+
+def _flatten_manifest(prefix: str, value, rows: list) -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            next_prefix = f"{prefix}.{key}" if prefix else str(key)
+            _flatten_manifest(next_prefix, nested, rows)
+    elif isinstance(value, list):
+        rows.append({"parameter": prefix, "value": json.dumps(_json_ready(value), sort_keys=True)})
+    else:
+        rows.append({"parameter": prefix, "value": "" if value is None else str(value)})
+
+
+def _write_batch_parameters(
+    outroot: Path,
+    args,
+    *,
+    input_type: str,
+    input_path: Path,
+    config_py: Path,
+    sqlite_path,
+    api_endpoint,
+    timeout,
+    input_rows: Optional[int] = None,
+    input_groups: Optional[int] = None,
+) -> None:
+    """Export complete run parameters alongside the batch results."""
+    manifest = {
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "command": {
+            "argv": sys.argv,
+            "working_directory": str(Path.cwd()),
+        },
+        "input": {
+            "type": input_type,
+            "path": str(input_path.resolve()),
+            "rows_or_spectra": input_rows,
+            "groups": input_groups,
+            "encoding": "cp1252" if input_type == "csv" else None,
+        },
+        "output": {
+            "outdir": str(outroot),
+            "summary": str(outroot / "batch_summary.tsv"),
+        },
+        "config": {
+            "config_py": str(config_py),
+            "sqlite_path": sqlite_path,
+            "masstrecords_endpoint": api_endpoint,
+            "masstrecords_timeout": timeout,
+        },
+        "search": {
+            "mode_requested": args.mode,
+            "database": args.database,
+            "min_cos": float(args.min_cos),
+            "min_peaks": int(args.min_peaks),
+            "precursor_tol": float(args.precursor_tol),
+            "fragment_tol": float(args.fragment_tol),
+            "min_rank": int(args.min_rank),
+            "max_returned_rows": int(args.max_returned_rows),
+            "mod_search": bool(args.mod_search),
+            "mod_formula": args.mod_formula,
+            "mod_mass": args.mod_mass,
+            "elimination": bool(args.elimination),
+            "addition": bool(args.addition),
+            "mod_condition": args.mod_condition,
+        },
+        "fasst_effective_defaults": {
+            "analog": "Yes" if args.mod_search else "No",
+            "cache": "No",
+            "lower_delta": 170,
+            "upper_delta": 170,
+            "pm_tolerance": float(args.precursor_tol),
+            "fragment_tolerance": float(args.fragment_tol),
+            "cosine_threshold": float(args.min_cos),
+            "matching_peaks": int(args.min_peaks),
+        },
+        "row_defaults": {
+            "default_tanimoto": float(args.default_tanimoto),
+            "default_formula": args.default_formula,
+            "default_allowed_elements": args.default_allowed_elements,
+        },
+        "sankey": {
+            "ext": args.sankey_ext,
+            "col1": args.sankey_col1,
+            "col2": args.sankey_col2,
+            "col3": args.sankey_col3,
+            "col4": args.sankey_col4,
+        },
+        "lifemasst": {
+            "enabled": bool(args.lifemasst),
+            "tree": args.lifemasst_tree,
+            "match_level": args.lifemasst_match_level,
+            "group": args.lifemasst_group,
+            "work_dir": args.work_dir,
+            "conda_cache_dir": args.conda_cache_dir,
+        },
+        "notes": [
+            "CSV USI rows force effective mode to fasst if mode_requested is fasstrecords.",
+            "For FASST mode, lower_delta and upper_delta are set inside bin.workflow_stepwise.retrieve_raw_data_matches.",
+        ],
+    }
+
+    manifest = _json_ready(manifest)
+    (outroot / "batch_parameters.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    rows = []
+    _flatten_manifest("", manifest, rows)
+    pd.DataFrame(rows).to_csv(outroot / "batch_parameters.tsv", sep="\t", index=False)
 
 
 def _dereplicate_library_spectra(df_struct: pd.DataFrame) -> pd.DataFrame:
@@ -470,7 +593,12 @@ def _run_lifemasst_all(
         query_rows = []
         for item in items:
             if item["name"] not in seen:
-                query_rows.append({"name": item["name"], "query": item["query_original"]})
+                query_rows.append({
+                    "name": item["name"],
+                    "query": item["query_original"],
+                    "type": "smiles" if item.get("query_original") else "mgf_spectrum",
+                    "searchtype": item.get("searchtype", "exact"),
+                })
                 seen.add(item["name"])
         query_table = pd.DataFrame(query_rows)
 
@@ -681,6 +809,7 @@ def _run_mgf_group(
 
 
 def main():
+    sys.stdout.reconfigure(line_buffering=True)
     p = argparse.ArgumentParser(description="Run StructureMASST batch headless (current app workflow).")
     inp = p.add_mutually_exclusive_group(required=True)
     inp.add_argument("--input-csv", help="CSV with name + query (or smiles).")
@@ -813,6 +942,19 @@ def main():
         for spec in spectra:
             mgf_groups[spec["name"]].append(spec)
 
+        _write_batch_parameters(
+            outroot,
+            args,
+            input_type="mgf",
+            input_path=mgf_path,
+            config_py=config_py,
+            sqlite_path=sqlite_path,
+            api_endpoint=api_endpoint,
+            timeout=timeout,
+            input_rows=len(spectra),
+            input_groups=len(mgf_groups),
+        )
+
         summary_rows = []
         for g_idx, (name, group_spectra) in enumerate(mgf_groups.items()):
             row = _run_mgf_group(g_idx, name, group_spectra, args, outroot, sqlite_path, api_endpoint, timeout)
@@ -878,14 +1020,32 @@ def main():
         if col not in df.columns:
             df[col] = None
 
+    _write_batch_parameters(
+        outroot,
+        args,
+        input_type="csv",
+        input_path=Path(args.input_csv),
+        config_py=config_py,
+        sqlite_path=sqlite_path,
+        api_endpoint=api_endpoint,
+        timeout=timeout,
+        input_rows=int(len(df)),
+        input_groups=int(df["name"].nunique()),
+    )
+
     summary_rows = []
 
     # Group rows with the same name and treat them as one combined "library query"
+    import time as _time
+    n_total = df["name"].nunique()
     for g_idx, (name, gdf) in enumerate(df.groupby("name", sort=False), start=0):
         raw_queries = gdf["query"].astype(str).str.strip().tolist()
         group_hash = _short_hash("||".join(raw_queries))
         folder = outroot / f"{g_idx:04d}_{_safe_name(name)}_{group_hash}"
         folder.mkdir(parents=True, exist_ok=True)
+
+        _t_mol_start = _time.time()
+        print(f"\n[{g_idx+1}/{n_total}] {name}")
 
         try:
             query_meta = []
@@ -908,7 +1068,10 @@ def main():
                 # canonicalize query (app behavior)
                 query = raw_query
                 if typ == "smiles":
+                    print(f"  tautomerize ...")
+                    _t0 = _time.time()
                     query = tautomerize_neutralize_smiles(query)
+                    print(f"  tautomerize done ({_time.time()-_t0:.2f}s)")
 
                 # per-row knobs
                 tan_th = None
@@ -960,6 +1123,8 @@ def main():
                         "USI": query,
                     }])
                 else:
+                    print(f"  library lookup ({st}) ...")
+                    _t0 = _time.time()
                     df_lib_part = get_library_table(
                         smiles=query,
                         searchtype=st,
@@ -974,6 +1139,7 @@ def main():
                         df_lib_part = pd.DataFrame()
                     if not isinstance(df_lib_part, pd.DataFrame):
                         raise RuntimeError("get_library_table() did not return a pandas DataFrame")
+                    print(f"  library lookup done ({_time.time()-_t0:.2f}s, {len(df_lib_part)} spectra)")
 
                 # keep a temp marker so we can run RAW STEP per mode if needed
                 df_lib_part["__effective_mode"] = effective_mode
@@ -1060,6 +1226,9 @@ def main():
                 redu_df_part = pd.DataFrame()
 
                 if mode_used == "fasstrecords":
+                    n_sids = int(df_for_name["spectrum_id_int"].dropna().nunique()) if not df_for_name.empty else 0
+                    print(f"  fasstrecords: {n_sids} spectrum IDs ...")
+                    _t0 = _time.time()
                     masst_df_part, redu_df_part = get_masst_and_redu_tables(
                         df_for_name,
                         cosine_threshold=float(args.min_cos),
@@ -1070,6 +1239,7 @@ def main():
                         timeout=timeout,
                         chunk_size=int(args.max_returned_rows),
                     )
+                    print(f"  fasstrecords done ({_time.time()-_t0:.2f}s, {len(redu_df_part)} matches)")
 
                     if (not isinstance(redu_df_part, pd.DataFrame)) or ("Cosine" not in redu_df_part.columns) or ("Matching Peaks" not in redu_df_part.columns):
                         masst_df_part = pd.DataFrame()
@@ -1165,9 +1335,11 @@ def main():
                 lg_vals = gdf["lifemasst_group"].dropna().astype(str).str.strip()
                 lg = lg_vals.iloc[0] if not lg_vals.empty and lg_vals.iloc[0] else args.lifemasst_group
                 original_query = query_meta[0]["query_raw"] if query_meta else ""
+                original_searchtype = query_meta[0]["searchtype"] if query_meta else "exact"
                 lifemasst_items.append({
                     "name": name,
                     "query_original": original_query,
+                    "searchtype": original_searchtype,
                     "redu_df": redu_df.copy() if isinstance(redu_df, pd.DataFrame) and not redu_df.empty else pd.DataFrame(),
                     "lifemasst_group": lg,
                 })
@@ -1211,6 +1383,7 @@ def main():
                     "mode_used": ",".join(modes_in_group),
                 }
             )
+            print(f"  DONE [{g_idx+1}/{n_total}] {name}  lib={n_lib}  matches={n_raw}  total={_time.time()-_t_mol_start:.2f}s")
 
         except Exception as e:
             (folder / "error.txt").write_text(f"{type(e).__name__}: {e}\n", encoding="utf-8")

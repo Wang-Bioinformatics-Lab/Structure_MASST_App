@@ -53,7 +53,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.logo("logo_LifeMASST.png", icon_image="logo_LifeMASST.png")
+# st.logo("logo_LifeMASST.png", icon_image="logo_LifeMASST.png")
 
 
 st.markdown("""
@@ -839,7 +839,7 @@ modification_condition = shortcut_ui_values["modification_condition"]
 # Existing / output paths
 # ------------------------------
 empress_zip_path = os.path.join(output_folder, "lifemasst", "empress_results.zip")
-tree_png_path = os.path.join(output_folder, "lifemasst", "tree_plot.png")
+tree_heatmap_path = os.path.join(output_folder, "lifemasst", "tree_heatmap.html")
 metadata_tsv_path = os.path.join(output_folder, "lifemasst", "merged_metadata.tsv")
 
 tree_labels = {
@@ -881,25 +881,21 @@ with tree_selection:
     )
 
 if tree_choice not in ["trees/OTL_prepared/labelled_supertree_subset_prepped", "trees/OTL_prepared/labelled_supertree_full_prepped"]:
-    match_level_options = {
-        "NCBISpecies": "NCBI Species",
-        "NCBIFamily": "NCBI Family",
-        "NCBI_ID": "NCBI ID",
-        "NCBIGenus": "NCBI Genus",
-        "NCBIClass": "NCBI Class",
-        "NCBIOrder": "NCBI Order",
-        "NCBIPhylum": "NCBI Phylum",
-    }
+    match_level_masst_hardcoded = "NCBISpecies"
+    match_level_wikidata_hardcoded = "NCBISpecies"
 else:
-    match_level_options = {
-        "NCBIFamily": "NCBI Family",
-        "NCBIGenus": "NCBI Genus",
-        "NCBISpecies": "NCBI Species",
-        "NCBIClass": "NCBI Class",
-        "NCBIOrder": "NCBI Order",
-        "NCBIPhylum": "NCBI Phylum",
-        "OpenTreeOfLifeTaxonomyID": "OpenTreeOfLifeTaxonomyID",
-    }
+    match_level_masst_hardcoded = "NCBIFamily"
+    match_level_wikidata_hardcoded = "NCBIFamily"
+
+min_specificity_options = {
+    "":        "No minimum (all flexible matches)",
+    "species": "Species or finer",
+    "genus":   "Genus or finer",
+    "family":  "Family or finer",
+    "order":   "Order or finer",
+    "class":   "Class or finer",
+    "phylum":  "Phylum or finer",
+}
 
 message = ""
 
@@ -1005,14 +1001,17 @@ def format_message(msg: str) -> str:
 if message:
     st.markdown(format_message(message), unsafe_allow_html=True)
 
-match_level_selection_masst, _, _, _ = st.columns([3, 3, 3, 3])
-with match_level_selection_masst:
-    match_level_masst = st.selectbox(
-        "Matching level between tree and StructureMASST results",
-        options=match_level_options.keys(),
-        format_func=lambda x: match_level_options[x],
+min_spec_col, _, _, _ = st.columns([3, 3, 3, 3])
+with min_spec_col:
+    min_specificity = st.selectbox(
+        "Minimum StructureMASST match specificity",
+        options=list(min_specificity_options.keys()),
+        format_func=lambda x: min_specificity_options[x],
         index=0,
-        help="Select the taxonomic level to match your IDs to in the tree.",
+        help=(
+            "Only show tree nodes where the StructureMASST flexible match is at least this specific. "
+            "'No minimum' includes all matches, even kingdom-level propagated hits."
+        ),
     )
 
 if tree_choice != "upload":
@@ -1043,7 +1042,16 @@ def _maybe_load_tsv(path_str: str, state_key: str, mtime_key: str):
         st.session_state[state_key] = pd.read_csv(p, sep="\t")
         st.session_state[mtime_key] = m
 
-_maybe_load_bytes(tree_png_path, "tree_png_bytes", "tree_png_mtime")
+def _maybe_load_text(path_str: str, state_key: str, mtime_key: str):
+    p = Path(path_str)
+    if not p.exists():
+        return
+    m = p.stat().st_mtime
+    if st.session_state.get(mtime_key) != m:
+        st.session_state[state_key] = p.read_text(encoding="utf-8")
+        st.session_state[mtime_key] = m
+
+_maybe_load_text(tree_heatmap_path, "tree_heatmap_html", "tree_heatmap_mtime")
 _maybe_load_tsv(metadata_tsv_path, "metadata_df", "metadata_tsv_mtime")
 _maybe_load_bytes(empress_zip_path, "empress_zip_bytes", "empress_zip_mtime")
 
@@ -1271,23 +1279,39 @@ with lifemasst_button:
                 molecule_path_abs = os.path.abspath(unique_path)
                 structuremasst_path_abs = os.path.abspath(out_path)
 
-                subprocess.run(
-                    [
-                        "nextflow", "run", NF_PATH,
-                        "--input_molecules", molecule_path_abs,
-                        "--structureMASST_input_file", structuremasst_path_abs,
-                        "--tree_path", tree_path,
-                        "--tree_features", feature_path,
-                        "--tax_id", match_id,
-                        "--tax_id_prefix", id_prefix,
-                        "--masst_matchLevel", match_level_masst,
-                        "--wikidata_matchLevel", match_level_masst,
-                        "--output_folder", out_dir_abs
-                    ],
-                    check=True
-                )
+                project_root = os.path.abspath(os.path.join(HERE, ".."))
+                nf_work_dir  = os.path.join(project_root, "work", "work")
+                nf_env_dir   = os.path.join(project_root, "work", "work_env")
+                os.makedirs(nf_work_dir, exist_ok=True)
+                os.makedirs(nf_env_dir,  exist_ok=True)
+                override_cfg_path = os.path.join(out_dir_abs, "nf_override.config")
+                with open(override_cfg_path, "w") as _cfg:
+                    _cfg.write(
+                        f'workDir = "{nf_work_dir}"\n'
+                        f'conda {{\n'
+                        f'    enabled = true\n'
+                        f'    cacheDir = "{nf_env_dir}"\n'
+                        f'}}\n'
+                    )
 
-                _maybe_load_bytes(tree_png_path, "tree_png_bytes", "tree_png_mtime")
+                nf_cmd = [
+                    "nextflow", "run", NF_PATH,
+                    "-c", override_cfg_path,
+                    "--input_molecules", molecule_path_abs,
+                    "--structureMASST_input_file", structuremasst_path_abs,
+                    "--tree_path", tree_path,
+                    "--tree_features", feature_path,
+                    "--tax_id", match_id,
+                    "--tax_id_prefix", id_prefix,
+                    "--masst_matchLevel", match_level_masst_hardcoded,
+                    "--wikidata_matchLevel", match_level_wikidata_hardcoded,
+                    "--output_folder", out_dir_abs,
+                ]
+                if min_specificity:
+                    nf_cmd += ["--min_specificity", min_specificity]
+                subprocess.run(nf_cmd, check=True)
+
+                _maybe_load_text(tree_heatmap_path, "tree_heatmap_html", "tree_heatmap_mtime")
                 _maybe_load_tsv(metadata_tsv_path, "metadata_df", "metadata_tsv_mtime")
                 _maybe_load_bytes(empress_zip_path, "empress_zip_bytes", "empress_zip_mtime")
 
@@ -1302,15 +1326,9 @@ with lifemasst_button:
 # ------------------------------
 # Render results
 # ------------------------------
-img_bytes = st.session_state.get("tree_png_bytes")
-if img_bytes is not None:
-    col_img, col_empty = st.columns([3, 1])
-    with col_img:
-        st.image(
-            img_bytes,
-            caption="LifeMASST Tree Plot",
-            use_container_width=True,
-        )
+tree_html = st.session_state.get("tree_heatmap_html")
+if tree_html is not None:
+    components.html(tree_html, height=900, scrolling=False)
 
 df = st.session_state.get("metadata_df")
 if df is not None:
