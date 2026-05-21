@@ -521,7 +521,7 @@ _KINGDOM_MIN_SAMPLES = 10   # kingdoms with fewer total tree leaves stay at king
 # search term sent to the PhyloPic autocomplete API.
 _PHYLOPIC_NAME_OVERRIDES: dict[str, str] = {
     "animalia":       "Vertebrata",
-    "plantae":        "Viridiplantae",
+    "plantae":        "arabidopsis",
     "fungi":          "Ascomycota",
     "bacteria":       "Bacteria",
     "bacillati":      "Bacteria",
@@ -578,10 +578,13 @@ def _fetch_phylopic_b64(taxon_name: str, size: int = 40) -> str | None:
         build = _req.get(base, headers=hdrs, timeout=8).json().get("build", 538)
 
         for attempt_name in names_to_try:
-            # 2. Autocomplete → exact lowercase name PhyloPic knows
+            # 2. Autocomplete → only accept an exact case-insensitive match.
+            # Prefix matches (e.g. "Mino" → "minog morski" = sea lamprey) return
+            # completely wrong taxa; fall back to the raw lowercase name instead.
             ac = _req.get(f"{base}/autocomplete", params={"query": attempt_name},
                           timeout=8).json().get("matches", [])
-            lookup = ac[0] if ac else attempt_name.lower()
+            exact = next((m for m in ac if m.lower() == attempt_name.lower()), None)
+            lookup = exact if exact else attempt_name.lower()
 
             # 3. Find node UUID
             nd = _req.get(f"{base}/nodes",
@@ -593,6 +596,21 @@ def _fetch_phylopic_b64(taxon_name: str, size: int = 40) -> str | None:
                     print(f"  PhyloPic '{taxon_name}': node not found — skipping")
                 continue
             node_uuid = node_hrefs[0]["href"].split("/nodes/")[-1].split("?")[0]
+
+            # 3b. Verify the returned node actually carries the queried name.
+            # filter_name can return synonym nodes whose canonical name is
+            # completely different; if our name isn't listed, the image is wrong.
+            node_info = _req.get(f"{base}/nodes/{node_uuid}",
+                                 params={"build": build}, headers=hdrs, timeout=8).json()
+            node_names_lower = {
+                n["text"].lower()
+                for name_list in node_info.get("names", [])
+                for n in name_list
+            }
+            if attempt_name.lower() not in node_names_lower:
+                print(f"  PhyloPic '{attempt_name}': node name mismatch "
+                      f"(got {sorted(node_names_lower)[:4]}) — skipping")
+                continue
 
             # 4. Find a public-domain image (CC0 first, then PDM)
             img_uuid = None
@@ -1599,6 +1617,11 @@ body{{background:white;overflow:hidden;font-family:sans-serif;font-size:11px}}
   const COL_GAP        = {col_gap};
   const STRIP_GAP      = {strip_gap};
   const PHYLOPIC       = {phylopic_json};
+  let   userPhyloPic   = [];
+  window._mtSetUserPhyloPic = function(groups) {{
+    userPhyloPic = groups || [];
+    renderPhyloPic(activeLeafIndices);
+  }};
   let   HM2_X0         = TREE_W + labelColW + PHYLO_W + IMG_W + SPACER_W;
   const LEAF_HIT_COLORS = {leaf_hit_colors_json};  // ott → fill hex for hit leaves
 
@@ -1729,19 +1752,28 @@ body{{background:white;overflow:hidden;font-family:sans-serif;font-size:11px}}
 
   function renderPhyloPic(keptIndices) {{
     const col = document.getElementById('phylo-col');
-    if (!col || !PHYLOPIC.length) return;
+    if (!col) return;
     col.innerHTML = '';
+    const _allGroups = PHYLOPIC.concat(userPhyloPic);
+    if (!_allGroups.length) return;
 
     const keptSet = keptIndices ? new Set(keptIndices) : null;
     const PAD  = 4;                          // min gap between silhouettes (px)
     const SZ   = Math.min(PHYLO_W - 4, 44); // fixed equal size for every icon
     const HALF = SZ / 2;
     const colH = parseFloat(col.style.height) || IMG_H;
-    const BKT  = PHYLO_W - 3;               // x of vertical bracket line
+    const BKT  = PHYLO_W - 3;               // x of bracket line for broadest level
+    // Horizontal indent per level: more specific = further inside (smaller x).
+    const _LVINDENT = {{
+      'kingdom':0,'phylum':1,'class':2,'order':3,'family':4,'genus':5,'species':6,'subspecies':7,
+      'ncbikingdom':0,'ncbiphylum':1,'ncbiclass':2,'ncbiorder':3,
+      'ncbifamily':4,'ncbigenus':5,'ncbispecies':6
+    }};
+    const INDENT_STEP = 4;
 
     // ── Step 1: compute ideal centre for each visible group ──────────────
     const items = [];
-    PHYLOPIC.forEach(function(group) {{
+    _allGroups.forEach(function(group) {{
       const vis = group.leaves.filter(function(i) {{
         return !keptSet || keptSet.has(i);
       }});
@@ -1784,6 +1816,7 @@ body{{background:white;overflow:hidden;font-family:sans-serif;font-size:11px}}
     // 3×SZ away from their bracket midpoint: without an image the text label is
     // too small for the user to associate with the distant bracket.
     const visible = items.map(function(item, idx) {{
+      if (item.group.user) return true;  // user-added: always show
       const c = tops[idx] + HALF;
       if (c < 0 || c > colH) return false;
       if (!item.group.img && item.visCount > 3) {{
@@ -1795,8 +1828,9 @@ body{{background:white;overflow:hidden;font-family:sans-serif;font-size:11px}}
     // Second pass: suppress any item whose Y range is fully contained within
     // a broader visible bracket — covers paraphylogenetic cases where an organism
     // has a NaN intermediate rank yet lands visually inside a labelled bracket.
+    // User-added items are never suppressed by this pass.
     for (let i = 0; i < items.length; i++) {{
-      if (!visible[i]) continue;
+      if (!visible[i] || items[i].group.user) continue;
       const yMinI = items[i].yMin, yMaxI = items[i].yMax;
       for (let j = 0; j < items.length; j++) {{
         if (i === j || !visible[j] || items[j].visCount <= 3) continue;
@@ -1826,9 +1860,9 @@ body{{background:white;overflow:hidden;font-family:sans-serif;font-size:11px}}
       entry.style.height = SZ + 'px';
       let hasContent = false;
 
-      if (group.img) {{
+      if (group.img || group.imgSrc) {{
         const el = document.createElement('img');
-        el.src          = 'data:image/png;base64,' + group.img;
+        el.src          = group.imgSrc || ('data:image/png;base64,' + group.img);
         el.alt          = group.label;
         el.title        = group.label + (group.level ? ' (' + group.level + ')' : '');
         el.style.width  = SZ + 'px';
@@ -1860,7 +1894,11 @@ body{{background:white;overflow:hidden;font-family:sans-serif;font-size:11px}}
       const top      = tops[idx];
       const center   = top + HALF;
       const midTgt   = nearestMidY;
-      const imgEdge  = group.img ? SZ + 3 : 3;
+      const imgEdge  = (group.img || group.imgSrc) ? SZ + 3 : 3;
+
+      // Per-level bracket indent: more specific levels sit further inside (smaller x).
+      const _lvIdx = _LVINDENT[(group.level || '').toLowerCase()];
+      const BKT_i  = BKT - (_lvIdx !== undefined ? _lvIdx : 0) * INDENT_STEP;
 
       // Groups with ≤3 visible leaves get a connector-only rendering — no
       // vertical bracket line and no end ticks (too cramped to show a range).
@@ -1868,13 +1906,13 @@ body{{background:white;overflow:hidden;font-family:sans-serif;font-size:11px}}
       const isSmallGroup = visCount <= 3;
       if (!isSmallGroup) {{
         const isLeafLevel = (group.level === 'Species');
-        const bktAttrs = {{ x1: BKT, y1: yMin.toFixed(1), x2: BKT, y2: yMax.toFixed(1),
+        const bktAttrs = {{ x1: BKT_i, y1: yMin.toFixed(1), x2: BKT_i, y2: yMax.toFixed(1),
                             stroke: '#999', 'stroke-width': '1.5' }};
         if (isLeafLevel) bktAttrs['stroke-dasharray'] = '3,2';
         svgEl(ov, 'line', bktAttrs);
         if (!isLeafLevel) {{
           [yMin, yMax].forEach(function(ty) {{
-            svgEl(ov, 'line', {{ x1: BKT - 4, y1: ty.toFixed(1), x2: BKT + 1, y2: ty.toFixed(1),
+            svgEl(ov, 'line', {{ x1: BKT_i - 4, y1: ty.toFixed(1), x2: BKT_i + 1, y2: ty.toFixed(1),
                                  stroke: '#999', 'stroke-width': '1.5' }});
           }});
         }}
@@ -1883,7 +1921,7 @@ body{{background:white;overflow:hidden;font-family:sans-serif;font-size:11px}}
       // Solid when the group has a bracket (range of leaves); dashed for small
       // groups (≤3 leaves, no bracket) where we point to individual positions.
       const cAttrs = {{ x1: imgEdge, y1: center.toFixed(1),
-                        x2: BKT - 2, y2: midTgt.toFixed(1),
+                        x2: BKT_i - 2, y2: midTgt.toFixed(1),
                         stroke: '#999', 'stroke-width': '1' }};
       if (isSmallGroup) cAttrs['stroke-dasharray'] = '3,2';
       svgEl(ov, 'line', cAttrs);
@@ -2315,6 +2353,172 @@ body{{background:white;overflow:hidden;font-family:sans-serif;font-size:11px}}
     }}
   }});
   outer.addEventListener('mouseleave', function() {{ dotTip.style.display = 'none'; }});
+
+  // ── Interactive PhyloPic addition (double-click) ─────────────────────────
+  async function fetchAndAddPhyloPic(lookupName, label, level, leafIndices) {{
+    const base = 'https://api.phylopic.org';
+    const pdLicenses = [
+      'https://creativecommons.org/publicdomain/zero/1.0/',
+      'https://creativecommons.org/licenses/publicdomain/'
+    ];
+    const msg = document.createElement('div');
+    msg.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);'
+      + 'background:#333;color:#fff;padding:8px 18px;border-radius:20px;font-size:13px;'
+      + 'z-index:9999;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.4);';
+    msg.textContent = 'Looking up PhyloPic for “' + label + '”…';
+    document.body.appendChild(msg);
+    try {{
+      const rootResp = await fetch(base, {{headers:{{Accept:'application/json'}}}});
+      const root = await rootResp.json();
+      const build = root.build || 538;
+      const namesToTry = [lookupName];
+      const parts = lookupName.trim().split(/\\s+/);
+      if (parts.length > 1) namesToTry.push(parts[0]);
+      for (const attemptName of namesToTry) {{
+        // Exact autocomplete match only
+        const acResp = await fetch(
+          base + '/autocomplete?query=' + encodeURIComponent(attemptName),
+          {{headers:{{Accept:'application/json'}}}}
+        );
+        const acData = await acResp.json();
+        const exact = (acData.matches || []).find(function(m) {{
+          return m.toLowerCase() === attemptName.toLowerCase();
+        }});
+        const lookup = exact || attemptName.toLowerCase();
+        // Find node UUID
+        const ndResp = await fetch(
+          base + '/nodes?filter_name=' + encodeURIComponent(lookup) + '&build=' + build + '&page=0',
+          {{headers:{{Accept:'application/json'}}}}
+        );
+        const ndData = await ndResp.json();
+        const nodeHrefs = ((ndData._links || {{}}).items) || [];
+        if (!nodeHrefs.length) continue;
+        const nodeUuid = nodeHrefs[0].href.split('/nodes/').pop().split('?')[0];
+        // Verify node carries the queried name
+        const niResp = await fetch(
+          base + '/nodes/' + nodeUuid + '?build=' + build,
+          {{headers:{{Accept:'application/json'}}}}
+        );
+        const niData = await niResp.json();
+        const nodeNames = new Set(
+          (niData.names || []).flatMap(function(nl) {{
+            return nl.map(function(n) {{ return n.text.toLowerCase(); }});
+          }})
+        );
+        if (!nodeNames.has(attemptName.toLowerCase())) continue;
+        // Find CC0/PDM image
+        let imgUuid = null;
+        for (const lic of pdLicenses) {{
+          const imResp = await fetch(
+            base + '/images?filter_node=' + nodeUuid + '&build=' + build
+              + '&page=0&filter_license=' + encodeURIComponent(lic),
+            {{headers:{{Accept:'application/json'}}}}
+          );
+          const imData = await imResp.json();
+          const imgItems = ((imData._links || {{}}).items) || [];
+          if (imgItems.length) {{
+            imgUuid = imgItems[0].href.split('/images/').pop().split('?')[0];
+            break;
+          }}
+        }}
+        if (!imgUuid) continue;
+        // Get thumbnail closest to 40 px
+        const metaResp = await fetch(
+          base + '/images/' + imgUuid + '?build=' + build,
+          {{headers:{{Accept:'application/json'}}}}
+        );
+        const meta = await metaResp.json();
+        const thumbs = ((meta._links || {{}}).thumbnailFiles) || [];
+        if (!thumbs.length) continue;
+        const SZ  = 40;
+        const best = thumbs.reduce(function(b, t) {{
+          return Math.abs(parseInt(t.sizes) - SZ) < Math.abs(parseInt(b.sizes) - SZ) ? t : b;
+        }});
+        // Fetch image: try base64 (offline-capable) and fall back to direct URL
+        // if the image CDN blocks cross-origin fetch (no CORS headers).
+        let imgSrc = null;
+        try {{
+          const imgResp = await fetch(best.href);
+          const blob    = await imgResp.blob();
+          imgSrc = await new Promise(function(resolve) {{
+            const reader = new FileReader();
+            reader.onload = function() {{ resolve(reader.result); }};  // full data: URI
+            reader.readAsDataURL(blob);
+          }});
+        }} catch(_) {{
+          imgSrc = best.href;  // CORS blocked — use URL (requires internet when displayed)
+        }}
+        // Add/replace in userPhyloPic and re-render
+        userPhyloPic = userPhyloPic.filter(function(g) {{ return g.label !== label; }});
+        userPhyloPic.push({{
+          label:       label,
+          lookup_name: lookupName,
+          level:       level,
+          leaves:      leafIndices,
+          imgSrc:      imgSrc,
+          user:        true
+        }});
+        msg.textContent = '✓ Added PhyloPic for “' + label + '”';
+        setTimeout(function() {{ msg.remove(); }}, 1500);
+        renderPhyloPic(activeLeafIndices);
+        return;
+      }}
+      msg.textContent = 'No PhyloPic silhouette found for “' + label + '”';
+      setTimeout(function() {{ msg.remove(); }}, 2500);
+    }} catch(err) {{
+      msg.textContent = 'PhyloPic lookup failed: ' + err.message;
+      setTimeout(function() {{ msg.remove(); }}, 2500);
+    }}
+  }}
+
+  outer.addEventListener('dblclick', function(e) {{
+    if (e.target.closest('#tooltip') || e.target.closest('#leg')) return;
+    const rect2 = outer.getBoundingClientRect();
+    const cx2   = (e.clientX - rect2.left - panX) / scale;
+    const cy2   = (e.clientY - rect2.top  - panY) / scale;
+    const hmX2  = cx2 - TREE_W - labelColW - PHYLO_W;
+    const hmY2  = cy2 - HDR_H;
+    if (hmY2 < 0 || hmY2 > IMG_H) return;
+    const nView2     = activeLeafIndices ? activeLeafIndices.length : N_LEAVES;
+    const rowInView2 = Math.min(nView2 - 1, Math.floor(hmY2 / IMG_H * nView2));
+    if (rowInView2 < 0) return;
+    const leafIdx2 = activeLeafIndices ? activeLeafIndices[rowInView2] : rowInView2;
+    const leaf2    = LEAVES[leafIdx2] || {{}};
+    if (hmX2 < 0) {{
+      // Tree / leaf-label area: use finest available taxonomy for this leaf
+      let name2 = null, level2 = null;
+      for (let i = NCBI_LEVELS.length - 1; i >= 0; i--) {{
+        const sh2 = NCBI_LEVELS[i][0], lbl2 = NCBI_LEVELS[i][1];
+        if (leaf2[sh2]) {{ name2 = leaf2[sh2]; level2 = lbl2; break; }}
+      }}
+      if (!name2) return;
+      fetchAndAddPhyloPic(name2, name2, level2, [leafIdx2]);
+    }} else if (hmX2 < STRIP1_W) {{
+      // Strip 1 column: all visible leaves sharing this strip value
+      const sv1 = leaf2[currentStrip1Sh];
+      if (!sv1) return;
+      const sl1  = (ALL_STRIP_MAPS[currentStrip1Sh] || {{}}).label || STRIP1_LABEL;
+      const vs1  = activeLeafIndices ? new Set(activeLeafIndices) : null;
+      const leaves1 = [];
+      for (let i = 0; i < N_LEAVES; i++) {{
+        if (vs1 && !vs1.has(i)) continue;
+        if ((LEAVES[i] || {{}})[currentStrip1Sh] === sv1) leaves1.push(i);
+      }}
+      fetchAndAddPhyloPic(sv1, sv1, sl1, leaves1);
+    }} else if (hmX2 < STRIP1_W + STRIP_GAP + STRIP2_W) {{
+      // Strip 2 column: all visible leaves sharing this strip value
+      const sv2 = leaf2[currentStrip2Sh];
+      if (!sv2) return;
+      const sl2  = (ALL_STRIP_MAPS[currentStrip2Sh] || {{}}).label || STRIP2_LABEL;
+      const vs2  = activeLeafIndices ? new Set(activeLeafIndices) : null;
+      const leaves2 = [];
+      for (let i = 0; i < N_LEAVES; i++) {{
+        if (vs2 && !vs2.has(i)) continue;
+        if ((LEAVES[i] || {{}})[currentStrip2Sh] === sv2) leaves2.push(i);
+      }}
+      fetchAndAddPhyloPic(sv2, sv2, sl2, leaves2);
+    }}
+  }});
 
   // ── Filter panel ─────────────────────────────────────────────────────────
   const NCBI_LEVELS = {ncbi_levels_json};
@@ -3156,7 +3360,8 @@ body{{background:white;overflow:hidden;font-family:sans-serif;font-size:11px}}
       activeExcludedMols: Array.from(activeExcludedMols),
       activeKept2:        activeKept2,
       activeHm2RowH:      activeHm2RowH,
-      activeLeafViewPos:  activeLeafViewPos ? Array.from(activeLeafViewPos.entries()) : null
+      activeLeafViewPos:  activeLeafViewPos ? Array.from(activeLeafViewPos.entries()) : null,
+      userPhyloPic:       userPhyloPic
     }};
 
     // Build the restore code (pure JS, no <script> tags — those are added below).
@@ -3171,6 +3376,7 @@ body{{background:white;overflow:hidden;font-family:sans-serif;font-size:11px}}
         '}}' +
         'function after(){{' +
           'if(typeof window._mtSetActive==="function"){{window._mtSetActive(S.activeLeafIndices,S.activeRowH,S.activeExcludedMols,S.activeKept2,S.activeHm2RowH,S.activeLeafViewPos);}}' +
+          'if(typeof window._mtSetUserPhyloPic==="function"){{window._mtSetUserPhyloPic(S.userPhyloPic||[]);}}' +
           'var cv=document.getElementById("canvas");var el;' +
           'el=document.getElementById("label-size");' +
           'if(el){{el.value=S.labelSize;el.dispatchEvent(new Event("input"));}}' +

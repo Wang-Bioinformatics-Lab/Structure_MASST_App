@@ -57,6 +57,10 @@ def setup_lifemasst_files(
     first_col = merged_summary.columns[0]
 
     for df in collect_dfs[1:]:
+        # NCBITaxonomy_file_count is background data identical across molecules; drop
+        # it from incoming dfs to prevent suffix conflicts in iterative merges.
+        dup_cols = [c for c in df.columns if c in merged_summary.columns and c != first_col]
+        df = df.drop(columns=dup_cols)
         merged_summary = pd.merge(merged_summary, df, on=first_col, how="outer")
 
     for col in merged_summary.columns:

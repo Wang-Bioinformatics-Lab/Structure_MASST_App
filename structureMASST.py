@@ -2129,15 +2129,33 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 use_dropdown = (sel_col != "None" and bool(sel_vals))  
                                 selected = dropdown_selected if use_dropdown else ui_selected
 
-                                btn_col1, btn_col2, _ = st.columns([2,2, 6])
+                                btn_col1, btn_col2, btn_col_chk, _ = st.columns([2, 2, 3, 3])
 
-                                # buttons for selected rows  
+                                with btn_col_chk:
+                                    apply_all = st.checkbox(
+                                        "Apply to all molecules",
+                                        key=f"{name}_redu_apply_all",
+                                        disabled=not use_dropdown,
+                                        help="Applies the column/value filter above to every molecule, not just this one. Only available when a column + value(s) are selected.",
+                                    )
+
+                                # buttons for selected rows
                                 with btn_col1:
                                     if st.button("Remove selected rows", key=f"{name}_redu_remove"):
                                         if selected:
                                             st.session_state.raw_results[name]["redu"] = (
                                                 df_redu.drop(df_redu.index[selected]).reset_index(drop=True)
                                             )
+                                            if apply_all and use_dropdown:
+                                                for other_name, other_pair in st.session_state.raw_results.items():
+                                                    if other_name == name:
+                                                        continue
+                                                    other_df = other_pair.get("redu")
+                                                    if isinstance(other_df, pd.DataFrame) and sel_col in other_df.columns:
+                                                        mask = other_df[sel_col].astype("string").fillna("<NA>").isin(sel_vals)
+                                                        st.session_state.raw_results[other_name]["redu"] = (
+                                                            other_df[~mask].reset_index(drop=True)
+                                                        )
                                         else:
                                             st.warning("No rows selected!")
                                         st.rerun()
@@ -2148,6 +2166,16 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                             st.session_state.raw_results[name]["redu"] = (
                                                 df_redu.iloc[selected].reset_index(drop=True)
                                             )
+                                            if apply_all and use_dropdown:
+                                                for other_name, other_pair in st.session_state.raw_results.items():
+                                                    if other_name == name:
+                                                        continue
+                                                    other_df = other_pair.get("redu")
+                                                    if isinstance(other_df, pd.DataFrame) and sel_col in other_df.columns:
+                                                        mask = other_df[sel_col].astype("string").fillna("<NA>").isin(sel_vals)
+                                                        st.session_state.raw_results[other_name]["redu"] = (
+                                                            other_df[mask].reset_index(drop=True)
+                                                        )
                                         else:
                                             st.warning("No rows selected!")
                                         st.rerun()
