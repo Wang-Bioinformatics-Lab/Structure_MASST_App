@@ -4,6 +4,9 @@ database/*
 sessionoutput/
 output/
 batch_output*/
+batch_inputs/
+logs/*.out
+logs/*.err
 yasin
 requirements_disabled.txt
 keys.env

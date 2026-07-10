@@ -258,6 +258,11 @@ def _write_batch_parameters(
             "col3": args.sankey_col3,
             "col4": args.sankey_col4,
         },
+        "domainmasst": {
+            "enabled": bool(args.domainmasst),
+            "min_matched_signals": int(args.min_peaks),
+            "precursor_mz_tol": float(args.precursor_tol),
+        },
         "lifemasst": {
             "enabled": bool(args.lifemasst),
             "tree": args.lifemasst_tree,
@@ -707,6 +712,56 @@ def _run_lifemasst_all(
         _write_lifemasst_report(mol_report, lm_dir / "lifemasst_molecule_report.tsv")
 
 
+_MICROBE_MASST_CODE = PKG_PATH / "external" / "microbe_masst" / "code"
+_MICROBE_MASST_SCRIPT = _MICROBE_MASST_CODE / "masst_client.py"
+
+
+def _run_domainmasst(
+    name: str,
+    redu_df: pd.DataFrame,
+    out_dir: Path,
+    min_peaks: int,
+    precursor_tol: float,
+) -> dict:
+    """Generate DomainMASST HTML trees (microbeMASST/plantMASST/tissueMASST/foodMASST/
+    personalCareProductMASST + combined) for one name-group's raw matches, mirroring
+    the app's domainmasst_fragment button (external/microbe_masst masst_client.py --mode draw).
+    """
+    keep_cols = [c for c in ["USI", "Cosine", "Matching Peaks", "Delta Mass"] if c in redu_df.columns]
+    if "USI" not in keep_cols:
+        return {"status": "skipped", "details": "no USI column in raw matches"}
+
+    dm_dir = out_dir / "domainMASST"
+    dm_dir.mkdir(parents=True, exist_ok=True)
+
+    topic_df = redu_df[keep_cols].copy()
+    topic_df["Status"] = 1
+    input_tsv = dm_dir / f"domainMasst_input_{_safe_name(name)}.tsv"
+    topic_df.to_csv(input_tsv, sep="\t", index=False, header=True)
+
+    out_prefix = dm_dir / "domain_masst"
+    cmd = [
+        sys.executable, str(_MICROBE_MASST_SCRIPT),
+        "--mode", "draw",
+        "--out_file", str(out_prefix),
+        "--input_usi_results_file", str(input_tsv),
+        "--usi_or_lib_id", " ",
+        "--compound_name", name,
+        "--min_matched_signals", str(min_peaks),
+        "--precursor_mz_tol", str(precursor_tol),
+    ]
+    proc = subprocess.run(cmd, cwd=str(_MICROBE_MASST_CODE), capture_output=True, text=True)
+
+    (dm_dir / "domainmasst_stdout.log").write_text(proc.stdout or "", encoding="utf-8")
+    (dm_dir / "domainmasst_stderr.log").write_text(proc.stderr or "", encoding="utf-8")
+
+    if proc.returncode != 0:
+        return {"status": "failed", "details": f"masst_client.py exited with code {proc.returncode}"}
+
+    n_html = len(list(dm_dir.glob("*.html")))
+    return {"status": "done", "details": f"{n_html} html file(s) written"}
+
+
 def _run_mgf_group(
     g_idx: int,
     name: str,
@@ -788,6 +843,18 @@ def _run_mgf_group(
         if n_raw == 0:
             (folder / "note.txt").write_text("No raw data matches found for this spectrum group.\n", encoding="utf-8")
 
+        domainmasst_status = ""
+        if args.domainmasst:
+            if not redu_df.empty:
+                dm_result = _run_domainmasst(
+                    name, redu_df, folder,
+                    min_peaks=int(args.min_peaks),
+                    precursor_tol=float(args.precursor_tol),
+                )
+                domainmasst_status = dm_result["status"]
+            else:
+                domainmasst_status = "skipped"
+
         return {
             "idx": g_idx, "name": name,
             "n_inputs": len(group_spectra),
@@ -796,6 +863,7 @@ def _run_mgf_group(
             "n_unique_mri": n_mri,
             "folder": str(folder),
             "mode_used": "fasst",
+            "domainmasst_status": domainmasst_status,
         }
 
     except Exception as e:
@@ -845,6 +913,17 @@ def main():
     p.add_argument("--sankey-col2", default="UBERONBodyPartName")
     p.add_argument("--sankey-col3", default="NCBIDivision")
     p.add_argument("--sankey-col4", default="NCBITaxonomy")
+
+    # DomainMASST
+    p.add_argument(
+        "--domainmasst",
+        action="store_true",
+        help=(
+            "Generate DomainMASST HTML trees (microbeMASST/plantMASST/tissueMASST/foodMASST/"
+            "personalCareProductMASST + combined) per name-group, from the raw FASST/FASSTrecords "
+            "matches. Written to <group_folder>/domainMASST/. Uses --min-peaks and --precursor-tol."
+        ),
+    )
 
     # LifeMASST
     p.add_argument(
@@ -1205,7 +1284,7 @@ def main():
                     ik_to_name = (
                         df_lib_clean[["inchikey_first_block", "Compound_Name"]]
                         .dropna(subset=["inchikey_first_block"])
-                        .drop_duplicates()
+                        .drop_duplicates(subset=["inchikey_first_block"])
                     )
 
             # --- RAW DATA STEP (run once if all same mode; otherwise per-mode then concat) ---
@@ -1371,6 +1450,22 @@ def main():
                     args.sankey_col4,
                 )
 
+            # optional DomainMASST HTML trees
+            domainmasst_status = ""
+            if args.domainmasst:
+                if isinstance(redu_df, pd.DataFrame) and not redu_df.empty:
+                    print(f"  domainmasst ...")
+                    _t0 = _time.time()
+                    dm_result = _run_domainmasst(
+                        name, redu_df, folder,
+                        min_peaks=int(args.min_peaks),
+                        precursor_tol=float(args.precursor_tol),
+                    )
+                    domainmasst_status = dm_result["status"]
+                    print(f"  domainmasst {domainmasst_status} ({_time.time()-_t0:.2f}s): {dm_result['details']}")
+                else:
+                    domainmasst_status = "skipped"
+
             summary_rows.append(
                 {
                     "idx": g_idx,
@@ -1381,6 +1476,7 @@ def main():
                     "n_unique_mri": n_mri,
                     "folder": str(folder),
                     "mode_used": ",".join(modes_in_group),
+                    "domainmasst_status": domainmasst_status,
                 }
             )
             print(f"  DONE [{g_idx+1}/{n_total}] {name}  lib={n_lib}  matches={n_raw}  total={_time.time()-_t_mol_start:.2f}s")

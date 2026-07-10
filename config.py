@@ -1,4 +1,4 @@
-PATH_TO_SQLITE = "/home/yasin/projects/Structure_MASST_App/database/masst_records.sqlite"
+PATH_TO_SQLITE = "/gpfs/data/fs73194/yelabiead_fr/data/masst_records.sqlite"
 MASSTRECORDS_ENDPOINT =  "https://masst-records.gnps2.org/masst_records"
 MASSTRECORDS_TIMEOUT = 1000
 MASSTRECORDS_ROWLIMIT = 1000000
