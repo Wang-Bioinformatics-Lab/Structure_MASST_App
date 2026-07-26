@@ -71,7 +71,8 @@ def retrieve_raw_data_matches(
     sqlite_path: str | None = None,
     api_endpoint: str = "http://127.0.0.1:8001/masst_records",
     timeout: int = 10,
-    output_folder: str | None = None
+    output_folder: str | None = None,
+    require_redu: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Query FASST for each spectrum in library_subset and optionally merge ReDU metadata.
@@ -86,6 +87,10 @@ def retrieve_raw_data_matches(
         matching_peaks: Minimum number of matching peaks.
         cache: Cache policy.
         output_folder: Folder to save output files.
+        require_redu: default True matches the app's normal, documented behaviour -- only
+            matches with ReDU sample metadata are returned. Pass False to keep every raw
+            FASST match (left join), enriched with dataset accession/title from the broader
+            dataset registry where full ReDU metadata isn't available. Explicit opt-in.
     Returns:
         raw_matches: concatenated FASST responses with 'spectrum_id' column.
         redu_enriched: raw_matches merged with redu_df (empty if redu_df is None/empty).
@@ -199,8 +204,10 @@ def retrieve_raw_data_matches(
         return raw_matches, pd.DataFrame()
 
     print(f"Enriching {len(raw_matches)} raw matches with ReDU metadata...")
-    redu_enriched = add_redu(raw_matches, redu_df, modification_condition=modification_condition)
-    
+    redu_enriched = add_redu(raw_matches, redu_df, modification_condition=modification_condition,
+                              require_redu=require_redu)
+    if not require_redu:
+        redu_enriched = _fill_non_redu_dataset_info(redu_enriched, sqlite_path)
 
     library_subset = library_subset.copy()
 
@@ -286,12 +293,46 @@ def retrieve_raw_data_matches(
         )
 
     return raw_matches, redu_enriched
-    
+
+
+def _fill_non_redu_dataset_info(df: pd.DataFrame, sqlite_path: str | None) -> pd.DataFrame:
+    """For rows that survived a require_redu=False (left) join without full ReDU sample
+    metadata, fill in at least a dataset accession + title from the broader dataset/mri
+    registry (masst_records.sqlite's dataset_table / mri_table), which covers many more
+    files (~920k) and datasets (~4990) than ReDU documents (~412k files) -- so a match can
+    still be attributed to a named, real public dataset even without species/body-part/etc.
+    No-op (returns df unchanged) if sqlite_path isn't available or the tables aren't found.
+    """
+    if df.empty or "mri" not in df.columns or not sqlite_path:
+        return df
+    try:
+        con = sqlite3.connect(sqlite_path)
+        mri_map = pd.read_sql("SELECT mri, mri_id_int FROM mri_table", con)
+        dataset_map = pd.read_sql("SELECT Dataset, title AS dataset_title FROM dataset_table", con)
+        con.close()
+    except Exception as e:
+        print(f"[_fill_non_redu_dataset_info] skipped ({e})")
+        return df
+
+    df = df.copy()
+    df["dataset_accession_guess"] = df["mri"].str.extract(r"(MSV\d+|GNPS\d+|CCMS\d+)", expand=False)
+    df = df.merge(mri_map, on="mri", how="left", suffixes=("", "_lookup"))
+    if "mri_id_int_lookup" in df.columns:
+        df["mri_id_int"] = df["mri_id_int"].combine_first(df["mri_id_int_lookup"]) if "mri_id_int" in df.columns else df["mri_id_int_lookup"]
+        df.drop(columns=["mri_id_int_lookup"], inplace=True)
+    df = df.merge(dataset_map, left_on="dataset_accession_guess", right_on="Dataset", how="left",
+                  suffixes=("", "_registry"))
+    n_registry_only = df["dataset_title"].notna().sum()
+    print(f"[_fill_non_redu_dataset_info] {n_registry_only}/{len(df)} rows resolved a dataset title "
+          f"from the broader registry (beyond ReDU coverage).")
+    return df
+
 
 def add_redu(
     raw_matches: pd.DataFrame,
     redu_df: pd.DataFrame,
-    modification_condition: str = None
+    modification_condition: str = None,
+    require_redu: bool = True,
 ) -> pd.DataFrame:
     """
     Enrich raw_matches with ReDU metadata from redu_df via the 'mri' key.
@@ -302,7 +343,11 @@ def add_redu(
     3. If 'USI' exists, split it into 'mri' and 'scan_id' on ':scan:'.
     4. Deduplicate on 'mri', keeping the highest-scoring match.
     5. Rename redu_df.USIs to 'mri' if necessary.
-    6. Inner-merge on 'mri' to retain only matches with ReDU metadata.
+    6. Merge on 'mri' -- inner (default, require_redu=True) to retain only matches that
+       have ReDU sample metadata (the app's normal, documented behaviour: a match with no
+       sample context isn't actionable for most users). Pass require_redu=False for a left
+       merge that keeps every raw FASST match, with ReDU columns blank where no metadata
+       exists -- this is an explicit opt-in for investigative use, not the default.
     7. Fill any NaNs in ReDU columns (those starting with 'redu_') with 'unknown'.
     """
     print("Adding ReDU metadata")
@@ -352,8 +397,10 @@ def add_redu(
         df_redu = df_redu.rename(columns={"USI": "mri"})
 
     # 5. Merge matches with ReDU metadata
-    merged = df.merge(df_redu, on="mri", how="inner")
-    print(f"[add_redu] Merged {len(df_redu)} ReDU records; result has {len(merged)} rows.")
+    join_how = "inner" if require_redu else "left"
+    merged = df.merge(df_redu, on="mri", how=join_how)
+    print(f"[add_redu] Merged {len(df_redu)} ReDU records ({join_how} join); result has {len(merged)} rows"
+          f" (of {len(df)} raw matches).")
 
     # 6. Fill missing values in any ReDU-specific columns
     redu_cols = [col for col in merged.columns if col.startswith("redu_")]
@@ -386,6 +433,7 @@ def retrieve_raw_data_matches_from_peaks(
     api_endpoint: str = "http://127.0.0.1:8001/masst_records",
     timeout: int = 10,
     output_folder: str | None = None,
+    require_redu: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Like retrieve_raw_data_matches but submits spectra by peaks instead of USI.
@@ -395,6 +443,12 @@ def retrieve_raw_data_matches_from_peaks(
             - spectrum_id (str)   unique label used as query_spectrum_id in results
             - precursor_mz (float)
             - peaks (list of [mz, intensity])
+        require_redu: default True matches the app's normal, documented behaviour --
+            only matches with ReDU sample metadata are returned in the enriched result.
+            Pass False to keep every raw FASST match (left join), with dataset accession
+            and title filled in from the broader dataset/mri registry (which covers many
+            more files than ReDU does) wherever full ReDU metadata isn't available. This
+            is an explicit opt-in for investigative use, not the default.
     Returns:
         raw_matches, redu_enriched  (same shape as retrieve_raw_data_matches)
     """
@@ -488,7 +542,10 @@ def retrieve_raw_data_matches_from_peaks(
         return raw_matches, pd.DataFrame()
 
     print(f"Enriching {len(raw_matches)} raw matches with ReDU metadata...")
-    redu_enriched = add_redu(raw_matches, redu_df, modification_condition=modification_condition)
+    redu_enriched = add_redu(raw_matches, redu_df, modification_condition=modification_condition,
+                              require_redu=require_redu)
+    if not require_redu:
+        redu_enriched = _fill_non_redu_dataset_info(redu_enriched, sqlite_path)
 
     # No library_subset merge: MGF spectra have no SMILES / Adduct / InChIKey
     # Build lib_usi from GNPSLibraryAccession (available as spectrum_id after rename)

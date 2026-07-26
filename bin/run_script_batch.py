@@ -801,7 +801,8 @@ def _run_mgf_group(
             except Exception:
                 pass
 
-        _, redu_df = retrieve_raw_data_matches_from_peaks(
+        include_non_redu = bool(getattr(args, "include_non_redu_matches", False))
+        raw_matches, redu_df = retrieve_raw_data_matches_from_peaks(
             group_spectra,
             database=args.database,
             precursor_mz_tol=float(args.precursor_tol),
@@ -817,10 +818,12 @@ def _run_mgf_group(
             api_endpoint=api_endpoint,
             timeout=timeout,
             output_folder=str(folder),
+            require_redu=not include_non_redu,
         )
 
         if redu_df is None or not isinstance(redu_df, pd.DataFrame):
             redu_df = pd.DataFrame()
+        n_true_raw = int(len(raw_matches)) if isinstance(raw_matches, pd.DataFrame) else 0
 
         redu_df.to_csv(folder / "raw_redu.tsv", sep="\t", index=False)
 
@@ -840,8 +843,17 @@ def _run_mgf_group(
                 args.sankey_col1, args.sankey_col2, args.sankey_col3, args.sankey_col4,
             )
 
-        if n_raw == 0:
-            (folder / "note.txt").write_text("No raw data matches found for this spectrum group.\n", encoding="utf-8")
+        if n_true_raw == 0:
+            (folder / "note.txt").write_text("No raw FASST matches found for this spectrum group "
+                                              "(true, before any ReDU filtering).\n", encoding="utf-8")
+        elif n_raw == 0:
+            (folder / "note.txt").write_text(
+                f"{n_true_raw} true raw FASST match(es) found, but none have ReDU sample metadata -- "
+                f"this run used the default require_redu=True behaviour, which reports 0. Re-run with "
+                f"--include-non-redu-matches to see them (dataset accession/title only, no sample "
+                f"metadata).\n" if not include_non_redu else
+                f"{n_true_raw} true raw FASST match(es) found; ReDU-joined result is empty unexpectedly.\n",
+                encoding="utf-8")
 
         domainmasst_status = ""
         if args.domainmasst:
@@ -860,6 +872,7 @@ def _run_mgf_group(
             "n_inputs": len(group_spectra),
             "n_library_spectra": 0,
             "n_raw_matches": n_raw,
+            "n_raw_matches_true": n_true_raw,
             "n_unique_mri": n_mri,
             "folder": str(folder),
             "mode_used": "fasst",
@@ -900,6 +913,14 @@ def main():
     p.add_argument("--mod-mass", type=float, default=None)
     p.add_argument("--elimination", action="store_true")
     p.add_argument("--addition", action="store_true")
+    p.add_argument("--include-non-redu-matches", action="store_true",
+                    help="FASST-only. Default (off) matches the app's normal, documented behaviour: only "
+                         "raw FASST matches that have ReDU sample metadata are kept/reported. Pass this flag "
+                         "to also keep raw matches whose source file has no ReDU record -- dataset accession "
+                         "and title are filled in from the broader dataset/mri registry where possible, but "
+                         "sample-level metadata (species, body part, etc.) will be blank for those rows. "
+                         "Explicit opt-in for investigative use; changes n_raw_matches/raw_redu.tsv semantics "
+                         "when set.")
     p.add_argument("--mod-condition", default=None)
 
     # Defaults for missing per-row columns
@@ -1296,6 +1317,7 @@ def main():
 
             masst_parts = []
             redu_parts = []
+            n_true_raw_accum = 0
 
             for mode_used in modes_in_group:
                 df_lib_mode = df_lib[df_lib["__effective_mode"] == mode_used].drop(columns=["__effective_mode"], errors="ignore")
@@ -1337,7 +1359,7 @@ def main():
                     out_folder_for_mode = str(folder) if len(modes_in_group) == 1 else str((folder / f"_mode_{mode_used}").resolve())
                     Path(out_folder_for_mode).mkdir(parents=True, exist_ok=True)
 
-                    _, redu_df_part = retrieve_raw_data_matches(
+                    raw_matches_part, redu_df_part = retrieve_raw_data_matches(
                         df_for_name,
                         database=args.database,
                         precursor_mz_tol=float(args.precursor_tol),
@@ -1353,7 +1375,10 @@ def main():
                         api_endpoint=api_endpoint,
                         timeout=timeout,
                         output_folder=out_folder_for_mode,
+                        require_redu=not bool(getattr(args, "include_non_redu_matches", False)),
                     )
+                    n_true_raw_part = int(len(raw_matches_part)) if isinstance(raw_matches_part, pd.DataFrame) else 0
+                    n_true_raw_accum += n_true_raw_part
 
                     if redu_df_part is None or not isinstance(redu_df_part, pd.DataFrame):
                         redu_df_part = pd.DataFrame()
@@ -1473,6 +1498,7 @@ def main():
                     "n_inputs": int(len(gdf)),
                     "n_library_spectra": n_lib,
                     "n_raw_matches": n_raw,
+                    "n_raw_matches_true": n_true_raw_accum,
                     "n_unique_mri": n_mri,
                     "folder": str(folder),
                     "mode_used": ",".join(modes_in_group),
