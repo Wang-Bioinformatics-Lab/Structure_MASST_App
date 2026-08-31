@@ -323,8 +323,13 @@ def add_redu(
         ascending=[False, False]
     )
 
+    # Analog search: one row per file per modification. Group on the rounded
+    # 'Unit Delta Mass' rather than the raw float - FASST reports deltas to 2dp, so
+    # one modification arrives as several near-identical floats (e.g. -101.00 to
+    # -101.04) and grouping on the float emits each as its own "distinct" analogue.
     if 'Modified' in df.columns:
-        grp_cols = ['mri', 'Delta Mass']
+        delta_col = 'Unit Delta Mass' if 'Unit Delta Mass' in df.columns else 'Delta Mass'
+        grp_cols = ['mri', delta_col]
     else:
         grp_cols = ['mri']
 
