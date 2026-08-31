@@ -69,7 +69,9 @@ if st.session_state.get("raw_results"):
             )
 
     if st.session_state.get("_geomasst_html"):
-        components.html(st.session_state["_geomasst_html"], height=1150, scrolling=True)
+        # tall enough that the controls and both maps fit without the component
+        # scrolling inside itself; the controls are sticky in case it still does
+        components.html(st.session_state["_geomasst_html"], height=1600, scrolling=True)
 
 else:
     st.warning("This is a downstream tool. Run StructureMASST first to generate GeoMASST results.")

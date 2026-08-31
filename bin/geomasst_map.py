@@ -763,6 +763,12 @@ _TEMPLATE = r"""<!doctype html>
 * { box-sizing:border-box; }
 body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
 .wrap { padding:4px 2px 10px; }
+/* The component scrolls inside its own frame and the maps are tall, so the
+   controls would scroll out of sight above them - easy to miss entirely. */
+.controls { position:sticky; top:0; z-index:20; background:var(--paper);
+  padding:6px 0 8px; margin-bottom:2px; }
+.controls::after { content:""; position:absolute; left:0; right:0; bottom:0; height:1px;
+  background:var(--rule); }
 .filter-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:0 0 12px; }
 @media (max-width:860px) { .filter-grid { grid-template-columns:1fr; } }
 .time-card { background:var(--surface); border:1px solid var(--rule); border-radius:12px;
@@ -917,6 +923,7 @@ body.tiles-on .basemap, body.tiles-on .detail { display:none; }
 </style></head><body class="__CTX_CLASS____DETAIL_CLASS__">
 <div class="wrap">
 
+  <div class="controls">
   <div class="filter-grid">
     <div class="time-card">
       <div class="time-head">
@@ -989,6 +996,8 @@ body.tiles-on .basemap, body.tiles-on .detail { display:none; }
     <span id="deltaLegend">__DELTA_LEGEND__</span>
     <span id="catLegend"></span>
   </div>
+
+  </div><!-- /controls -->
 
   <div class="__LAYOUT_CLASS__">
     <aside class="side" style="__SIDE_STYLE__">
