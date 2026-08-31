@@ -25,7 +25,14 @@ from typing import Optional
 import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LAND_PATH_FILE = os.path.join(HERE, "assets", "world_land_110m_equirect.path")
+ASSETS = os.path.join(HERE, "assets")
+LAND_PATH_FILE = os.path.join(ASSETS, "world_land_110m_equirect.path")
+# optional detail layers, all pre-projected into the same 960x480 viewBox
+# (Natural Earth, public domain: 110m borders and lakes, 50m rivers, populated places)
+BORDERS_FILE = os.path.join(ASSETS, "world_borders_110m_equirect.path")
+LAKES_FILE = os.path.join(ASSETS, "world_lakes_110m_equirect.path")
+RIVERS_FILE = os.path.join(ASSETS, "world_rivers_50m_equirect.path")
+CITIES_FILE = os.path.join(ASSETS, "world_cities_equirect.json")
 
 # viewBox of the bundled land outline
 VB_W, VB_H = 960.0, 480.0
@@ -40,12 +47,52 @@ PALETTE = [
 ]
 
 
-def _load_land_path() -> str:
+def _read_asset(path: str) -> str:
     try:
-        with open(LAND_PATH_FILE, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             return fh.read().strip()
     except OSError:
         return ""
+
+
+def _load_land_path() -> str:
+    return _read_asset(LAND_PATH_FILE)
+
+
+def _detail_svg(max_cities: int = 90) -> str:
+    """Borders, lakes, rivers and major cities, drawn under the markers."""
+    borders, lakes, rivers = _read_asset(BORDERS_FILE), _read_asset(LAKES_FILE), _read_asset(RIVERS_FILE)
+    out = []
+    if rivers:
+        out.append(f'<path class="ne-river" d="{rivers}"></path>')
+    if lakes:
+        out.append(f'<path class="ne-lake" d="{lakes}"></path>')
+    if borders:
+        out.append(f'<path class="ne-border" d="{borders}"></path>')
+
+    raw = _read_asset(CITIES_FILE)
+    if raw:
+        try:
+            cities = json.loads(raw)[:max_cities]
+        except ValueError:
+            cities = []
+        dots, labels = [], []
+        for c in cities:
+            dots.append(f'<circle class="ne-city" cx="{c["x"]}" cy="{c["y"]}" r="0.9"></circle>')
+            labels.append(
+                f'<text class="ne-city-label" x="{c["x"] + 2.2}" y="{c["y"] + 1.4}">'
+                f'{html.escape(str(c["n"]))}</text>'
+            )
+        out.append("".join(dots))
+        labels_g = f'<g id="gm-city-labels">{"".join(labels)}</g>'
+    else:
+        labels_g = ""
+    if not out:
+        return ""
+    # Two separate defs: a <use> element can be styled by document CSS, but elements
+    # *inside* a referenced subtree do not re-render when an ancestor selector starts
+    # or stops matching - so anything that toggles needs its own referenced group.
+    return f'<g id="gm-detail">{"".join(out)}</g>{labels_g}'
 
 
 def _project(lat: pd.Series, lon: pd.Series):
@@ -158,7 +205,8 @@ def _radius(n: int, scale: float, floor: float = 0.0) -> float:
     return round(min(max(scale * math.sqrt(max(int(n), 1)), floor), 22.0), 2)
 
 
-def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float) -> tuple:
+def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float,
+             color_key: str = "cat") -> tuple:
     """Emit <circle> markup plus counts of markers missing date / depth."""
     if agg.empty:
         return "", 0, 0
@@ -170,7 +218,7 @@ def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float) -> tuple
 
     for (_, r), px, py in zip(agg.iterrows(), x, y):
         cat = str(r["cat"])
-        color = colors.get(cat, "#98a2ad")
+        color = colors.get(r[color_key] if color_key in agg.columns else cat, "#98a2ad")
 
         has_date = pd.notna(r["dmin"]) and pd.notna(r["dmax"])
         has_depth = pd.notna(r["zmin"]) and pd.notna(r["zmax"])
@@ -188,6 +236,8 @@ def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float) -> tuple
         else:
             attrs.append('fill="none"')  # stroke color comes from CSS, deliberately neutral
         attrs.append(f'data-cat="{html.escape(cat, quote=True)}"')
+        if "facet" in agg.columns and pd.notna(r["facet"]):
+            attrs.append(f'data-delta="{int(round(float(r["facet"])))}"')
 
         if has_date:
             attrs.append(f'data-dmin="{_fmt_date(r["dmin"])}"')
@@ -197,7 +247,8 @@ def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float) -> tuple
             attrs.append(f'data-zmax="{float(r["zmax"]):.1f}"')
 
         tip = [
-            cat,
+            cat if "facet" not in agg.columns or pd.isna(r["facet"])
+            else f'{cat}  ·  {_facet_label(r["facet"])}',
             f'{int(r["n"])} sample(s) · {r["lat"]:.3f}, {r["lon"]:.3f}',
             "hits for this molecule" if layer == "hit" else "not matched (ReDU context)",
         ]
@@ -220,10 +271,44 @@ def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float) -> tuple
     return "\n".join(parts), n_no_date, n_no_depth
 
 
+# Delta colors encode the chemistry: losses run cool, additions run warm, and the
+# unmodified parent gets a color from neither ramp so it never reads as a modification.
+PARENT_COLOR = "#7a5ea7"
+LOSS_RAMP = ["#12374b", "#1b566f", "#2a7ea6", "#3ba3c4", "#57c4cf", "#8ad6da"]
+GAIN_RAMP = ["#7f2b18", "#a8442a", "#c96a3a", "#dd8b4f", "#eaa96b", "#f2c48c"]
+
+
 def _facet_label(v) -> str:
     """Human label for one unit delta mass."""
     iv = int(round(float(v)))
     return "unmodified (Δ 0 Da)" if iv == 0 else f"Δ {iv:+d} Da"
+
+
+def _lerp_ramp(ramp: list, t: float) -> str:
+    """Sample a hex ramp continuously, so every delta gets its own distinct shade
+    instead of the ramp wrapping and giving two deltas the same color."""
+    t = min(max(t, 0.0), 1.0)
+    if len(ramp) == 1:
+        return ramp[0]
+    pos = t * (len(ramp) - 1)
+    i = min(int(pos), len(ramp) - 2)
+    f = pos - i
+    a, b = ramp[i].lstrip("#"), ramp[i + 1].lstrip("#")
+    ch = [round(int(a[j:j + 2], 16) + (int(b[j:j + 2], 16) - int(a[j:j + 2], 16)) * f) for j in (0, 2, 4)]
+    return "#{:02x}{:02x}{:02x}".format(*ch)
+
+
+def _delta_colors(deltas) -> dict:
+    """Cool for losses, warm for additions, shade ordered by distance from the parent."""
+    out = {}
+    for signed, ramp in ((-1, LOSS_RAMP), (1, GAIN_RAMP)):
+        group = sorted([d for d in deltas if (d < 0 if signed < 0 else d > 0)], key=abs)
+        for i, d in enumerate(group):
+            out[d] = _lerp_ramp(ramp, i / max(len(group) - 1, 1))
+    for d in deltas:
+        if d == 0:
+            out[d] = PARENT_COLOR
+    return out
 
 
 def build_geomasst_map_html(
@@ -233,86 +318,111 @@ def build_geomasst_map_html(
     compound_name: str = "",
     max_markers: int = 6000,
     facet_col: str = "Unit Delta Mass",
-    max_facets: int = 12,
+    show_context: bool = True,
+    show_detail: bool = False,
 ) -> str:
     """
     Build a standalone HTML document for embedding with streamlit.components.v1.html.
 
+    Plain search  -> one map, markers colored by environment material.
+    Analog search -> one map for the unmodified parent and one for all analogues
+                     colored by delta; picking deltas from the side list splits those
+                     into a map each. Every map pans and zooms together.
+
     df_hits       raw-data matches for one molecule (needs LatitudeandLongitude + env_col;
                   SampleCollectionDateandTime and DepthorAltitudeMeters enable the sliders)
-    df_background the rest of the environmental ReDU corpus, drawn as hollow context markers
-    facet_col     when present in df_hits (analog search emits 'Unit Delta Mass'), each
-                  modification gets its own small map so analogues can be compared
-                  side by side; the maps pan and zoom together.
-    max_facets    cap on the number of small maps, taking the deltas with the most hits
+    df_background environmental ReDU sites with no hit, drawn as hollow context markers
+    show_context  initial state of the "sites without hits" toggle
+    show_detail   initial state of the detailed-basemap toggle (borders, rivers,
+                  lakes and major cities); off by default so the plain map stays quiet
     """
-    faceted = bool(facet_col) and facet_col in getattr(df_hits, "columns", [])
+    has_facet = bool(facet_col) and facet_col in getattr(df_hits, "columns", [])
+    tidy_hits = _prepare(df_hits, env_col, facet_col if has_facet else None)
 
-    tidy_hits = _prepare(df_hits, env_col, facet_col if faceted else None)
-    faceted = faceted and not tidy_hits.empty and "facet" in tidy_hits.columns \
+    analog = (
+        has_facet and not tidy_hits.empty and "facet" in tidy_hits.columns
         and tidy_hits["facet"].nunique() > 1
+    )
 
-    hits = _aggregate(tidy_hits, max_markers, by=("facet",) if faceted else ())
+    hits = _aggregate(tidy_hits, max_markers, by=("facet",) if analog else ())
     bg = _aggregate(_prepare(df_background, env_col), max_markers)
 
-    # Category order and colors are shared across every map so the same material is
-    # the same color in each facet; hits first, so the molecule's own materials get
-    # the most distinct colors.
-    cats: list = []
-    for frame in (hits, bg):
-        if not frame.empty:
-            for c in frame.groupby("cat")["n"].sum().sort_values(ascending=False).index:
-                if c not in cats:
-                    cats.append(str(c))
-    colors = {c: PALETTE[i % len(PALETTE)] for i, c in enumerate(cats)}
+    # ---- colors ----
+    # Only materials actually hit earn a legend entry; the context layer is drawn
+    # neutral, so its materials would be legend rows for colors nobody can see.
+    hit_cats = []
+    if not hits.empty:
+        hit_cats = [str(c) for c in hits.groupby("cat")["n"].sum().sort_values(ascending=False).index]
+    material_colors = {c: PALETTE[i % len(PALETTE)] for i, c in enumerate(hit_cats)}
+
+    deltas = []
+    delta_colors = {}
+    if analog:
+        deltas = sorted(hits["facet"].unique().tolist())
+        delta_colors = _delta_colors(deltas)
+
+    colors = delta_colors if analog else material_colors
+    color_key = "facet" if analog else "cat"
 
     bg_svg, bg_no_date, bg_no_depth = _circles(bg, colors, "bg", scale=2.0)
 
-    # ---- one map, or one map per modification ----
-    if faceted:
-        order = hits.groupby("facet")["n"].sum().sort_values(ascending=False)
-        chosen = list(order.index[:max_facets])
-        # order the maps by delta so they read like a mass axis, not by abundance
-        chosen.sort()
-    else:
-        chosen = [None]
+    detail_svg = _detail_svg()
+    detail = bool(detail_svg)
 
-    cards, chips = [], []
+    # ---- the maps ----
+    cards, side = [], []
     hit_no_date = hit_no_depth = 0
-    for idx, fv in enumerate(chosen):
-        part = hits if fv is None else hits[hits["facet"] == fv]
-        svg, nd, nz = _circles(part, colors, "hit", scale=2.6)
+
+    def _card(idx, label, part, kind, delta=None):
+        nonlocal hit_no_date, hit_no_depth
+        svg, nd, nz = _circles(part, colors, "hit", scale=2.6, color_key=color_key)
         hit_no_date += nd
         hit_no_depth += nz
-
         n_mark = 0 if part.empty else len(part)
         n_samp = 0 if part.empty else int(part["n"].sum())
-        label = "All matches" if fv is None else _facet_label(fv)
-        meta = f"{n_mark:,} sites &middot; {n_samp:,} files"
-
-        # context and land are defined once and referenced, so N maps do not mean N
-        # copies of a 60 KB coastline or of every context marker
-        ctx_layer = '<use href="#gm-ctx"></use>' if faceted else f'<g class="ctx">{bg_svg}</g>'
+        ctx_layer = ('<use href="#gm-ctx" class="ctx-layer"></use>' if analog
+                     else f'<g class="ctx ctx-layer">{bg_svg}</g>')
+        detail_layer = ('<use href="#gm-detail" class="detail"></use>'
+                        '<use href="#gm-city-labels" class="detail city-labels"></use>') if detail else ''
+        attr_delta = "" if delta is None else f' data-delta="{int(round(float(delta)))}"'
         cards.append(
-            f'<div class="facet" data-facet="{idx}">'
+            f'<div class="facet" data-facet="{idx}" data-kind="{kind}"{attr_delta}>'
             f'<div class="facet-head"><span class="facet-name">{html.escape(label)}</span>'
-            f'<span class="facet-meta">{meta}</span></div>'
+            f'<span class="facet-meta">{n_mark:,} sites &middot; {n_samp:,} files</span></div>'
             f'<svg class="fmap" viewBox="0 0 {VB_W:.0f} {VB_H:.0f}" preserveAspectRatio="xMidYMid meet">'
             f'<rect x="0" y="0" width="{VB_W:.0f}" height="{VB_H:.0f}" fill="var(--ocean)"></rect>'
-            f'<g class="zoom"><use href="#gm-land"></use>{ctx_layer}'
+            f'<g class="zoom"><use href="#gm-land"></use>{detail_layer}{ctx_layer}'
             f'<g class="hits">{svg}</g></g></svg></div>'
         )
-        if faceted:
-            chips.append(
-                f'<label class="chip on" data-facet="{idx}">'
-                f'<span class="chip-name">{html.escape(label)}</span>'
-                f'<span class="chip-count">{n_samp:,}</span></label>'
+        return n_samp
+
+    if not analog:
+        _card(0, compound_name or "All matches", hits, "single")
+    else:
+        idx = 0
+        parent = hits[hits["facet"] == 0]
+        if not parent.empty:
+            _card(idx, _facet_label(0), parent, "parent", delta=0)
+            idx += 1
+        analogues = hits[hits["facet"] != 0]
+        if not analogues.empty:
+            _card(idx, "All analogues", analogues, "combined")
+            idx += 1
+        # one map per delta, hidden until that delta is picked from the side list
+        for d in [x for x in deltas if x != 0]:
+            n = _card(idx, _facet_label(d), hits[hits["facet"] == d], "delta", delta=d)
+            side.append(
+                f'<label class="side-item" data-delta="{int(round(float(d)))}">'
+                f'<span class="sw" style="background:{delta_colors[d]}"></span>'
+                f'<span class="side-name">{html.escape(_facet_label(d))}</span>'
+                f'<span class="side-count">{n:,}</span></label>'
             )
+            idx += 1
 
     n_no_date = hit_no_date + bg_no_date
     n_no_depth = hit_no_depth + bg_no_depth
 
-    # Slider domains span both layers so the windows cover everything drawn.
+    # ---- slider domains span both layers ----
     frames = [f for f in (hits, bg) if not f.empty]
     dmins = [f["dmin"].min() for f in frames if f["dmin"].notna().any()]
     dmaxs = [f["dmax"].max() for f in frames if f["dmax"].notna().any()]
@@ -328,50 +438,58 @@ def build_geomasst_map_html(
     if z_hi <= z_lo:
         z_hi = z_lo + 1.0
 
-    legend = "\n".join(
-        f'<span class="leg-item"><span class="sw" style="background:{colors[c]}"></span>'
-        f'<span class="leg-name">{html.escape(c)}</span></span>'
-        for c in cats[:24]
-    )
-
-    n_hit_markers = 0 if hits.empty else len(hits)
-    n_hit_samples = 0 if hits.empty else int(hits["n"].sum())
-    n_bg_markers = 0 if bg.empty else len(bg)
-    n_total_deltas = 0 if not faceted else int(hits["facet"].nunique())
-
-    summary = (
-        f"{n_hit_markers:,} hit markers ({n_hit_samples:,} matched files) &middot; "
-        f"{n_bg_markers:,} context markers &middot; "
-        f"{html.escape(compound_name) if compound_name else 'selected molecule'}"
-    )
-    if faceted:
-        shown = len(chosen)
-        more = "" if shown >= n_total_deltas else f" (top {shown} of {n_total_deltas} by file count)"
-        summary += f" &middot; {shown} modification{'s' if shown != 1 else ''}{more}"
-
-    defs = f'<g id="gm-land"><path d="{_load_land_path()}" fill="var(--land)" stroke="var(--land-stroke)" stroke-width="0.5"></path></g>'
-    if faceted:
-        defs += f'<g id="gm-ctx">{bg_svg}</g>'
+    if analog:
+        legend = "".join(
+            f'<span class="leg-item"><span class="sw" style="background:{PARENT_COLOR}"></span>'
+            f'<span class="leg-name">unmodified</span></span>'
+            if 0 in deltas else ""
+        ) + (
+            '<span class="leg-item"><span class="sw ramp-loss"></span>'
+            '<span class="leg-name">losses</span></span>'
+            '<span class="leg-item"><span class="sw ramp-gain"></span>'
+            '<span class="leg-name">additions</span></span>'
+        )
+        legend_label = "deltas"
+    else:
+        legend = "".join(
+            f'<span class="leg-item"><span class="sw" style="background:{material_colors[c]}"></span>'
+            f'<span class="leg-name">{html.escape(c)}</span></span>'
+            for c in hit_cats
+        )
+        legend_label = "hit materials" if hit_cats else ""
 
     cfg = json.dumps({
         "dateLo": date_lo, "dateHi": date_hi,
         "zLo": z_lo, "zHi": z_hi,
         "hasDates": has_dates, "hasDepth": has_depth,
-        "faceted": faceted,
+        "analog": analog,
     })
+
+    defs = (f'<g id="gm-land"><path d="{_load_land_path()}" fill="var(--land)" '
+            f'stroke="var(--land-stroke)" stroke-width="0.5"></path></g>')
+    if detail:
+        defs += detail_svg
+    if analog:
+        defs += f'<g id="gm-ctx">{bg_svg}</g>'
 
     return (
         _TEMPLATE
         .replace("__CFG__", cfg)
-        .replace("__SUMMARY__", summary)
         .replace("__NO_DATE__", f"{n_no_date:,}")
         .replace("__NO_DEPTH__", f"{n_no_depth:,}")
         .replace("__ZLO__", f"{z_lo:.0f}")
         .replace("__ZHI__", f"{z_hi:.0f}")
+        .replace("__LEGEND_LABEL__", legend_label)
         .replace("__LEGEND__", legend)
-        .replace("__CHIPS__", "".join(chips))
-        .replace("__CHIPBAR_STYLE__", "" if faceted else "display:none")
-        .replace("__GRID_CLASS__", "grid" if faceted else "single")
+        .replace("__SIDE__", "".join(side))
+        .replace("__SIDE_STYLE__", "" if analog else "display:none")
+        .replace("__LAYOUT_CLASS__", "layout" if analog else "layout no-side")
+        .replace("__GRID_CLASS__", "grid" if analog else "single")
+        .replace("__CTX_CLASS__", "" if show_context else "no-ctx")
+        .replace("__CTX_CHECKED__", "checked" if show_context else "")
+        .replace("__DETAIL_ROW_STYLE__", "" if detail else "display:none")
+        .replace("__DETAIL_CHECKED__", "checked" if (show_detail and detail) else "")
+        .replace("__DETAIL_CLASS__", " detail-on" if (show_detail and detail) else "")
         .replace("__DEFS__", defs)
         .replace("__CARDS__", "".join(cards))
     )
@@ -383,20 +501,21 @@ _TEMPLATE = r"""<!doctype html>
 :root {
   --paper:#eef3f8; --surface:#fff; --surface-2:#f4f7fa; --ink:#16232f; --ink-soft:#3d4d5c;
   --muted:#6b7c8c; --rule:#d7e0e8; --accent:#1d6fa5; --land:#c9d4de; --land-stroke:#a9bac8;
-  --ocean:#dde8f1; --ctx:#93a6b6; --shadow:0 1px 2px rgba(22,35,47,.06),0 4px 16px rgba(22,35,47,.05);
+  --ocean:#dde8f1; --ctx:#93a6b6; --river:#8fb4cc; --lake:#cfe0ee; --border:#aab9c6; --city:#5d6c7a;
+  --shadow:0 1px 2px rgba(22,35,47,.06),0 4px 16px rgba(22,35,47,.05);
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --paper:#0d1620; --surface:#141e29; --surface-2:#182430; --ink:#eaf1f7; --ink-soft:#c3d0dc;
     --muted:#8ea0b0; --rule:#29394a; --accent:#5b9ce8; --land:#2c3b48; --land-stroke:#435466;
-    --ocean:#0f1c28; --ctx:#5c7386; --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.35);
+    --ocean:#0f1c28; --ctx:#5c7386; --river:#3f6c8c; --lake:#1b3346; --border:#4a5b6d; --city:#93a6b6;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.35);
   }
 }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
 .wrap { padding:4px 2px 10px; }
-.summary { font-size:12.5px; color:var(--muted); margin:0 0 10px; font-family:ui-monospace,Menlo,Consolas,monospace; }
-.filter-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:0 0 14px; }
+.filter-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:0 0 12px; }
 @media (max-width:860px) { .filter-grid { grid-template-columns:1fr; } }
 .time-card { background:var(--surface); border:1px solid var(--rule); border-radius:12px;
   box-shadow:var(--shadow); padding:14px 18px 16px; }
@@ -422,40 +541,78 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
 .time-btn { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; padding:5px 10px;
   border:1px solid var(--rule); border-radius:6px; background:var(--surface-2); color:var(--ink-soft); cursor:pointer; }
 .time-btn:hover { border-color:var(--accent); color:var(--accent); }
-.bar { display:flex; align-items:center; flex-wrap:wrap; gap:6px 8px; margin:10px 0 12px; }
+.bar { display:flex; align-items:center; flex-wrap:wrap; gap:6px 8px; margin:0 0 12px; }
 .bar-label { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; color:var(--muted); margin-right:2px; }
 .leg-item { display:flex; align-items:center; gap:6px; font-size:12px; padding:4px 9px;
   border:1px solid var(--rule); border-radius:20px; background:var(--surface); }
 .leg-item .sw { width:10px; height:10px; border-radius:50%; flex:none; }
-.chip { display:flex; align-items:center; gap:7px; font-size:12px; padding:5px 11px; cursor:pointer;
-  border:1px solid var(--rule); border-radius:20px; background:var(--surface); user-select:none;
-  font-family:ui-monospace,Menlo,Consolas,monospace; transition:opacity .15s,border-color .15s; }
-.chip:hover { border-color:var(--accent); }
-.chip.off { opacity:.38; }
-.chip-count { color:var(--muted); font-size:11px; }
-.maps.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:12px; }
-.maps.single .facet { width:100%; }
+.sw.ramp-loss { background:linear-gradient(90deg,#12374b,#57c4cf); width:22px; border-radius:5px; }
+.sw.ramp-gain { background:linear-gradient(90deg,#7f2b18,#eaa96b); width:22px; border-radius:5px; }
+
+.layout { display:grid; grid-template-columns:222px 1fr; gap:14px; align-items:start; }
+.layout.no-side { grid-template-columns:1fr; }
+@media (max-width:900px) { .layout { grid-template-columns:1fr; } }
+.side { background:var(--surface); border:1px solid var(--rule); border-radius:12px;
+  box-shadow:var(--shadow); padding:12px; position:sticky; top:6px; max-height:88vh; overflow:auto; }
+.side h3 { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; font-weight:600;
+  color:var(--muted); margin:0 0 8px; text-transform:uppercase; letter-spacing:.06em; }
+.side-hint { font-size:11px; color:var(--muted); margin:0 0 10px; line-height:1.45; }
+.side-item { display:flex; align-items:center; gap:8px; padding:5px 7px; border-radius:6px;
+  cursor:pointer; user-select:none; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; }
+.side-item:hover { background:var(--surface-2); }
+.side-item.on { background:var(--accent); color:#fff; }
+.side-item.on .side-count { color:#fff; }
+.side-item .sw { width:10px; height:10px; border-radius:50%; flex:none; }
+.side-item .side-name { flex:1; }
+.side-item .side-count { color:var(--muted); font-size:11px; }
+.side-item.empty { opacity:.32; }
+.side-actions { display:flex; gap:6px; margin-top:10px; }
+
+.maps { display:grid; gap:12px; }
+.maps.grid { grid-template-columns:repeat(auto-fit,minmax(400px,1fr)); }
+.maps.single { grid-template-columns:1fr; }
 .facet { background:var(--surface); border:1px solid var(--rule); border-radius:12px;
   box-shadow:var(--shadow); padding:8px 8px 6px; overflow:hidden; }
-.facet.off { display:none; }
+.facet.off, .facet.empty { display:none; }
 .facet-head { display:flex; justify-content:space-between; align-items:baseline; gap:10px; padding:2px 4px 6px; }
 .facet-name { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px; font-weight:600; }
 .facet-meta { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; color:var(--muted); }
 .fmap { width:100%; height:auto; display:block; cursor:grab; touch-action:none; }
 .fmap.dragging { cursor:grabbing; }
 .pt { cursor:pointer; }
-.pt.hit { stroke:var(--surface); stroke-width:1.2; opacity:1; paint-order:stroke; }
-.pt.bg { stroke:var(--ctx); stroke-width:.6; opacity:.3; pointer-events:all; }
-.pt:hover { stroke-width:1.8; opacity:1; }
+/* no outline on hits; the marker radius is counter-scaled on zoom but a stroke width
+   is not, so any border grew thicker the further you zoomed in */
+.pt.hit { stroke:none; opacity:.9; }
+.pt.hit:hover { opacity:1; }
+/* context markers are hollow, so their ring IS the mark - keep it, but non-scaling
+   so it stays hairline at every zoom level */
+.pt.bg { stroke:var(--ctx); stroke-width:.9; opacity:.3; pointer-events:all;
+  vector-effect:non-scaling-stroke; }
+.pt.bg:hover { opacity:.7; }
 .pt.hidden { display:none; }
+body.no-ctx .ctx-layer { display:none; }
+/* detailed basemap: off unless the page opts in. Strokes are non-scaling so the
+   coastline detail stays hairline instead of thickening as you zoom. */
+.detail { display:none; }
+body.detail-on .detail { display:inline; }
+.ne-river { fill:none; stroke:var(--river); stroke-width:.7; opacity:.75; vector-effect:non-scaling-stroke; }
+.ne-lake { fill:var(--lake); stroke:var(--river); stroke-width:.5; opacity:.9; vector-effect:non-scaling-stroke; }
+.ne-border { fill:none; stroke:var(--border); stroke-width:.6; opacity:.8;
+  stroke-dasharray:2 1.4; vector-effect:non-scaling-stroke; }
+.ne-city { fill:var(--city); opacity:.5; }
+.ne-city-label { fill:var(--city); font-family:ui-monospace,Menlo,Consolas,monospace;
+  paint-order:stroke; stroke:var(--ocean); stroke-width:2.5; vector-effect:non-scaling-stroke; }
+/* city names would be unreadable mush at world scale, so they fade in on zoom.
+   The rule targets the <use> element, not the text inside the referenced group. */
+.city-labels { opacity:0; transition:opacity .15s; font-size:4.6px; }
+body.zoomed-in .city-labels { opacity:.95; }
 #tooltip { position:fixed; pointer-events:none; background:var(--ink); color:var(--paper);
   font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; line-height:1.5; padding:8px 10px;
   border-radius:6px; white-space:pre-wrap; box-shadow:var(--shadow); opacity:0;
   transform:translate(-9999px,-9999px); transition:opacity .08s; z-index:50; max-width:320px; }
 #tooltip.show { opacity:1; }
-</style></head><body>
+</style></head><body class="__CTX_CLASS____DETAIL_CLASS__">
 <div class="wrap">
-  <p class="summary">__SUMMARY__</p>
 
   <div class="filter-grid">
     <div class="time-card">
@@ -497,24 +654,31 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
     </div>
   </div>
 
-  <div class="bar" id="chipBar" style="__CHIPBAR_STYLE__">
-    <span class="bar-label">modifications</span>
-    __CHIPS__
-    <button class="time-btn" id="btnAllDeltas">All</button>
-    <button class="time-btn" id="btnNoDeltas">None</button>
-  </div>
-
   <div class="bar">
-    <span class="bar-label">hit materials</span>
+    <span class="bar-label">__LEGEND_LABEL__</span>
     __LEGEND__
-    <span class="leg-item"><span class="sw" style="background:none;border:1.5px solid var(--ctx)"></span><span class="leg-name">not matched</span></span>
+    <label class="undated-toggle" style="margin:0 0 0 6px"><input type="checkbox" id="showCtx" __CTX_CHECKED__>
+      <span>Show sites with no hit</span></label>
+    <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDetail" __DETAIL_CHECKED__>
+      <span>Detailed base map</span></label>
     <button class="time-btn" id="btnResetZoom">Reset zoom</button>
     <span class="bar-label" id="zoomLabel"></span>
   </div>
 
-  <svg width="0" height="0" style="position:absolute"><defs>__DEFS__</defs></svg>
-  <div class="maps __GRID_CLASS__" id="maps">__CARDS__</div>
+  <div class="__LAYOUT_CLASS__">
+    <aside class="side" style="__SIDE_STYLE__">
+      <h3>Modifications</h3>
+      <p class="side-hint">Showing the parent and all analogues together. Pick deltas to give each its own map.</p>
+      <div id="sideList">__SIDE__</div>
+      <div class="side-actions">
+        <button class="time-btn" id="btnSideAll">Each</button>
+        <button class="time-btn" id="btnSideNone">Combined</button>
+      </div>
+    </aside>
+    <div class="maps __GRID_CLASS__" id="maps">__CARDS__</div>
+  </div>
 </div>
+<svg width="0" height="0" style="position:absolute"><defs>__DEFS__</defs></svg>
 <div id="tooltip"></div>
 <script>
 (function() {
@@ -522,11 +686,11 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
   var STEPS = 1000, VB_W = 960, VB_H = 480;
   var tip = document.getElementById('tooltip');
   var allPts = Array.from(document.querySelectorAll('.pt'));
-
   allPts.forEach(function(el) { el.setAttribute('data-r', el.getAttribute('r')); });
 
   // ---------- tooltip ----------
-  document.getElementById('maps').addEventListener('mousemove', function(e) {
+  var mapsEl = document.getElementById('maps');
+  mapsEl.addEventListener('mousemove', function(e) {
     var el = e.target;
     if (!el.classList || !el.classList.contains('pt')) { tip.classList.remove('show'); return; }
     tip.textContent = el.getAttribute('data-tip');
@@ -536,16 +700,13 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
     tip.style.transform = 'translate(' + x + 'px,' + y + 'px)';
     tip.classList.add('show');
   });
-  document.getElementById('maps').addEventListener('mouseleave', function() {
-    tip.classList.remove('show');
-  });
+  mapsEl.addEventListener('mouseleave', function() { tip.classList.remove('show'); });
 
   // ---------- date / depth windows ----------
   var DOMAIN_MIN = Date.parse(CFG.dateLo), DOMAIN_MAX = Date.parse(CFG.dateHi);
   var SPAN = Math.max(DOMAIN_MAX - DOMAIN_MIN, 1);
   function stepToDate(s) { return new Date(DOMAIN_MIN + (s / STEPS) * SPAN); }
   function fmtDate(d) { return d.toLocaleDateString('en-US', { year:'numeric', month:'short' }); }
-
   var Z_MIN = CFG.zLo, Z_MAX = CFG.zHi, ZSPAN = Math.max(Z_MAX - Z_MIN, 1e-6);
   function stepToDepth(s) { return Z_MIN + (s / STEPS) * ZSPAN; }
 
@@ -555,6 +716,8 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
   var depthMin = document.getElementById('depthMin'), depthMax = document.getElementById('depthMax');
   var depthFill = document.getElementById('depthFill'), depthLabel = document.getElementById('depthWindowLabel');
   var showNoDepth = document.getElementById('showNoDepth');
+  var showCtx = document.getElementById('showCtx');
+  var showDetail = document.getElementById('showDetail');
 
   function applyFilters() {
     var tLo = Math.min(+rangeMin.value, +rangeMax.value), tHi = Math.max(+rangeMin.value, +rangeMax.value);
@@ -582,11 +745,19 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
     depthLabel.textContent = CFG.hasDepth
       ? stepToDepth(zLo).toFixed(0) + 'm  →  ' + stepToDepth(zHi).toFixed(0) + 'm'
       : 'no depth/altitude in this result';
+
+    refreshLayout();
   }
 
   [rangeMin, rangeMax, depthMin, depthMax].forEach(function(r) { r.addEventListener('input', applyFilters); });
   showUndated.addEventListener('change', applyFilters);
   showNoDepth.addEventListener('change', applyFilters);
+  if (showCtx) showCtx.addEventListener('change', function() {
+    document.body.classList.toggle('no-ctx', !showCtx.checked);
+  });
+  if (showDetail) showDetail.addEventListener('change', function() {
+    document.body.classList.toggle('detail-on', showDetail.checked);
+  });
 
   function setTimeFromCutoff(years) {
     var cutoff = DOMAIN_MAX - years * 365.25 * 24 * 3600 * 1000;
@@ -611,23 +782,54 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
     depthMax.value = STEPS; applyFilters();
   });
 
-  // ---------- which modifications are shown ----------
-  var chips = Array.from(document.querySelectorAll('.chip'));
-  function setFacet(idx, on) {
-    var card = document.querySelector('.facet[data-facet="' + idx + '"]');
-    if (card) card.classList.toggle('off', !on);
-    var chip = document.querySelector('.chip[data-facet="' + idx + '"]');
-    if (chip) chip.classList.toggle('off', !on);
-  }
-  chips.forEach(function(c) {
-    c.addEventListener('click', function() { setFacet(c.dataset.facet, c.classList.contains('off')); });
-  });
-  var btnAll = document.getElementById('btnAllDeltas'), btnNone = document.getElementById('btnNoDeltas');
-  if (btnAll) btnAll.addEventListener('click', function() { chips.forEach(function(c) { setFacet(c.dataset.facet, true); }); });
-  if (btnNone) btnNone.addEventListener('click', function() { chips.forEach(function(c) { setFacet(c.dataset.facet, false); }); });
+  // ---------- which maps are on screen ----------
+  // No deltas picked: parent + one combined analogue map. Deltas picked: parent +
+  // a map per picked delta, and the combined map steps aside.
+  var sideItems = Array.from(document.querySelectorAll('.side-item'));
+  var picked = new Set();
 
-  // ---------- synchronized pan / zoom across every map ----------
+  function refreshLayout() {
+    document.querySelectorAll('.facet').forEach(function(card) {
+      var kind = card.dataset.kind, on = true;
+      if (kind === 'combined') on = picked.size === 0;
+      else if (kind === 'delta') on = picked.has(card.dataset.delta);
+      card.classList.toggle('off', !on);
+      // a map with nothing left after the date/depth windows drops out
+      var n = card.querySelectorAll('.hits .pt:not(.hidden)').length;
+      card.classList.toggle('empty', n === 0);
+    });
+    sideItems.forEach(function(it) {
+      var card = document.querySelector('.facet[data-kind="delta"][data-delta="' + it.dataset.delta + '"]');
+      var n = card ? card.querySelectorAll('.hits .pt:not(.hidden)').length : 0;
+      it.classList.toggle('empty', n === 0);
+      var c = it.querySelector('.side-count');
+      if (c) c.textContent = n;
+    });
+  }
+
+  sideItems.forEach(function(it) {
+    it.addEventListener('click', function() {
+      var d = it.dataset.delta;
+      if (picked.has(d)) { picked.delete(d); it.classList.remove('on'); }
+      else { picked.add(d); it.classList.add('on'); }
+      refreshLayout();
+    });
+  });
+  var bAll = document.getElementById('btnSideAll'), bNone = document.getElementById('btnSideNone');
+  if (bAll) bAll.addEventListener('click', function() {
+    sideItems.forEach(function(it) { picked.add(it.dataset.delta); it.classList.add('on'); });
+    refreshLayout();
+  });
+  if (bNone) bNone.addEventListener('click', function() {
+    picked.clear(); sideItems.forEach(function(it) { it.classList.remove('on'); });
+    refreshLayout();
+  });
+
+  // ---------- synchronized pan / zoom ----------
   var zoomGroups = Array.from(document.querySelectorAll('.zoom'));
+  var cityLabelUses = Array.from(document.querySelectorAll('.city-labels'));
+  var cityDots = Array.from(document.querySelectorAll('#gm-detail .ne-city'));
+  cityDots.forEach(function(c) { c.setAttribute('data-r', c.getAttribute('r')); });
   var maps = Array.from(document.querySelectorAll('.fmap'));
   var view = { k: 1, x: 0, y: 0 };
   var zoomLabel = document.getElementById('zoomLabel');
@@ -635,7 +837,6 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
 
   function clampView() {
     view.k = Math.max(1, Math.min(40, view.k));
-    // keep the map covering the frame, so you cannot pan the world off-screen
     var minX = VB_W - VB_W * view.k, minY = VB_H - VB_H * view.k;
     view.x = Math.max(minX, Math.min(0, view.x));
     view.y = Math.max(minY, Math.min(0, view.y));
@@ -644,27 +845,29 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
     pending = false;
     var t = 'translate(' + view.x.toFixed(2) + ' ' + view.y.toFixed(2) + ') scale(' + view.k.toFixed(4) + ')';
     zoomGroups.forEach(function(g) { g.setAttribute('transform', t); });
-    // counter-scale marker radii so points stay a readable size as you zoom in
     allPts.forEach(function(el) {
       el.setAttribute('r', Math.max(0.25, parseFloat(el.getAttribute('data-r')) / view.k).toFixed(3));
     });
+    // labels and city dots are in the base map, but they read at screen size too
+    cityLabelUses.forEach(function(u) { u.style.fontSize = (4.6 / view.k).toFixed(3) + 'px'; });
+    cityDots.forEach(function(c) {
+      c.setAttribute('r', Math.max(0.15, parseFloat(c.getAttribute('data-r')) / view.k).toFixed(3));
+    });
     if (zoomLabel) zoomLabel.textContent = view.k > 1.01 ? view.k.toFixed(1) + '×' : '';
+    document.body.classList.toggle('zoomed-in', view.k >= 3);
   }
   function schedule() { if (!pending) { pending = true; requestAnimationFrame(render); } }
-
-  function toUser(svg, clientX, clientY) {
+  function toUser(svg, cx, cy) {
     var r = svg.getBoundingClientRect();
-    return { x: (clientX - r.left) / r.width * VB_W, y: (clientY - r.top) / r.height * VB_H };
+    return { x: (cx - r.left) / r.width * VB_W, y: (cy - r.top) / r.height * VB_H };
   }
 
   maps.forEach(function(svg) {
     svg.addEventListener('wheel', function(e) {
       e.preventDefault();
       var p = toUser(svg, e.clientX, e.clientY);
-      var factor = Math.exp(-e.deltaY * 0.0015);
       var k0 = view.k;
-      view.k = Math.max(1, Math.min(40, k0 * factor));
-      // hold the point under the cursor fixed
+      view.k = Math.max(1, Math.min(40, k0 * Math.exp(-e.deltaY * 0.0015)));
       view.x = p.x - (p.x - view.x) * (view.k / k0);
       view.y = p.y - (p.y - view.y) * (view.k / k0);
       clampView(); schedule();

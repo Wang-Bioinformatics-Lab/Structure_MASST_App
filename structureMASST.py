@@ -16,7 +16,7 @@ from rdkit import Chem
 from PIL import Image
 import base64
 import io
-from bin.workflow_stepwise import retrieve_raw_data_matches
+from bin.workflow_stepwise import retrieve_raw_data_matches, filter_analogues_to_parent_datasets
 from bin.mgf_utils import parse_mgf_bytes
 from bin.run_masstRecords_queries import get_library_table, get_masst_and_redu_tables, _get_fetcher
 from bin.match_smiles import detect_smiles_or_smarts, neutralize_atoms, tautomerize_smiles
@@ -1456,6 +1456,15 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                         do_elimination = st.checkbox("Elimination search", value=True, key="do_elimination")
                     with col_add:
                         do_addition = st.checkbox("Addition search", value=True, key="do_addition")
+                    analogues_same_dataset = st.checkbox(
+                        "Only analogues found in a dataset that also contains the unmodified compound",
+                        value=False,
+                        key="analogues_same_dataset",
+                        help=(
+                            "A modification is more credible when the parent compound is present in the "
+                            "same study. Unmodified matches are always kept."
+                        ),
+                    )
                     sub_col1, col_or, sub_col2 = st.columns([2,0.5,2])
                     with sub_col1:
                         modification_formula = st.text_input("Modification formula", placeholder="O for hydroxylation", key="modification_formula")
@@ -1741,6 +1750,11 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 redu_df["query_name"] = name
 
                             new_results[name] = {"masst": pd.DataFrame(), "redu": redu_df}
+
+                    # optionally drop analogues from datasets without the parent compound
+                    if st.session_state.get("analogues_same_dataset"):
+                        for _nm, _pair in new_results.items():
+                            _pair["redu"] = filter_analogues_to_parent_datasets(_pair["redu"])
 
                     # store the results in session state
                 st.session_state.raw_results = new_results

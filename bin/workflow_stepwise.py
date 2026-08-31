@@ -288,6 +288,33 @@ def retrieve_raw_data_matches(
     return raw_matches, redu_enriched
     
 
+
+def filter_analogues_to_parent_datasets(df, delta_col="Unit Delta Mass"):
+    """
+    Keep an analogue only where the unmodified compound was found in the same dataset.
+
+    A modification is far more credible when the parent is demonstrably present in the
+    same study, so this drops modified matches from datasets that never yielded a
+    delta-0 hit. Unmodified matches are always kept. Returns df untouched when the
+    result did not come from a modification search.
+    """
+    if df is None or len(df) == 0 or delta_col not in getattr(df, "columns", []):
+        return df
+
+    ds_col = next((c for c in ("ATTRIBUTE_DatasetAccession", "Dataset") if c in df.columns), None)
+    if ds_col is None:
+        print("[analogue filter] no dataset column; skipping")
+        return df
+
+    delta = pd.to_numeric(df[delta_col], errors="coerce")
+    parent_datasets = set(df.loc[delta == 0, ds_col].dropna())
+    keep = (delta == 0) | (delta.isna()) | (df[ds_col].isin(parent_datasets))
+
+    print(f"[analogue filter] {int(keep.sum())}/{len(df)} rows kept "
+          f"({len(parent_datasets)} datasets contain the unmodified compound)")
+    return df[keep].copy()
+
+
 def add_redu(
     raw_matches: pd.DataFrame,
     redu_df: pd.DataFrame,
