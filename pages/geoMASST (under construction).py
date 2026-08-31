@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 import os
 import streamlit.components.v1 as components
 import sys 
@@ -44,9 +45,23 @@ output_folder = st.session_state["_session_output_folder"]
 
 if st.session_state.get("raw_results"):
     names = list(st.session_state.raw_results.keys())
-    selected_name = st.selectbox("Select chemical", names, key="result_name")
-    
-    selected_tab = st.session_state.raw_results[selected_name]
+    ALL = "All molecules"
+    # A TSV search leaves one entry per molecule; mapping them together is the
+    # point of that search, so it is the default whenever there is more than one.
+    options = ([ALL] + names) if len(names) > 1 else names
+    selected_name = st.selectbox("Select chemical", options, key="result_name")
+
+    if selected_name == ALL:
+        max_molecule_maps = st.slider(
+            "Maximum separate molecule maps", min_value=1, max_value=20, value=5,
+            help=("One map shows every molecule at once, sized by how many were matched "
+                  "at each site. Pick molecules in the side list to split them out; this "
+                  "caps how many of the best-matched molecules get their own map."),
+        )
+    else:
+        max_molecule_maps = 5
+
+    selected_tab = None if selected_name == ALL else st.session_state.raw_results[selected_name]
 
     if st.button("Run GeoMASST", key="run_geomasst_btn"):
         # Tracking this action
@@ -57,7 +72,19 @@ if st.session_state.get("raw_results"):
         
 
         with st.spinner("Running GeoMASST…"):
-            df_redu = st.session_state.raw_results[selected_name]["redu"]
+            if selected_name == ALL:
+                frames = []
+                for _name, _pair in st.session_state.raw_results.items():
+                    _df = _pair.get("redu")
+                    if _df is None or len(_df) == 0:
+                        continue
+                    _df = _df.copy()
+                    if "query_name" not in _df.columns:
+                        _df["query_name"] = _name
+                    frames.append(_df)
+                df_redu = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+            else:
+                df_redu = st.session_state.raw_results[selected_name]["redu"]
 
             # background layer: environmental ReDU rows we did NOT hit
             df_context = load_environmental_context(df_redu)
@@ -66,6 +93,7 @@ if st.session_state.get("raw_results"):
                 df_hits=df_redu,
                 df_background=df_context,
                 compound_name=selected_name,
+                max_molecule_maps=max_molecule_maps,
             )
 
     if st.session_state.get("_geomasst_html"):

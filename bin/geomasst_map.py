@@ -214,7 +214,8 @@ def _clean(s: pd.Series) -> pd.Series:
     return out.mask(out.str.lower().isin(MISSING))
 
 
-def _prepare(df: pd.DataFrame, env_col: str, facet_col: Optional[str] = None) -> pd.DataFrame:
+def _prepare(df: pd.DataFrame, env_col: str, facet_col: Optional[str] = None,
+             mol_col: Optional[str] = None) -> pd.DataFrame:
     """Parse coordinates, material, date and depth into one tidy frame."""
     if df is None or len(df) == 0:
         return pd.DataFrame()
@@ -257,6 +258,9 @@ def _prepare(df: pd.DataFrame, env_col: str, facet_col: Optional[str] = None) ->
     ds_col = next((c for c in ("ATTRIBUTE_DatasetAccession", "Dataset") if c in work.columns), None)
     out["dataset"] = _clean(work[ds_col])[ok] if ds_col else None
 
+    if mol_col and mol_col in work.columns:
+        out["mol"] = _clean(work[mol_col])[ok]
+
     if facet_col and facet_col in work.columns:
         out["facet"] = pd.to_numeric(work[facet_col], errors="coerce")[ok]
         out = out[out["facet"].notna()]
@@ -283,6 +287,7 @@ def _aggregate(tidy: pd.DataFrame, max_markers: Optional[int], by: tuple = ()) -
             zmin=("depth", "min"),
             zmax=("depth", "max"),
             datasets=("dataset", _datasets),
+            **({"nmol": ("mol", "nunique")} if "mol" in tidy.columns else {}),
         )
         .sort_values("n", ascending=False)
         .reset_index(drop=True)
@@ -334,6 +339,10 @@ def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float,
         attrs.append(f'data-rn="{r_n}"')
         attrs.append(f'data-rd="{r_d}"')
         attrs.append(f'data-n="{int(r["n"])}"')
+        n_mol = int(r["nmol"]) if "nmol" in agg.columns and pd.notna(r.get("nmol")) else 0
+        if n_mol:
+            attrs.append(f'data-nmol="{n_mol}"')
+            attrs.append(f'data-rm="{_radius(n_mol, scale * 1.9, floor=floor)}"')
         attrs.append(f'data-nalt="{int(n_alt)}"')
         if layer == "hit":
             attrs.append(f'fill="{color}"')
@@ -345,6 +354,8 @@ def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float,
         # true coordinates, so the browser can re-project when the tile base map
         # (Web Mercator) replaces the bundled vectors (equirectangular)
         attrs.append(f'data-lat="{float(r["lat"]):.5f}" data-lon="{float(r["lon"]):.5f}"')
+        if "mol" in agg.columns and isinstance(r.get("mol"), str):
+            attrs.append(f'data-mol="{html.escape(r["mol"], quote=True)}"')
         if "facet" in agg.columns and pd.notna(r["facet"]):
             attrs.append(f'data-delta="{int(round(float(r["facet"])))}"')
 
@@ -499,6 +510,8 @@ def build_geomasst_map_html(
     compound_name: str = "",
     max_markers: int = 6000,
     facet_col: str = "Unit Delta Mass",
+    molecule_col: str = "query_name",
+    max_molecule_maps: int = 5,
     show_context: bool = True,
     show_detail: bool = False,
     max_dams: Optional[int] = None,
@@ -521,14 +534,24 @@ def build_geomasst_map_html(
                   the neighbourhood of the matches); None keeps all of them
     """
     has_facet = bool(facet_col) and facet_col in getattr(df_hits, "columns", [])
-    tidy_hits = _prepare(df_hits, env_col, facet_col if has_facet else None)
+    has_mol = bool(molecule_col) and molecule_col in getattr(df_hits, "columns", [])
+    tidy_hits = _prepare(df_hits, env_col, facet_col if has_facet else None,
+                         molecule_col if has_mol else None)
 
+    multi_mol = (
+        has_mol and not tidy_hits.empty and "mol" in tidy_hits.columns
+        and tidy_hits["mol"].nunique() > 1
+    )
     analog = (
-        has_facet and not tidy_hits.empty and "facet" in tidy_hits.columns
+        not multi_mol
+        and has_facet and not tidy_hits.empty and "facet" in tidy_hits.columns
         and tidy_hits["facet"].nunique() > 1
     )
 
+    max_molecule_maps = max(1, min(int(max_molecule_maps or 5), 20))
+    # combined view first: one marker per site, however many molecules hit it
     hits = _aggregate(tidy_hits, max_markers, by=("facet",) if analog else ())
+    hits_by_mol = _aggregate(tidy_hits, max_markers, by=("mol",)) if multi_mol else pd.DataFrame()
     bg = _aggregate(_prepare(df_background, env_col), max_markers)
 
     # ---- colors ----
@@ -567,7 +590,7 @@ def build_geomasst_map_html(
     cards, side = [], []
     hit_no_date = hit_no_depth = 0
 
-    def _card(idx, label, part, kind, delta=None):
+    def _card(idx, label, part, kind, delta=None, mol=None):
         nonlocal hit_no_date, hit_no_depth
         svg, nd, nz = _circles(part, colors, "hit", scale=2.6, color_key=color_key,
                                alt_colors=material_colors, site_analogues=site_analogues)
@@ -583,8 +606,10 @@ def build_geomasst_map_html(
             '<g class="dams-live"></g>'
         ) if detail else ''
         attr_delta = "" if delta is None else f' data-delta="{int(round(float(delta)))}"'
+        # the card needs the molecule too, or the side list has nothing to match on
+        attr_mol = "" if mol is None else f' data-mol="{html.escape(str(mol), quote=True)}"'
         cards.append(
-            f'<div class="facet" data-facet="{idx}" data-kind="{kind}"{attr_delta}>'
+            f'<div class="facet" data-facet="{idx}" data-kind="{kind}"{attr_delta}{attr_mol}>'
             f'<div class="facet-head"><span class="facet-name">{html.escape(label)}</span>'
             f'<span class="facet-meta">{n_mark:,} sites &middot; {n_samp:,} files</span></div>'
             f'<svg class="fmap" viewBox="0 0 {VB_W:.0f} {VB_H:.0f}" preserveAspectRatio="xMidYMid meet">'
@@ -594,7 +619,23 @@ def build_geomasst_map_html(
         )
         return n_samp
 
-    if not analog:
+    if multi_mol:
+        # the molecules with the most matched files earn their own map
+        order = (hits_by_mol.groupby("mol")["n"].sum().sort_values(ascending=False)
+                 if not hits_by_mol.empty else pd.Series(dtype=float))
+        chosen_mols = [str(m) for m in order.index[:max_molecule_maps]]
+        n_mols_total = int(tidy_hits["mol"].nunique())
+        _card(0, f"All molecules ({n_mols_total})", hits, "combined")
+        for idx, mol in enumerate(chosen_mols, start=1):
+            part = hits_by_mol[hits_by_mol["mol"] == mol]
+            n = _card(idx, mol, part, "mol", mol=mol)
+            side.append(
+                f'<label class="side-item" data-mol="{html.escape(str(mol), quote=True)}">'
+                f'<span class="sw" style="background:{PALETTE[(idx - 1) % len(PALETTE)]}"></span>'
+                f'<span class="side-name">{html.escape(str(mol))}</span>'
+                f'<span class="side-count">{n:,}</span></label>'
+            )
+    elif not analog:
         _card(0, compound_name or "All matches", hits, "single")
     else:
         idx = 0
@@ -707,7 +748,7 @@ def build_geomasst_map_html(
     cfg = json.dumps({
         "dateLo": date_lo, "dateHi": date_hi,
         "zLo": z_lo, "zHi": z_hi,
-        "hasDates": has_dates, "hasDepth": has_depth,
+        "hasDates": has_dates, "hasDepth": has_depth, "multiMol": multi_mol,
         "dateTrueLo": date_true_lo, "dateTrueHi": date_true_hi,
         "zTrueLo": z_true_lo, "zTrueHi": z_true_hi,
         "analog": analog,
@@ -727,9 +768,17 @@ def build_geomasst_map_html(
         .replace("__DELTA_LEGEND__", delta_legend)
         .replace("__COLORBY_STYLE__", "" if analog else "display:none")
         .replace("__SIDE__", "".join(side))
-        .replace("__SIDE_STYLE__", "" if analog else "display:none")
-        .replace("__LAYOUT_CLASS__", "layout" if analog else "layout no-side")
-        .replace("__GRID_CLASS__", "grid" if analog else "single")
+        .replace("__SIDE_STYLE__", "" if (analog or multi_mol) else "display:none")
+        .replace("__SIDE_TITLE__", "Molecules" if multi_mol else "Modifications")
+        .replace("__SIDE_HINT__", (
+            "Showing every molecule on one map, sized by how many were matched at each site. "
+            f"Pick molecules to give each its own map (up to {max_molecule_maps})."
+            if multi_mol else
+            "Showing the parent and all analogues together. Pick deltas to give each its own map."))
+        .replace("__LAYOUT_CLASS__", "layout" if (analog or multi_mol) else "layout no-side")
+        .replace("__GRID_CLASS__", "grid" if (analog or multi_mol) else "single")
+        .replace("__SIZE_MOL_STYLE__", "" if multi_mol else "display:none")
+        .replace("__SIZE_MOL_SELECTED__", "selected" if multi_mol else "")
         .replace("__CTX_CLASS__", "" if show_context else "no-ctx")
         .replace("__CTX_CHECKED__", "checked" if show_context else "")
         .replace("__DETAIL_ROW_STYLE__", "" if detail else "display:none")
@@ -763,6 +812,8 @@ _TEMPLATE = r"""<!doctype html>
 * { box-sizing:border-box; }
 body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
 .wrap { padding:4px 2px 10px; }
+.wrap:fullscreen { background:var(--paper); overflow:auto; padding:10px 16px 16px; }
+body.is-full .maps.grid { grid-template-columns:repeat(auto-fit,minmax(520px,1fr)); }
 /* The component scrolls inside its own frame and the maps are tall, so the
    controls would scroll out of sight above them - easy to miss entirely. */
 .controls { position:sticky; top:0; z-index:20; background:var(--paper);
@@ -971,6 +1022,7 @@ body.tiles-on .basemap, body.tiles-on .detail { display:none; }
     <select id="sizeMode" class="dropdown">
       <option value="n">matched files</option>
       <option value="nalt">distinct analogues</option>
+      <option value="nmol" style="__SIZE_MOL_STYLE__" __SIZE_MOL_SELECTED__>molecules at site</option>
     </select>
     <span class="bar-label" style="__COLORBY_STYLE__">color by</span>
     <select id="colorMode" class="dropdown" style="__COLORBY_STYLE__">
@@ -988,6 +1040,7 @@ body.tiles-on .basemap, body.tiles-on .detail { display:none; }
     <label class="undated-toggle" style="margin:0 0 0 6px"><input type="checkbox" id="useTiles">
       <span>Street base map (loads external tiles)</span></label>
     <button class="time-btn" id="btnResetZoom">Reset zoom</button>
+    <button class="time-btn" id="btnFullscreen">Full screen</button>
     <span class="bar-label" id="zoomLabel"></span>
   </div>
 
@@ -1001,8 +1054,8 @@ body.tiles-on .basemap, body.tiles-on .detail { display:none; }
 
   <div class="__LAYOUT_CLASS__">
     <aside class="side" style="__SIDE_STYLE__">
-      <h3>Modifications</h3>
-      <p class="side-hint">Showing the parent and all analogues together. Pick deltas to give each its own map.</p>
+      <h3>__SIDE_TITLE__</h3>
+      <p class="side-hint">__SIDE_HINT__</p>
       <div id="sideList">__SIDE__</div>
       <div class="side-actions">
         <button class="time-btn" id="btnSideAll">Each</button>
@@ -1095,9 +1148,10 @@ __CTX_DATA__
 
   // ---------- bubble size: matched files, or how many modifications hit that site ----------
   function applySize() {
-    var key = (sizeMode && sizeMode.value === 'nalt') ? 'data-rd' : 'data-rn';
+    var v = sizeMode ? sizeMode.value : 'n';
+    var key = v === 'nalt' ? 'data-rd' : v === 'nmol' ? 'data-rm' : 'data-rn';
     allPts.forEach(function(el) {
-      var v = el.getAttribute(key);
+      var v = el.getAttribute(key) || el.getAttribute('data-rn');
       if (v !== null) el.setAttribute('data-r', v);
     });
     schedule();
@@ -1280,6 +1334,7 @@ __CTX_DATA__
       var kind = card.dataset.kind, on = true;
       if (kind === 'combined') on = picked.size === 0;
       else if (kind === 'delta') on = picked.has(card.dataset.delta);
+      else if (kind === 'mol') on = picked.has(card.dataset.mol);
       card.classList.toggle('off', !on);
       // a map with nothing left after the date/depth windows drops out
       var n = card.querySelectorAll('.hits .pt:not(.hidden)').length;
@@ -1287,7 +1342,10 @@ __CTX_DATA__
     });
     damKey = '';
     sideItems.forEach(function(it) {
-      var card = document.querySelector('.facet[data-kind="delta"][data-delta="' + it.dataset.delta + '"]');
+      var sel = it.dataset.delta !== undefined
+        ? '.facet[data-kind="delta"][data-delta="' + it.dataset.delta + '"]'
+        : '.facet[data-kind="mol"][data-mol="' + (window.CSS && CSS.escape ? CSS.escape(it.dataset.mol) : it.dataset.mol) + '"]';
+      var card = document.querySelector(sel);
       var n = card ? card.querySelectorAll('.hits .pt:not(.hidden)').length : 0;
       it.classList.toggle('empty', n === 0);
       var c = it.querySelector('.side-count');
@@ -1297,7 +1355,7 @@ __CTX_DATA__
 
   sideItems.forEach(function(it) {
     it.addEventListener('click', function() {
-      var d = it.dataset.delta;
+      var d = it.dataset.delta !== undefined ? it.dataset.delta : it.dataset.mol;
       if (picked.has(d)) { picked.delete(d); it.classList.remove('on'); }
       else { picked.add(d); it.classList.add('on'); }
       refreshLayout();
@@ -1305,13 +1363,36 @@ __CTX_DATA__
   });
   var bAll = document.getElementById('btnSideAll'), bNone = document.getElementById('btnSideNone');
   if (bAll) bAll.addEventListener('click', function() {
-    sideItems.forEach(function(it) { picked.add(it.dataset.delta); it.classList.add('on'); });
+    sideItems.forEach(function(it) {
+      picked.add(it.dataset.delta !== undefined ? it.dataset.delta : it.dataset.mol);
+      it.classList.add('on');
+    });
     refreshLayout();
   });
   if (bNone) bNone.addEventListener('click', function() {
     picked.clear(); sideItems.forEach(function(it) { it.classList.remove('on'); });
     refreshLayout();
   });
+
+  // ---------- full screen ----------
+  var wrap = document.querySelector('.wrap');
+  var btnFull = document.getElementById('btnFullscreen');
+  if (btnFull) {
+    btnFull.addEventListener('click', function() {
+      if (document.fullscreenElement) {
+        (document.exitFullscreen || document.webkitExitFullscreen || function() {}).call(document);
+      } else {
+        var req = wrap.requestFullscreen || wrap.webkitRequestFullscreen;
+        if (req) req.call(wrap);
+      }
+    });
+    document.addEventListener('fullscreenchange', function() {
+      var on = !!document.fullscreenElement;
+      btnFull.textContent = on ? 'Exit full screen' : 'Full screen';
+      document.body.classList.toggle('is-full', on);
+      remeasure();
+    });
+  }
 
   // ---------- no-hit context sites, drawn as one path ----------
   var ctxEl = document.getElementById('ctxData');
