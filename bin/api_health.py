@@ -5,11 +5,17 @@ import requests
 import sys
 
 HERE = os.path.dirname(__file__)
-PKG_PATH = os.path.abspath(os.path.join(HERE, "..", "external", "GNPSDataPackage"))
+REPO_ROOT = os.path.abspath(os.path.join(HERE, ".."))
+PKG_PATH = os.path.join(REPO_ROOT, "external", "GNPSDataPackage")
 if PKG_PATH not in sys.path:
     sys.path.insert(0, PKG_PATH)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from gnpsdata import fasst
+
+# single source of truth, shared with the query path in bin/run_fasst.py
+from bin.run_fasst import FASST_NONTERMINAL_STATUS
 
 FASST_API_SERVER_URL = os.environ.get("FASST_API_SERVER_URL", "https://api.fasst.gnps2.org")
 
@@ -18,7 +24,7 @@ def get_results(task_id, host="https://api.fasst.gnps2.org", retries_max=120, sl
     """
     Minimal poller:
       - returns dict once results are ready
-      - treats PENDING as pending
+      - treats any non-terminal status (PENDING, RUNNING, ...) as pending
       - treats NOT_FOUND as pending for a few tries (eventual consistency), then errors
       - treats payloads with 'results' as ready even if 'status' is missing
     """
@@ -51,7 +57,11 @@ def get_results(task_id, host="https://api.fasst.gnps2.org", retries_max=120, sl
 
         status = j.get("status")
 
-        if status == "PENDING":
+        # The API reports RUNNING (not PENDING) for an in-flight task. Falling through
+        # to the "return as-is" branch below handed the caller a bare
+        # {"status", "message"} payload, which counted as zero results and made the
+        # health check declare the whole FASST API down.
+        if status in FASST_NONTERMINAL_STATUS:
             time.sleep(sleep_s)
             continue
 
