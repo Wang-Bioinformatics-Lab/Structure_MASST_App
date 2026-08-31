@@ -18,6 +18,14 @@ if PKG_PATH not in sys.path:
 from gnpsdata import fasst
 
 
+# FASST reports these while a task is still in flight; only a payload carrying
+# "results" is terminal. Kept as an allowlist of non-terminal states so a new
+# intermediate status shows up as a timeout rather than as a silent empty result.
+FASST_NONTERMINAL_STATUS = {"PENDING", "RUNNING", "QUEUED", "STARTED", "PROGRESS"}
+FASST_POLL_INTERVAL = 2      # seconds between polls
+FASST_POLL_TIMEOUT = 900     # seconds to wait for one query before giving up
+
+
 
 def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
                     matching_peaks=6, modimass=None, elimination=False, addition=False, log_output=None):
@@ -31,14 +39,35 @@ def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
     try:
         print(f"Submitting FASST query for USI {usi} with status {status}")
         
-        # minimal NOT_FOUND grace retries
+        # Poll until the task reaches a terminal state.
+        # gnpsdata.fasst.get_results() only re-polls while the API reports "PENDING",
+        # but the FASST API reports "RUNNING" for an in-flight task, which falls
+        # straight through and comes back here as a bare {"status", "message"} payload
+        # with no "results" key. Treat anything that is not a result as "keep polling".
         response = None
-        for _ in range(10):  # ~10s grace window
+        notfound_retries = 0
+        deadline = time.time() + FASST_POLL_TIMEOUT
+        while True:
             response = fasst.get_results(status, blocking=True)  # pass the SAME host you submitted to
-            if response.get("status") == "NOT_FOUND" and response.get("error") == "Invalid Task ID":
-                time.sleep(1)
+            resp_status = response.get("status") if isinstance(response, dict) else None
+
+            # task id not registered yet, right after submission
+            if resp_status == "NOT_FOUND" and response.get("error") == "Invalid Task ID":
+                notfound_retries += 1
+                if notfound_retries <= 10:  # ~10s grace window
+                    time.sleep(1)
+                    continue
+
+            if "results" not in response and resp_status in FASST_NONTERMINAL_STATUS:
+                if time.time() >= deadline:
+                    raise RuntimeError(
+                        f"Timed out after {FASST_POLL_TIMEOUT}s waiting for FASST task "
+                        f"{status.get('task_id')} (last status {resp_status})"
+                    )
+                time.sleep(FASST_POLL_INTERVAL)
                 continue
-            elif 'error' in response:
+
+            if 'error' in response:
                 if log_output:
                     with open(os.path.join(log_output, f"{usi}_error.log"), "w") as f:
                         json.dump(response, f)
