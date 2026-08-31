@@ -84,8 +84,7 @@ def _label_group(gid: str, points: list, cls: str, dx: float = 2.2, dy: float = 
     return f'<g id="{gid}">{txt}</g>'
 
 
-def _detail_svg(max_cities: int = 90, max_countries: int = 177,
-                max_dams: int = 2600, max_dam_labels: int = 600) -> str:
+def _detail_svg(max_cities: int = 90, max_countries: int = 177) -> str:
     """Borders, rivers, lakes, countries, cities and dams, drawn under the markers."""
     borders, lakes, rivers = _read_asset(BORDERS_FILE), _read_asset(LAKES_FILE), _read_asset(RIVERS_FILE)
     out = []
@@ -101,7 +100,6 @@ def _detail_svg(max_cities: int = 90, max_countries: int = 177,
         f'<circle class="ne-city" cx="{c["x"]}" cy="{c["y"]}" r="0.9"></circle>' for c in cities))
 
     countries = _load_points(COUNTRY_LABELS_FILE, max_countries)
-    dams = _load_points(DAMS_FILE, max_dams)
 
     if not out:
         return ""
@@ -109,17 +107,32 @@ def _detail_svg(max_cities: int = 90, max_countries: int = 177,
     # Each layer that toggles independently needs its own referenced group: document
     # CSS can style a <use> element, but elements inside a referenced subtree do not
     # re-render when an ancestor selector starts or stops matching.
-    dam_marks = "".join(
-        f'<circle class="ne-dam" cx="{d["x"]}" cy="{d["y"]}" r="0.85"></circle>' for d in dams)
     return (
         f'<g id="gm-detail">{"".join(out)}</g>'
         + _label_group("gm-country-labels", countries, "ne-country-label", dx=0, dy=0)
         + _label_group("gm-city-labels", cities, "ne-city-label")
-        + (f'<g id="gm-dams">{dam_marks}</g>' if dam_marks else "")
-        # every dam gets a mark, but only the largest are named - the file is sorted
-        # by height, and labelling all 2.5k turns dense regions into a grey smear
-        + _label_group("gm-dam-labels", dams[:max_dam_labels], "ne-dam-label", dx=1.8, dy=1.2)
     )
+
+
+def _dam_payload(max_dams: Optional[int] = None) -> str:
+    """
+    Dam coordinates and names, embedded as data rather than markup.
+
+    There are far too many to put in the DOM - the page draws only the ones inside
+    the current viewport, once you are zoomed in far enough for them to mean
+    anything. The file is ordered so that a capped viewport keeps the notable ones.
+    """
+    raw = _read_asset(DAMS_FILE)
+    if not raw:
+        return ""
+    if max_dams is not None:
+        try:
+            data = json.loads(raw)
+            data = {"c": data["c"][: max_dams * 2], "n": data["n"][:max_dams]}
+            raw = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+        except (ValueError, KeyError, TypeError):
+            pass
+    return f'<script type="application/json" id="damData">{raw}</script>'
 
 
 def _project(lat: pd.Series, lon: pd.Series):
@@ -434,6 +447,7 @@ def build_geomasst_map_html(
     facet_col: str = "Unit Delta Mass",
     show_context: bool = True,
     show_detail: bool = False,
+    max_dams: Optional[int] = None,
 ) -> str:
     """
     Build a standalone HTML document for embedding with streamlit.components.v1.html.
@@ -448,7 +462,9 @@ def build_geomasst_map_html(
     df_background environmental ReDU sites with no hit, drawn as hollow context markers
     show_context  initial state of the "sites without hits" toggle
     show_detail   initial state of the detailed-basemap toggle (borders, rivers,
-                  lakes and major cities); off by default so the plain map stays quiet
+                  lakes, countries, cities and dams); off by default
+    max_dams      trim the embedded dam list (ordered tallest first) when page
+                  weight matters more than coverage; None ships all of them
     """
     has_facet = bool(facet_col) and facet_col in getattr(df_hits, "columns", [])
     tidy_hits = _prepare(df_hits, env_col, facet_col if has_facet else None)
@@ -507,10 +523,9 @@ def build_geomasst_map_html(
                      else f'<g class="ctx ctx-layer">{bg_svg}</g>')
         detail_layer = (
             '<use href="#gm-detail" class="detail"></use>'
-            '<use href="#gm-dams" class="detail dams"></use>'
             '<use href="#gm-country-labels" class="detail country-labels"></use>'
             '<use href="#gm-city-labels" class="detail city-labels"></use>'
-            '<use href="#gm-dam-labels" class="detail dam-labels"></use>'
+            '<g class="dams-live"></g>'
         ) if detail else ''
         attr_delta = "" if delta is None else f' data-delta="{int(round(float(delta)))}"'
         cards.append(
@@ -672,6 +687,7 @@ def build_geomasst_map_html(
         .replace("__DETAIL_CHECKED__", "checked" if (show_detail and detail) else "")
         .replace("__DETAIL_CLASS__", " detail-on" if (show_detail and detail) else "")
         .replace("__DEFS__", defs)
+        .replace("__DAM_DATA__", _dam_payload(max_dams) if detail else "")
         .replace("__CARDS__", "".join(cards))
     )
 
@@ -797,7 +813,7 @@ body.no-ctx .ctx-layer { display:none; }
    coastline detail stays hairline instead of thickening as you zoom. */
 .detail { display:none; }
 body.detail-on .detail { display:inline; }
-.ne-river { fill:none; stroke:var(--river); stroke-width:.6; opacity:.6; vector-effect:non-scaling-stroke; }
+.ne-river { fill:none; stroke:var(--river); stroke-width:1.1; opacity:.9; vector-effect:non-scaling-stroke; }
 .ne-lake { fill:var(--lake); stroke:var(--river); stroke-width:.5; opacity:.9; vector-effect:non-scaling-stroke; }
 /* Country outlines are solid and warm-neutral; rivers are thin, cool and
    semi-transparent, so the two never read as the same kind of line. */
@@ -816,14 +832,11 @@ body.detail-on .detail { display:inline; }
   paint-order:stroke; stroke:var(--ocean); stroke-width:2.2; vector-effect:non-scaling-stroke; }
 /* Each label set has its own zoom threshold, so the map fills in as you go deeper
    instead of turning to mush at world scale. */
-.country-labels, .city-labels, .dams, .dam-labels { opacity:0; transition:opacity .15s; }
-.country-labels { font-size:5px; }
-.city-labels { font-size:4.6px; }
-.dam-labels { font-size:3.6px; }
-body.z2 .country-labels { opacity:.8; }
+.country-labels, .city-labels { opacity:0; transition:opacity .15s; }
+.dams-live { opacity:.95; }
+body:not(.detail-on) .dams-live { display:none; }
+body.z2 .country-labels { opacity:.85; }
 body.zoomed-in .city-labels { opacity:.95; }
-body.z4 .dams { opacity:.95; }
-body.z6 .dam-labels { opacity:.9; }
 #tooltip { position:fixed; pointer-events:none; background:var(--ink); color:var(--paper);
   font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; line-height:1.5; padding:8px 10px;
   border-radius:6px; white-space:pre-wrap; box-shadow:var(--shadow); opacity:0;
@@ -889,6 +902,8 @@ body.z6 .dam-labels { opacity:.9; }
       <span>Show sites with no hit</span></label>
     <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDetail" __DETAIL_CHECKED__>
       <span>Detailed base map</span></label>
+    <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="damsNear" checked>
+      <span>Dams near matches only</span></label>
     <button class="time-btn" id="btnResetZoom">Reset zoom</button>
     <span class="bar-label" id="zoomLabel"></span>
   </div>
@@ -919,6 +934,7 @@ body.z6 .dam-labels { opacity:.9; }
   </div>
 </div>
 <svg width="0" height="0" style="position:absolute"><defs>__DEFS__</defs></svg>
+__DAM_DATA__
 <div id="tooltip"></div>
 <script>
 (function() {
@@ -968,6 +984,7 @@ body.z6 .dam-labels { opacity:.9; }
   }
   var showCtx = document.getElementById('showCtx');
   var showDetail = document.getElementById('showDetail');
+  var damsNear = document.getElementById('damsNear');
   var sizeMode = document.getElementById('sizeMode');
   var colorMode = document.getElementById('colorMode');
 
@@ -1104,6 +1121,7 @@ body.z6 .dam-labels { opacity:.9; }
 
     dimBars(dateBars, tLo, tHi);
     dimBars(depthBars, zLo, zHi);
+    visibleHitStamp++;
 
     refreshLayout();
   }
@@ -1116,6 +1134,7 @@ body.z6 .dam-labels { opacity:.9; }
   });
   if (showDetail) showDetail.addEventListener('change', function() {
     document.body.classList.toggle('detail-on', showDetail.checked);
+    damKey = ''; renderDams();
   });
 
   function setTimeFromCutoff(years) {
@@ -1157,6 +1176,7 @@ body.z6 .dam-labels { opacity:.9; }
       var n = card.querySelectorAll('.hits .pt:not(.hidden)').length;
       card.classList.toggle('empty', n === 0);
     });
+    damKey = '';
     sideItems.forEach(function(it) {
       var card = document.querySelector('.facet[data-kind="delta"][data-delta="' + it.dataset.delta + '"]');
       var n = card ? card.querySelectorAll('.hits .pt:not(.hidden)').length : 0;
@@ -1188,8 +1208,6 @@ body.z6 .dam-labels { opacity:.9; }
   var zoomGroups = Array.from(document.querySelectorAll('.zoom'));
   var cityLabelUses = Array.from(document.querySelectorAll('.city-labels'));
   var cityDots = Array.from(document.querySelectorAll('#gm-detail .ne-city'));
-  var damDots = Array.from(document.querySelectorAll('#gm-dams .ne-dam'));
-  cityDots.concat(damDots).forEach(function(c) { c.setAttribute('data-r', c.getAttribute('r')); });
   var countryLabelUses = Array.from(document.querySelectorAll('.country-labels'));
   var damLabelUses = Array.from(document.querySelectorAll('.dam-labels'));
   var maps = Array.from(document.querySelectorAll('.fmap'));
@@ -1205,30 +1223,112 @@ body.z6 .dam-labels { opacity:.9; }
   }
   function render() {
     pending = false;
+    measure();
     var t = 'translate(' + view.x.toFixed(2) + ' ' + view.y.toFixed(2) + ') scale(' + view.k.toFixed(4) + ')';
     zoomGroups.forEach(function(g) { g.setAttribute('transform', t); });
     allPts.forEach(function(el) {
       el.setAttribute('r', Math.max(0.25, parseFloat(el.getAttribute('data-r')) / view.k).toFixed(3));
     });
     // labels and city dots are in the base map, but they read at screen size too
-    cityLabelUses.forEach(function(u) { u.style.fontSize = (4.6 / view.k).toFixed(3) + 'px'; });
-    countryLabelUses.forEach(function(u) { u.style.fontSize = (5 / view.k).toFixed(3) + 'px'; });
-    damLabelUses.forEach(function(u) { u.style.fontSize = (3.6 / view.k).toFixed(3) + 'px'; });
-    cityDots.forEach(function(c) {
-      c.setAttribute('r', Math.max(0.15, parseFloat(c.getAttribute('data-r')) / view.k).toFixed(3));
-    });
-    // dams only render past 4x, so there is no point paying for 2.5k writes below it
-    if (view.k >= 4) damDots.forEach(function(c) {
-      c.setAttribute('r', Math.max(0.15, parseFloat(c.getAttribute('data-r')) / view.k).toFixed(3));
-    });
+    // Base-map type is sized in screen pixels. Sizing it in user units made every
+    // label render at roughly 0.6 px per unit - a 4.6 unit label came out under 3 px
+    // and was effectively invisible.
+    cityLabelUses.forEach(function(u) { u.style.fontSize = unitsForPx(10.5).toFixed(3) + 'px'; });
+    countryLabelUses.forEach(function(u) { u.style.fontSize = unitsForPx(11.5).toFixed(3) + 'px'; });
+    damLabelUses.forEach(function(u) { u.style.fontSize = unitsForPx(9.5).toFixed(3) + 'px'; });
+    var cityR = unitsForPx(2.4).toFixed(3);
+    cityDots.forEach(function(c) { c.setAttribute('r', cityR); });
     if (zoomLabel) zoomLabel.textContent = view.k > 1.01 ? view.k.toFixed(1) + '×' : '';
     document.body.classList.toggle('z2', view.k >= 2);
     document.body.classList.toggle('zoomed-in', view.k >= 3);
-    document.body.classList.toggle('z4', view.k >= 4);
-    document.body.classList.toggle('z6', view.k >= 6);
     updateCatLegend();
+    scheduleDams();
   }
   function schedule() { if (!pending) { pending = true; requestAnimationFrame(render); } }
+
+  // ---------- dams, drawn for the current viewport only ----------
+  // Tens of thousands of them exist; putting them all in the DOM would stall the
+  // page, and at world scale they would be a grey smear. Below DAM_ZOOM nothing is
+  // drawn at all, so panning around a zoomed-out map costs nothing.
+  var DAM_ZOOM = 2, DAM_LABEL_ZOOM = 4, DAM_MARK_CAP = 4000;
+  var damEl = document.getElementById('damData');
+  var damData = { c: [], n: [] };
+  if (damEl) { try { damData = JSON.parse(damEl.textContent); } catch (e) {} }
+  var damTimer = null, damKey = '';
+  function esc(t) {
+    return String(t).replace(/[&<>"]/g, function(c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  function renderDams() {
+    var groups = Array.from(document.querySelectorAll('.facet:not(.off):not(.empty) .dams-live'));
+    var all = Array.from(document.querySelectorAll('.dams-live'));
+    if (!all.length) return;
+    var on = view.k >= DAM_ZOOM && document.body.classList.contains('detail-on');
+    if (!on) {
+      if (damKey !== '') { damKey = ''; all.forEach(function(g) { g.innerHTML = ''; }); }
+      return;
+    }
+    var x0 = -view.x / view.k, x1 = (-view.x + VB_W) / view.k;
+    var y0 = -view.y / view.k, y1 = (-view.y + VB_H) / view.k;
+    var withLabels = view.k >= DAM_LABEL_ZOOM;
+    var key = [x0.toFixed(2), y0.toFixed(2), x1.toFixed(2), withLabels,
+               damsNear && damsNear.checked, visibleHitStamp].join('|');
+    if (key === damKey) return;
+    damKey = key;
+
+    var r = unitsForPx(2.6), fs = unitsForPx(9.5);
+
+    // Dams anywhere is a lot of noise, and most of them sit on water too small to
+    // appear in a 110m lakes / 50m rivers base map - which is why they looked like
+    // they were in the middle of dry land. Restricted to the neighbourhood of the
+    // matches, they read as context for the samples instead of decoration.
+    var near = damsNear && damsNear.checked;
+    var hx = [], hy = [];
+    if (near) {
+      document.querySelectorAll('.facet:not(.off):not(.empty) .hits .pt').forEach(function(el) {
+        if (el.classList.contains('hidden')) return;
+        hx.push(+el.getAttribute('cx')); hy.push(+el.getAttribute('cy'));
+      });
+    }
+    // ~1.2 viewBox units is roughly 50 km at the equator
+    var NEAR_R = 1.2, NEAR_R2 = NEAR_R * NEAR_R;
+    function nearHit(x, y) {
+      for (var j = 0; j < hx.length; j++) {
+        var dx = x - hx[j], dy = y - hy[j];
+        if (dx * dx + dy * dy <= NEAR_R2) return true;
+      }
+      return false;
+    }
+    // Labels are thinned on a grid rather than by a flat cap. A cap simply takes
+    // the first N found, which in a dense region silently drops whatever sorts
+    // last - the Danube run-of-river dams, for instance, which carry no recorded
+    // height. One label per cell keeps the coverage even, keeps names off each
+    // other, and lets a dam surface as soon as it is alone in its cell.
+    var cellW = unitsForPx(230), cellH = unitsForPx(22);
+    var taken = withLabels ? Object.create(null) : null;
+    var c = damData.c, n = damData.n, marks = [], labels = [], i, x, y, cell;
+    for (i = 0; i < n.length && marks.length < DAM_MARK_CAP; i++) {
+      x = c[2 * i]; y = c[2 * i + 1];
+      if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+      if (near && !nearHit(x, y)) continue;
+      marks.push('<circle class="ne-dam" cx="' + x + '" cy="' + y + '" r="' + r.toFixed(3) +
+                 '" data-tip="' + esc(n[i]) + '\ndam"></circle>');
+      if (!withLabels) continue;
+      cell = Math.round(x / cellW) + ':' + Math.round(y / cellH);
+      if (taken[cell]) continue;
+      taken[cell] = 1;
+      labels.push('<text class="ne-dam-label" x="' + (x + r * 1.7).toFixed(2) +
+                  '" y="' + (y + r * 1.1).toFixed(2) + '" style="font-size:' + fs.toFixed(3) +
+                  'px">' + esc(n[i]) + '</text>');
+    }
+    var html = marks.join('') + labels.join('');
+    all.forEach(function(g) { g.innerHTML = ''; });
+    groups.forEach(function(g) { g.innerHTML = html; });
+  }
+  function scheduleDams() { clearTimeout(damTimer); damTimer = setTimeout(renderDams, 110); }
+  var visibleHitStamp = 0;
+  if (damsNear) damsNear.addEventListener('change', function() { damKey = ''; renderDams(); });
 
   // Sample types among the markers currently on screen: zoom into a region and the
   // legend narrows to what was actually matched there.
@@ -1256,6 +1356,16 @@ body.z6 .dam-labels { opacity:.9; }
     if (legendLabel) legendLabel.textContent = items.length
       ? (view.k > 1.01 ? 'sample types in view' : 'sample types matched') : 'nothing in view';
   }
+  // px per viewBox unit at the current layout width, before the zoom transform
+  var pxPerUnit = 1;
+  function measure() {
+    var m = document.querySelector('.facet:not(.off):not(.empty) .fmap') || document.querySelector('.fmap');
+    pxPerUnit = m ? (m.getBoundingClientRect().width / VB_W) || 1 : 1;
+  }
+  function unitsForPx(px) { return px / (view.k * pxPerUnit); }
+  measure();
+  window.addEventListener('resize', function() { measure(); schedule(); });
+
   function toUser(svg, cx, cy) {
     var r = svg.getBoundingClientRect();
     return { x: (cx - r.left) / r.width * VB_W, y: (cy - r.top) / r.height * VB_H };
