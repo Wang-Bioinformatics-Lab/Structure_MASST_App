@@ -26,13 +26,14 @@ import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets")
-LAND_PATH_FILE = os.path.join(ASSETS, "world_land_110m_equirect.path")
+LAND_PATH_FILE = os.path.join(ASSETS, "world_land_50m_equirect.path")
 # optional detail layers, all pre-projected into the same 960x480 viewBox
-# (Natural Earth, public domain: 110m borders, 10m lakes and rivers plus their
-# European supplements, populated places). The coarse 50m rivers / 110m lakes that
-# came first carried 462 rivers and 24 lakes worldwide, so most dams sat on water
-# the map simply did not draw.
-BORDERS_FILE = os.path.join(ASSETS, "world_borders_110m_equirect.path")
+# (Natural Earth, public domain: 10m borders, lakes and rivers plus the European
+# river/lake supplements, 50m coastline, populated places). Everything started at
+# the coarsest 110m tier, which gave 462 rivers and 24 lakes worldwide and about
+# nine points per national boundary - hence dams on apparently dry land and
+# borders that read as crude polylines beside the finer water.
+BORDERS_FILE = os.path.join(ASSETS, "world_borders_10m_equirect.path")
 LAKES_FILE = os.path.join(ASSETS, "world_lakes_10m_equirect.path")
 RIVERS_FILE = os.path.join(ASSETS, "world_rivers_10m_equirect.json")
 CITIES_FILE = os.path.join(ASSETS, "world_cities_equirect.json")
@@ -729,14 +730,14 @@ _TEMPLATE = r"""<!doctype html>
 :root {
   --paper:#eef3f8; --surface:#fff; --surface-2:#f4f7fa; --ink:#16232f; --ink-soft:#3d4d5c;
   --muted:#6b7c8c; --rule:#d7e0e8; --accent:#1d6fa5; --land:#c9d4de; --land-stroke:#a9bac8;
-  --ocean:#dde8f1; --ctx:#93a6b6; --river:#8fb4cc; --lake:#cfe0ee; --border:#8d7f72; --city:#5d6c7a; --country:#7d6f62; --dam:#146c74;
+  --ocean:#dde8f1; --ctx:#61798c; --river:#8fb4cc; --lake:#cfe0ee; --border:#8d7f72; --city:#5d6c7a; --country:#7d6f62; --dam:#146c74;
   --shadow:0 1px 2px rgba(22,35,47,.06),0 4px 16px rgba(22,35,47,.05);
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --paper:#0d1620; --surface:#141e29; --surface-2:#182430; --ink:#eaf1f7; --ink-soft:#c3d0dc;
     --muted:#8ea0b0; --rule:#29394a; --accent:#5b9ce8; --land:#2c3b48; --land-stroke:#435466;
-    --ocean:#0f1c28; --ctx:#5c7386; --river:#3f6c8c; --lake:#1b3346; --border:#8a7a6a; --city:#93a6b6; --country:#a39484; --dam:#3fb6c0;
+    --ocean:#0f1c28; --ctx:#8ba6bd; --river:#3f6c8c; --lake:#1b3346; --border:#8a7a6a; --city:#93a6b6; --country:#a39484; --dam:#3fb6c0;
     --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.35);
   }
 }
@@ -835,9 +836,9 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
 .pt.hit:hover { opacity:1; }
 /* context markers are hollow, so their ring IS the mark - keep it, but non-scaling
    so it stays hairline at every zoom level */
-.pt.bg { stroke:var(--ctx); stroke-width:.9; opacity:.3; pointer-events:all;
+.pt.bg { stroke:var(--ctx); stroke-width:1.2; opacity:.8; pointer-events:all;
   vector-effect:non-scaling-stroke; }
-.pt.bg:hover { opacity:.7; }
+.pt.bg:hover { opacity:1; stroke-width:1.8; }
 .pt.hidden { display:none; }
 body.no-ctx .ctx-layer { display:none; }
 /* detailed basemap: off unless the page opts in. Strokes are non-scaling so the
