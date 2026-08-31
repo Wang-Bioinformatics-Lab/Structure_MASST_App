@@ -26,16 +26,13 @@ import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets")
-LAND_PATH_FILE = os.path.join(ASSETS, "world_land_50m_equirect.path")
+BASEMAP_LOD_FILE = os.path.join(ASSETS, "world_basemap_lod.json")
 # optional detail layers, all pre-projected into the same 960x480 viewBox
 # (Natural Earth, public domain: 10m borders, lakes and rivers plus the European
 # river/lake supplements, 50m coastline, populated places). Everything started at
 # the coarsest 110m tier, which gave 462 rivers and 24 lakes worldwide and about
 # nine points per national boundary - hence dams on apparently dry land and
 # borders that read as crude polylines beside the finer water.
-BORDERS_FILE = os.path.join(ASSETS, "world_borders_10m_equirect.path")
-LAKES_FILE = os.path.join(ASSETS, "world_lakes_10m_equirect.path")
-RIVERS_FILE = os.path.join(ASSETS, "world_rivers_10m_equirect.json")
 CITIES_FILE = os.path.join(ASSETS, "world_cities_equirect.json")
 COUNTRY_LABELS_FILE = os.path.join(ASSETS, "world_country_labels_equirect.json")
 # Dams from Wikidata (CC0), kept to those with a recorded height of 30 m or more.
@@ -64,10 +61,6 @@ def _read_asset(path: str) -> str:
         return ""
 
 
-def _load_land_path() -> str:
-    return _read_asset(LAND_PATH_FILE)
-
-
 def _load_points(path: str, limit: int) -> list:
     raw = _read_asset(path)
     if not raw:
@@ -89,42 +82,58 @@ def _label_group(gid: str, points: list, cls: str, dx: float = 2.2, dy: float = 
 
 
 def _detail_svg(max_cities: int = 90, max_countries: int = 177) -> str:
-    """Borders, rivers, lakes, countries, cities and dams, drawn under the markers."""
-    borders, lakes = _read_asset(BORDERS_FILE), _read_asset(LAKES_FILE)
-    out = []
-    # rivers come in four width classes so a trunk river does not read like a ditch
-    raw_rivers = _read_asset(RIVERS_FILE)
-    if raw_rivers:
-        try:
-            rivers = json.loads(raw_rivers)
-        except ValueError:
-            rivers = {}
-        for cls in ("4", "3", "2", "1"):        # thin first, so trunks draw on top
-            d = rivers.get(cls)
-            if d:
-                out.append(f'<path class="ne-river ne-river-{cls}" d="{d}"></path>')
-    if lakes:
-        out.append(f'<path class="ne-lake" d="{lakes}"></path>')
-    if borders:
-        out.append(f'<path class="ne-border" d="{borders}"></path>')
-
+    """City dots and the label groups. The line and fill geometry is no longer
+    markup - see _basemap_payload."""
     cities = _load_points(CITIES_FILE, max_cities)
-    out.append("".join(
-        f'<circle class="ne-city" cx="{c["x"]}" cy="{c["y"]}" r="0.9"></circle>' for c in cities))
-
     countries = _load_points(COUNTRY_LABELS_FILE, max_countries)
-
-    if not out:
+    if not cities and not countries:
         return ""
-
-    # Each layer that toggles independently needs its own referenced group: document
-    # CSS can style a <use> element, but elements inside a referenced subtree do not
-    # re-render when an ancestor selector starts or stops matching.
+    dots = "".join(
+        f'<circle class="ne-city" cx="{c["x"]}" cy="{c["y"]}" r="0.9"></circle>' for c in cities)
     return (
-        f'<g id="gm-detail">{"".join(out)}</g>'
+        f'<g id="gm-detail">{dots}</g>'
         + _label_group("gm-country-labels", countries, "ne-country-label", dx=0, dy=0)
         + _label_group("gm-city-labels", cities, "ne-city-label")
     )
+
+
+def _context_payload(bg: pd.DataFrame) -> str:
+    """
+    The no-hit sites as data rather than one circle each.
+
+    As elements they were 1,178 nodes per map, and every one of them is re-rendered
+    whenever the zoom group's transform changes - the dominant cost of a drag. The
+    page draws them as a single path instead, rebuilt only when the filters or the
+    zoom level change.
+    """
+    if bg is None or bg.empty:
+        return ""
+    recs = []
+    for _, r in bg.iterrows():
+        rec = [round(float(r["lat"]), 4), round(float(r["lon"]), 4),
+               _radius(r["n"], 2.0), int(r["n"])]
+        d0 = r["dmin"]; d1 = r["dmax"]; z0 = r["zmin"]; z1 = r["zmax"]
+        rec.append(_fmt_date(d0) if pd.notna(d0) else None)
+        rec.append(_fmt_date(d1) if pd.notna(d1) else None)
+        rec.append(None if pd.isna(z0) else round(float(z0), 1))
+        rec.append(None if pd.isna(z1) else round(float(z1), 1))
+        recs.append(rec)
+    body = json.dumps(recs, separators=(",", ":"))
+    return f'<script type="application/json" id="ctxData">{body}</script>'
+
+
+def _basemap_payload() -> str:
+    """
+    Coastline, borders, rivers and lakes as data rather than markup.
+
+    Drawn as static paths this was 262,000 points sitting inside the zoom
+    transform, re-rasterised on every frame in every visible map - about 690 ms per
+    drag event. The file carries a coarse whole-world tier for the default view and
+    a 32x16 grid of cells for zoomed views, and the page inserts only what the
+    viewport needs.
+    """
+    raw = _read_asset(BASEMAP_LOD_FILE)
+    return f'<script type="application/json" id="baseMapData">{raw}</script>' if raw else ""
 
 
 def _dam_payload(hits: pd.DataFrame, radius: float = 1.2,
@@ -537,7 +546,9 @@ def build_geomasst_map_html(
             .groupby(["lat", "lon"])["facet"].nunique().to_dict()
         )
 
-    bg_svg, bg_no_date, bg_no_depth = _circles(bg, colors, "bg", scale=2.0)
+    # counted here, but drawn from data - see _context_payload
+    bg_no_date = 0 if bg.empty else int(bg["dmin"].isna().sum())
+    bg_no_depth = 0 if bg.empty else int(bg["zmin"].isna().sum())
 
     detail_svg = _detail_svg()
     detail = bool(detail_svg)
@@ -554,8 +565,7 @@ def build_geomasst_map_html(
         hit_no_depth += nz
         n_mark = 0 if part.empty else len(part)
         n_samp = 0 if part.empty else int(part["n"].sum())
-        ctx_layer = ('<use href="#gm-ctx" class="ctx-layer"></use>' if analog
-                     else f'<g class="ctx ctx-layer">{bg_svg}</g>')
+        ctx_layer = '<g class="ctx-layer"></g>' 
         detail_layer = (
             '<use href="#gm-detail" class="detail"></use>'
             '<use href="#gm-country-labels" class="detail country-labels"></use>'
@@ -569,7 +579,7 @@ def build_geomasst_map_html(
             f'<span class="facet-meta">{n_mark:,} sites &middot; {n_samp:,} files</span></div>'
             f'<svg class="fmap" viewBox="0 0 {VB_W:.0f} {VB_H:.0f}" preserveAspectRatio="xMidYMid meet">'
             f'<rect x="0" y="0" width="{VB_W:.0f}" height="{VB_H:.0f}" fill="var(--ocean)"></rect>'
-            f'<g class="zoom"><g class="tiles"></g><use href="#gm-land"></use>{detail_layer}{ctx_layer}'
+            f'<g class="zoom"><g class="tiles"></g><g class="basemap"></g>{detail_layer}{ctx_layer}'
             f'<g class="hits">{svg}</g></g></svg></div>'
         )
         return n_samp
@@ -693,13 +703,7 @@ def build_geomasst_map_html(
         "analog": analog,
     })
 
-    defs = (f'<g id="gm-land"><path d="{_load_land_path()}" fill="var(--land)" '
-            f'stroke="var(--land-stroke)" stroke-width="0.8" '
-            f'vector-effect="non-scaling-stroke"></path></g>')
-    if detail:
-        defs += detail_svg
-    if analog:
-        defs += f'<g id="gm-ctx">{bg_svg}</g>'
+    defs = detail_svg if detail else ""
 
     return (
         _TEMPLATE
@@ -723,6 +727,8 @@ def build_geomasst_map_html(
         .replace("__DETAIL_CLASS__", " detail-on" if (show_detail and detail) else "")
         .replace("__DEFS__", defs)
         .replace("__DAM_DATA__", _dam_payload(hits, max_dams=max_dams) if detail else "")
+        .replace("__BASEMAP_DATA__", _basemap_payload())
+        .replace("__CTX_DATA__", _context_payload(bg))
         .replace("__CARDS__", "".join(cards))
     )
 
@@ -839,15 +845,20 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
 .pt.hit:hover { opacity:1; }
 /* context markers are hollow, so their ring IS the mark - keep it, but non-scaling
    so it stays hairline at every zoom level */
-.pt.bg { stroke:var(--ctx); stroke-width:1.2; opacity:.8; pointer-events:all;
-  vector-effect:non-scaling-stroke; }
-.pt.bg:hover { opacity:1; stroke-width:1.8; }
+.ctx-path { fill:none; stroke:var(--ctx); stroke-width:1.2; opacity:.8;
+  vector-effect:non-scaling-stroke; pointer-events:none; }
 .pt.hidden { display:none; }
+body.interacting .basemap path, body.interacting .pt, body.interacting .ne-dam,
+body.interacting .ne-city { shape-rendering:optimizeSpeed; }
+body.interacting .ne-city-label, body.interacting .ne-dam-label,
+body.interacting .ne-country-label { display:none; }
 body.no-ctx .ctx-layer { display:none; }
 /* detailed basemap: off unless the page opts in. Strokes are non-scaling so the
    coastline detail stays hairline instead of thickening as you zoom. */
 .detail { display:none; }
 body.detail-on .detail { display:inline; }
+.ne-land { fill:var(--land); stroke:var(--land-stroke); stroke-width:.8;
+  vector-effect:non-scaling-stroke; }
 .ne-river { fill:none; stroke:var(--river); opacity:.9; vector-effect:non-scaling-stroke;
   stroke-linecap:round; stroke-linejoin:round; }
 /* Natural Earth scalerank: 1 is the Amazon and the Nile, 2 the Danube, 4 the Rhine */
@@ -885,7 +896,7 @@ body.zoomed-in .city-labels { opacity:.95; }
 .credits a:hover { color:var(--accent); }
 .tiles image { image-rendering:auto; }
 body.tiles-on .detail, body.tiles-on .ctx-layer .pt.bg { }
-body.tiles-on #gm-land, body.tiles-on .detail { display:none; }
+body.tiles-on .basemap, body.tiles-on .detail { display:none; }
 #tooltip { position:fixed; pointer-events:none; background:var(--ink); color:var(--paper);
   font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; line-height:1.5; padding:8px 10px;
   border-radius:6px; white-space:pre-wrap; box-shadow:var(--shadow); opacity:0;
@@ -990,6 +1001,8 @@ body.tiles-on #gm-land, body.tiles-on .detail { display:none; }
 </div>
 <svg width="0" height="0" style="position:absolute"><defs>__DEFS__</defs></svg>
 __DAM_DATA__
+__BASEMAP_DATA__
+__CTX_DATA__
   <p class="credits">
     Base map data <a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener">Natural Earth</a>
     (public domain). Dams from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>
@@ -1197,6 +1210,9 @@ __DAM_DATA__
     dimBars(dateBars, tLo, tHi);
     dimBars(depthBars, zLo, zHi);
     visibleHitStamp++;
+    ctxWin = { ws: wStart, we: wEnd, keepUndated: keepUndated,
+               zl: zWLo, zh: zWHi, keepNoDepth: keepNoDepth };
+    renderContext(ctxWin);
 
     refreshLayout();
   }
@@ -1206,6 +1222,7 @@ __DAM_DATA__
   showNoDepth.addEventListener('change', applyFilters);
   if (showCtx) showCtx.addEventListener('change', function() {
     document.body.classList.toggle('no-ctx', !showCtx.checked);
+    ctxKey = ''; renderContext(ctxWin);
   });
   if (showDetail) showDetail.addEventListener('change', function() {
     document.body.classList.toggle('detail-on', showDetail.checked);
@@ -1279,6 +1296,110 @@ __DAM_DATA__
     refreshLayout();
   });
 
+  // ---------- no-hit context sites, drawn as one path ----------
+  var ctxEl = document.getElementById('ctxData');
+  var ctxData = [];
+  if (ctxEl) { try { ctxData = JSON.parse(ctxEl.textContent); } catch (e) {} }
+  var ctxKey = '';
+  function renderContext(win) {
+    var layers = Array.from(document.querySelectorAll('.ctx-layer'));
+    if (!layers.length) return;
+    var vis = Array.from(document.querySelectorAll('.facet:not(.off):not(.empty) .ctx-layer'));
+    var on = !document.body.classList.contains('no-ctx') && ctxData.length;
+    if (!on) { if (ctxKey !== 'off') { ctxKey = 'off'; layers.forEach(function(g) { g.innerHTML = ''; }); } return; }
+    var key = [win.ws, win.we, win.keepUndated, win.zl, win.zh, win.keepNoDepth,
+               view.k.toFixed(3), tilesOn(),
+               (view.x / view.k).toFixed(1), (view.y / view.k).toFixed(1)].join('|');
+    if (key === ctxKey) return;
+    ctxKey = key;
+    var merc = tilesOn(), d = [], scale = 1 / view.k, minR = unitsForPx(0.6);
+    // Cull to the viewport and collapse rings that would land on the same few
+    // pixels: at world zoom the full set is 1,173 overlapping rings, which cost
+    // more to draw than they show.
+    var x0 = -view.x / view.k, x1 = (-view.x + VB_W) / view.k;
+    var y0 = -view.y / view.k, y1 = (-view.y + viewH()) / view.k;
+    var cell = unitsForPx(7), taken = Object.create(null);
+    for (var i = 0; i < ctxData.length; i++) {
+      var c = ctxData[i];
+      var timeOk = (c[4] && c[5])
+        ? (Date.parse(c[5]) >= win.ws && Date.parse(c[4]) <= win.we) : win.keepUndated;
+      if (!timeOk) continue;
+      var depthOk = (c[6] !== null && c[7] !== null)
+        ? (c[7] >= win.zl && c[6] <= win.zh) : win.keepNoDepth;
+      if (!depthOk) continue;
+      var x = merc ? mercX(c[1]) : (c[1] + 180) / 360 * VB_W;
+      var y = merc ? mercY(c[0]) : (90 - c[0]) / 180 * VB_H;
+      if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+      var ck = Math.round(x / cell) + ':' + Math.round(y / cell);
+      if (taken[ck]) continue;
+      taken[ck] = 1;
+      var r = Math.max(minR, c[2] * scale);
+      // one ring as two arcs, so the whole layer is a single element
+      d.push('M' + (x - r).toFixed(3) + ',' + y.toFixed(3) +
+             'a' + r.toFixed(3) + ',' + r.toFixed(3) + ' 0 1,0 ' + (2 * r).toFixed(3) + ',0' +
+             'a' + r.toFixed(3) + ',' + r.toFixed(3) + ' 0 1,0 ' + (-2 * r).toFixed(3) + ',0');
+    }
+    var html = d.length ? '<path class="ctx-path" d="' + d.join('') + '"></path>' : '';
+    layers.forEach(function(g) { if (vis.indexOf(g) < 0) g.innerHTML = ''; });
+    vis.forEach(function(g) { g.innerHTML = html; });
+  }
+
+  // ---------- base map, drawn for the current viewport ----------
+  // Coarse whole-world geometry below BASE_FINE_ZOOM, then only the grid cells the
+  // viewport touches. Keeping all of it in the DOM cost ~690 ms per drag event.
+  var BASE_FINE_ZOOM = 5;
+  var baseEl = document.getElementById('baseMapData');
+  var baseData = null;
+  if (baseEl) { try { baseData = JSON.parse(baseEl.textContent); } catch (e) {} }
+  var baseKey = '';
+  var LAYERS = [
+    ['land', 'ne-land'], ['l', 'ne-lake'],
+    ['r4', 'ne-river ne-river-4'], ['r3', 'ne-river ne-river-3'],
+    ['r2', 'ne-river ne-river-2'], ['r1', 'ne-river ne-river-1'],
+    ['b', 'ne-border']
+  ];
+  function renderBase() {
+    if (!baseData) return;
+    var groups = Array.from(document.querySelectorAll('.facet:not(.off):not(.empty) .basemap'));
+    var all = Array.from(document.querySelectorAll('.basemap'));
+    if (!all.length) return;
+    if (tilesOn()) {
+      if (baseKey !== 'off') { baseKey = 'off'; all.forEach(function(g) { g.innerHTML = ''; }); }
+      return;
+    }
+    var fine = view.k >= BASE_FINE_ZOOM;
+    var gx = baseData.grid[0], gy = baseData.grid[1];
+    var cw = VB_W / gx, ch = VB_H / gy;
+    var key, parts = {};
+    if (!fine) {
+      key = 'coarse';
+      LAYERS.forEach(function(L) { parts[L[0]] = baseData.coarse[L[0]] || ''; });
+    } else {
+      var x0 = -view.x / view.k, x1 = (-view.x + VB_W) / view.k;
+      var y0 = -view.y / view.k, y1 = (-view.y + viewH()) / view.k;
+      var i0 = Math.max(0, Math.floor(x0 / cw)), i1 = Math.min(gx - 1, Math.floor(x1 / cw));
+      var j0 = Math.max(0, Math.floor(y0 / ch)), j1 = Math.min(gy - 1, Math.floor(y1 / ch));
+      key = 'f' + i0 + ',' + j0 + ',' + i1 + ',' + j1;
+      if (key === baseKey) return;
+      for (var j = j0; j <= j1; j++) {
+        for (var i = i0; i <= i1; i++) {
+          var cell = baseData.cells[i + '_' + j];
+          if (!cell) continue;
+          for (var k in cell) { parts[k] = (parts[k] || '') + cell[k]; }
+        }
+      }
+    }
+    if (key === baseKey) return;
+    baseKey = key;
+    var html = '';
+    LAYERS.forEach(function(L) {
+      var d = parts[L[0]];
+      if (d) html += '<path class="' + L[1] + '" d="' + d + '"></path>';
+    });
+    all.forEach(function(g) { if (g !== groups[0]) g.innerHTML = ''; });
+    groups.forEach(function(g) { g.innerHTML = html; });
+  }
+
   // ---------- optional Carto street base map ----------
   // The bundled vectors are equirectangular; XYZ tiles are Web Mercator, so they
   // cannot simply be laid underneath. Turning tiles on switches the whole map to
@@ -1341,7 +1462,7 @@ __DAM_DATA__
     groups.forEach(function(g) { g.innerHTML = html; });
   }
   if (useTiles) useTiles.addEventListener('change', function() {
-    reproject(); render(); renderTiles(); renderDams();
+    reproject(); baseKey = ''; render(); renderBase(); renderTiles(); renderDams();
   });
 
   // ---------- synchronized pan / zoom ----------
@@ -1362,9 +1483,9 @@ __DAM_DATA__
     view.x = Math.max(minX, Math.min(0, view.x));
     view.y = Math.max(minY, Math.min(0, view.y));
   }
+  var lastK = -1, wheelIdle = null;
   function render() {
     pending = false;
-    measure();
     var t = 'translate(' + view.x.toFixed(2) + ' ' + view.y.toFixed(2) + ') scale(' + view.k.toFixed(4) + ')';
     zoomGroups.forEach(function(g) { g.setAttribute('transform', t); });
     allPts.forEach(function(el) {
@@ -1385,6 +1506,8 @@ __DAM_DATA__
     document.body.classList.toggle('zoomed-in', view.k >= 3);
     updateCatLegend();
     scheduleDams();
+    renderContext(ctxWin);
+    renderBase();
     renderTiles();
   }
   function schedule() { if (!pending) { pending = true; requestAnimationFrame(render); } }
@@ -1475,6 +1598,9 @@ __DAM_DATA__
   // Sample types among the markers currently on screen: zoom into a region and the
   // legend narrows to what was actually matched there.
   var catLegend = document.getElementById('catLegend');
+  var catLegendKey = null;
+  var ctxWin = { ws: -Infinity, we: Infinity, keepUndated: true,
+                 zl: -Infinity, zh: Infinity, keepNoDepth: true };
   var legendLabel = document.getElementById('legendLabel');
   function updateCatLegend() {
     if (!catLegend) return;
@@ -1490,6 +1616,9 @@ __DAM_DATA__
       seen.get(c).n += +(el.getAttribute('data-n') || 1);
     });
     var items = [...seen.entries()].sort(function(a, b) { return b[1].n - a[1].n; });
+    var sig = items.map(function(e) { return e[0] + ':' + e[1].n; }).join('|');
+    if (sig === catLegendKey) return;
+    catLegendKey = sig;
     catLegend.innerHTML = items.map(function(e) {
       return '<span class="leg-item"><span class="sw" style="background:' + e[1].color +
              '"></span><span class="leg-name">' + e[0] +
@@ -1506,7 +1635,7 @@ __DAM_DATA__
   }
   function unitsForPx(px) { return px / (view.k * pxPerUnit); }
   measure();
-  window.addEventListener('resize', function() { measure(); schedule(); });
+  window.addEventListener('resize', function() { measure(); lastK = -1; baseKey = ''; schedule(); });
 
   function toUser(svg, cx, cy) {
     var r = svg.getBoundingClientRect();
@@ -1516,6 +1645,11 @@ __DAM_DATA__
   maps.forEach(function(svg) {
     svg.addEventListener('wheel', function(e) {
       e.preventDefault();
+      document.body.classList.add('interacting');
+      clearTimeout(wheelIdle);
+      wheelIdle = setTimeout(function() {
+        document.body.classList.remove('interacting'); lastK = -1; schedule();
+      }, 220);
       var p = toUser(svg, e.clientX, e.clientY);
       var k0 = view.k;
       view.k = Math.max(1, Math.min(MAX_ZOOM, k0 * Math.exp(-e.deltaY * 0.0015)));
@@ -1539,6 +1673,7 @@ __DAM_DATA__
       if (!drag.moved) {
         drag.moved = true;
         svg.classList.add('dragging');
+        document.body.classList.add('interacting');
         try { svg.setPointerCapture(e.pointerId); } catch (err) {}
       }
       view.x = drag.vx + dx / drag.rect.width * VB_W;
@@ -1553,6 +1688,8 @@ __DAM_DATA__
         }
         if (drag && drag.moved) { try { svg.releasePointerCapture(e.pointerId); } catch (err) {} }
         drag = null; svg.classList.remove('dragging');
+        document.body.classList.remove('interacting');
+        lastK = -1; schedule();
       });
     });
   });
