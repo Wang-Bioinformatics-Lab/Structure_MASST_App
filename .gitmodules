@@ -10,3 +10,7 @@
 	path = external/LifeMASST
 	url = https://github.com/YasinEl/LifeMASST.git
 	branch = big_update
+[submodule "external/GeoMASST"]
+	path = external/GeoMASST
+	url = https://github.com/Wang-Bioinformatics-Lab/GeoMASST.git
+	branch = dev
