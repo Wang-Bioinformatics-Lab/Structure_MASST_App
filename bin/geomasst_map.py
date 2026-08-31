@@ -206,7 +206,8 @@ def _radius(n: int, scale: float, floor: float = 0.0) -> float:
 
 
 def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float,
-             color_key: str = "cat") -> tuple:
+             color_key: str = "cat", alt_colors: Optional[dict] = None,
+             site_analogues: Optional[dict] = None) -> tuple:
     """Emit <circle> markup plus counts of markers missing date / depth."""
     if agg.empty:
         return "", 0, 0
@@ -218,7 +219,11 @@ def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float,
 
     for (_, r), px, py in zip(agg.iterrows(), x, y):
         cat = str(r["cat"])
-        color = colors.get(r[color_key] if color_key in agg.columns else cat, "#98a2ad")
+        key = r[color_key] if color_key in agg.columns else cat
+        color = colors.get(key, "#98a2ad")
+        alt_color = (alt_colors or {}).get(cat, "#98a2ad")
+        # how many distinct modifications were seen at this site, for the size option
+        n_alt = (site_analogues or {}).get((r["lat"], r["lon"]), 0)
 
         has_date = pd.notna(r["dmin"]) and pd.notna(r["dmax"])
         has_depth = pd.notna(r["zmin"]) and pd.notna(r["zmax"])
@@ -229,10 +234,20 @@ def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float,
 
         attrs = [
             f'class="pt {layer}"',
-            f'cx="{px:.1f}"', f'cy="{py:.1f}"', f'r="{_radius(r["n"], scale, floor=4.0 if layer == "hit" else 0.0)}"',
+            f'cx="{px:.1f}"', f'cy="{py:.1f}"',
         ]
+        floor = 4.0 if layer == "hit" else 0.0
+        r_n = _radius(r["n"], scale, floor=floor)
+        r_d = _radius(max(n_alt, 1), scale * 1.6, floor=floor)
+        attrs.append(f'r="{r_n}"')
+        attrs.append(f'data-rn="{r_n}"')
+        attrs.append(f'data-rd="{r_d}"')
+        attrs.append(f'data-n="{int(r["n"])}"')
+        attrs.append(f'data-nalt="{int(n_alt)}"')
         if layer == "hit":
             attrs.append(f'fill="{color}"')
+            attrs.append(f'data-cdelta="{color if color_key == "facet" else alt_color}"')
+            attrs.append(f'data-ccat="{alt_color if color_key == "facet" else color}"')
         else:
             attrs.append('fill="none"')  # stroke color comes from CSS, deliberately neutral
         attrs.append(f'data-cat="{html.escape(cat, quote=True)}"')
@@ -264,6 +279,7 @@ def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float,
             tip.append("no recorded depth/altitude")
         if isinstance(r["datasets"], str) and r["datasets"]:
             tip.append(r["datasets"])
+            attrs.append(f'data-ds="{html.escape(r["datasets"], quote=True)}"')
 
         attrs.append(f'data-tip="{html.escape(chr(10).join(tip), quote=True)}"')
         parts.append("<circle " + " ".join(attrs) + "></circle>")
@@ -309,6 +325,77 @@ def _delta_colors(deltas) -> dict:
         if d == 0:
             out[d] = PARENT_COLOR
     return out
+
+
+HIST_BINS = 48
+HIST_W, HIST_H = 480.0, 100.0
+
+
+def _to_secs(series) -> pd.Series:
+    """
+    Datetimes to epoch seconds, NaT preserved as NaN.
+
+    Subtracting the epoch rather than casting to int64: pandas 2 keeps datetime64[us]
+    here, so a cast yields microseconds and any fixed divisor is wrong by 1000x, and
+    NaT casts to a huge negative sentinel instead of NaN.
+    """
+    dt = pd.to_datetime(series, errors="coerce")
+    return (dt - pd.Timestamp("1970-01-01")).dt.total_seconds()
+
+
+def _bin_counts(agg, col_lo: str, col_hi: str, lo: float, hi: float, bins: int = HIST_BINS) -> list:
+    """
+    Count markers per bin across [lo, hi].
+
+    A marker covers a range (its samples' min..max), and the slider shows it whenever
+    that range overlaps the window - so the histogram counts a marker into every bin
+    its range touches, and reading a bar means the same thing as dragging to it.
+    """
+    counts = [0] * bins
+    if agg is None or len(agg) == 0 or col_lo not in agg.columns:
+        return counts
+    span = max(hi - lo, 1e-9)
+    a = pd.to_numeric(agg[col_lo], errors="coerce")
+    b = pd.to_numeric(agg[col_hi], errors="coerce")
+    for va, vb in zip(a, b):
+        if pd.isna(va) or pd.isna(vb):
+            continue
+        i0 = int(min(max((float(va) - lo) / span, 0.0), 0.999999) * bins)
+        i1 = int(min(max((float(vb) - lo) / span, 0.0), 0.999999) * bins)
+        for i in range(min(i0, i1), max(i0, i1) + 1):
+            counts[i] += 1
+    return counts
+
+
+def _histogram_svg(hit_counts: list, ctx_counts: list) -> str:
+    """
+    A small stacked distribution strip: context behind, hits in front.
+
+    Heights are square-rooted. One bin usually holds most of the markers, and on a
+    linear scale at this height every other bin flattens to an invisible sliver -
+    which defeats the point of showing the shape.
+    """
+    totals = [h + c for h, c in zip(hit_counts, ctx_counts)]
+    peak = max(totals) or 1
+    n = len(totals)
+    w = HIST_W / n
+
+    def _h(v):
+        return (math.sqrt(v / peak) * HIST_H) if v > 0 else 0.0
+
+    bars = []
+    for i, (h, tot) in enumerate(zip(hit_counts, totals)):
+        x = i * w
+        if tot:
+            th = _h(tot)
+            bars.append(f'<rect class="hbar hbar-tot" data-i="{i}" x="{x:.2f}" '
+                        f'y="{HIST_H - th:.2f}" width="{w:.2f}" height="{th:.2f}"></rect>')
+        if h:
+            hh = _h(h)
+            bars.append(f'<rect class="hbar hbar-hit" data-i="{i}" x="{x:.2f}" '
+                        f'y="{HIST_H - hh:.2f}" width="{w:.2f}" height="{hh:.2f}"></rect>')
+    return (f'<svg class="hist" viewBox="0 0 {HIST_W:.0f} {HIST_H:.0f}" preserveAspectRatio="none" '
+            f'aria-hidden="true">{"".join(bars)}</svg>')
 
 
 def build_geomasst_map_html(
@@ -364,6 +451,14 @@ def build_geomasst_map_html(
     colors = delta_colors if analog else material_colors
     color_key = "facet" if analog else "cat"
 
+    # distinct modifications seen at each site, for the "size by analogues" option
+    site_analogues = {}
+    if analog and not hits.empty:
+        site_analogues = (
+            hits[hits["facet"] != 0]
+            .groupby(["lat", "lon"])["facet"].nunique().to_dict()
+        )
+
     bg_svg, bg_no_date, bg_no_depth = _circles(bg, colors, "bg", scale=2.0)
 
     detail_svg = _detail_svg()
@@ -375,7 +470,8 @@ def build_geomasst_map_html(
 
     def _card(idx, label, part, kind, delta=None):
         nonlocal hit_no_date, hit_no_depth
-        svg, nd, nz = _circles(part, colors, "hit", scale=2.6, color_key=color_key)
+        svg, nd, nz = _circles(part, colors, "hit", scale=2.6, color_key=color_key,
+                               alt_colors=material_colors, site_analogues=site_analogues)
         hit_no_date += nd
         hit_no_depth += nz
         n_mark = 0 if part.empty else len(part)
@@ -431,37 +527,87 @@ def build_geomasst_map_html(
 
     has_dates = bool(dmins and dmaxs)
     has_depth = bool(zmins and zmaxs)
-    date_lo = _fmt_date(min(dmins)) if has_dates else "2000-01-01"
-    date_hi = _fmt_date(max(dmaxs)) if has_dates else "2030-01-01"
-    z_lo = float(min(zmins)) if has_depth else 0.0
-    z_hi = float(max(zmaxs)) if has_depth else 1.0
+
+    def _robust(frames, cols, q=0.01):
+        """
+        Slider domain from the 1st-99th percentile rather than the extremes.
+
+        A handful of sentinel-ish records (a 1905 collection date among data that is
+        otherwise 2010 onwards) would otherwise stretch the track over a century and
+        leave 99% of the markers inside a few percent of its travel - unusable, and a
+        histogram with nothing in it. The outliers stay reachable: a handle parked at
+        either end means unbounded, so the default full range still includes everything.
+        """
+        vals = pd.concat([pd.to_numeric(f[c], errors="coerce") for f in frames for c in cols
+                          if c in f.columns]).dropna()
+        if vals.empty:
+            return None, None, None, None
+        return vals.quantile(q), vals.quantile(1 - q), vals.min(), vals.max()
+
+    if has_dates:
+        _date_secs = _to_secs(pd.concat(
+            [f[c] for f in frames for c in ("dmin", "dmax") if c in f.columns]
+        )).dropna()
+        d_lo_s, d_hi_s = _date_secs.quantile(0.01), _date_secs.quantile(0.99)
+        d_true_lo, d_true_hi = _date_secs.min(), _date_secs.max()
+        if not (d_hi_s > d_lo_s):
+            d_lo_s, d_hi_s = d_true_lo, max(d_true_hi, d_true_lo + 86400)
+        date_lo = _fmt_date(pd.Timestamp(d_lo_s, unit="s"))
+        date_hi = _fmt_date(pd.Timestamp(d_hi_s, unit="s"))
+        date_true_lo = _fmt_date(pd.Timestamp(d_true_lo, unit="s"))
+        date_true_hi = _fmt_date(pd.Timestamp(d_true_hi, unit="s"))
+    else:
+        date_lo, date_hi = "2000-01-01", "2030-01-01"
+        date_true_lo, date_true_hi = date_lo, date_hi
+
+    if has_depth:
+        zl, zh, z_true_lo, z_true_hi = _robust(frames, ("zmin", "zmax"))
+        z_lo, z_hi = float(zl), float(zh)
+        z_true_lo, z_true_hi = float(z_true_lo), float(z_true_hi)
+    else:
+        z_lo, z_hi, z_true_lo, z_true_hi = 0.0, 1.0, 0.0, 1.0
     if z_hi <= z_lo:
         z_hi = z_lo + 1.0
 
-    if analog:
-        legend = "".join(
-            f'<span class="leg-item"><span class="sw" style="background:{PARENT_COLOR}"></span>'
-            f'<span class="leg-name">unmodified</span></span>'
-            if 0 in deltas else ""
-        ) + (
-            '<span class="leg-item"><span class="sw ramp-loss"></span>'
-            '<span class="leg-name">losses</span></span>'
-            '<span class="leg-item"><span class="sw ramp-gain"></span>'
-            '<span class="leg-name">additions</span></span>'
+    # date bins work in epoch seconds so the same binning code serves both sliders
+    def _epoch(frame, col):
+        if frame is None or frame.empty or col not in frame.columns:
+            return frame
+        return frame.assign(**{col: _to_secs(frame[col])})
+
+    if has_dates:
+        d_lo, d_hi = d_lo_s, d_hi_s
+        hits_d = _epoch(_epoch(hits, "dmin"), "dmax")
+        bg_d = _epoch(_epoch(bg, "dmin"), "dmax")
+        date_hist = _histogram_svg(
+            _bin_counts(hits_d, "dmin", "dmax", d_lo, d_hi),
+            _bin_counts(bg_d, "dmin", "dmax", d_lo, d_hi),
         )
-        legend_label = "deltas"
     else:
-        legend = "".join(
-            f'<span class="leg-item"><span class="sw" style="background:{material_colors[c]}"></span>'
-            f'<span class="leg-name">{html.escape(c)}</span></span>'
-            for c in hit_cats
-        )
-        legend_label = "hit materials" if hit_cats else ""
+        date_hist = ""
+
+    depth_hist = _histogram_svg(
+        _bin_counts(hits, "zmin", "zmax", z_lo, z_hi),
+        _bin_counts(bg, "zmin", "zmax", z_lo, z_hi),
+    ) if has_depth else ""
+
+    # The legend is rebuilt in the browser from the markers actually visible in the
+    # current viewport, so zooming into a region tells you what was matched there.
+    delta_legend = (
+        (f'<span class="leg-item"><span class="sw" style="background:{PARENT_COLOR}"></span>'
+         f'<span class="leg-name">unmodified</span></span>' if 0 in deltas else "")
+        + '<span class="leg-item"><span class="sw ramp-loss"></span>'
+          '<span class="leg-name">losses</span></span>'
+          '<span class="leg-item"><span class="sw ramp-gain"></span>'
+          '<span class="leg-name">additions</span></span>'
+    ) if analog else ""
 
     cfg = json.dumps({
         "dateLo": date_lo, "dateHi": date_hi,
         "zLo": z_lo, "zHi": z_hi,
         "hasDates": has_dates, "hasDepth": has_depth,
+        "dateTrueLo": date_true_lo, "dateTrueHi": date_true_hi,
+        "zTrueLo": z_true_lo, "zTrueHi": z_true_hi,
         "analog": analog,
     })
 
@@ -475,12 +621,14 @@ def build_geomasst_map_html(
     return (
         _TEMPLATE
         .replace("__CFG__", cfg)
+        .replace("__DATE_HIST__", date_hist)
+        .replace("__DEPTH_HIST__", depth_hist)
         .replace("__NO_DATE__", f"{n_no_date:,}")
         .replace("__NO_DEPTH__", f"{n_no_depth:,}")
-        .replace("__ZLO__", f"{z_lo:.0f}")
-        .replace("__ZHI__", f"{z_hi:.0f}")
-        .replace("__LEGEND_LABEL__", legend_label)
-        .replace("__LEGEND__", legend)
+        .replace("__ZLO__", f"{z_true_lo:.0f}")
+        .replace("__ZHI__", f"{z_true_hi:.0f}")
+        .replace("__DELTA_LEGEND__", delta_legend)
+        .replace("__COLORBY_STYLE__", "" if analog else "display:none")
         .replace("__SIDE__", "".join(side))
         .replace("__SIDE_STYLE__", "" if analog else "display:none")
         .replace("__LAYOUT_CLASS__", "layout" if analog else "layout no-side")
@@ -522,6 +670,11 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
 .time-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; flex-wrap:wrap; gap:6px 16px; }
 .time-label { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px; font-weight:600; }
 .time-window { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px; color:var(--accent); font-variant-numeric:tabular-nums; }
+.hist-wrap { margin:0 8px -2px; height:34px; }
+.hist { width:100%; height:100%; display:block; overflow:visible; }
+.hbar-tot { fill:var(--rule); }
+.hbar-hit { fill:var(--accent); }
+.hbar.dim { opacity:.28; }
 .slider-track { position:relative; height:32px; }
 .slider-track input[type=range] { position:absolute; top:9px; left:0; width:100%; height:14px; margin:0;
   background:transparent; pointer-events:none; -webkit-appearance:none; appearance:none; }
@@ -532,6 +685,8 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
   box-shadow:var(--shadow); cursor:grab; margin-top:-6px; }
 .slider-track input[type=range]::-moz-range-thumb { pointer-events:auto; width:16px; height:16px;
   border-radius:50%; background:var(--accent); border:2px solid var(--surface); box-shadow:var(--shadow); cursor:grab; }
+/* 8px = half the range thumb, the distance its centre is inset from the track edge */
+.slider-inner { position:absolute; left:8px; right:8px; top:0; bottom:0; }
 .slider-rail { position:absolute; top:14px; left:0; right:0; height:4px; background:var(--rule); border-radius:2px; }
 .slider-fill { position:absolute; top:14px; height:4px; background:var(--accent); border-radius:2px; }
 .undated-toggle { display:flex; align-items:flex-start; gap:8px; margin:8px 0 0; font-size:12px;
@@ -568,6 +723,17 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
 .side-item.empty { opacity:.32; }
 .side-actions { display:flex; gap:6px; margin-top:10px; }
 
+.info { position:relative; background:var(--surface); border:1px solid var(--accent);
+  border-radius:12px; box-shadow:var(--shadow); padding:12px 34px 12px 14px; margin:0 0 12px; }
+.info-body { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:6px 18px;
+  font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; }
+.info-row { display:flex; gap:8px; }
+.info-k { color:var(--muted); min-width:82px; }
+.info-v { color:var(--ink); overflow-wrap:anywhere; }
+.info-close { position:absolute; top:8px; right:10px; border:none; background:none; cursor:pointer;
+  color:var(--muted); font-size:17px; line-height:1; }
+.info-close:hover { color:var(--ink); }
+.pt.picked { stroke:var(--ink); stroke-width:2; vector-effect:non-scaling-stroke; }
 .maps { display:grid; gap:12px; }
 .maps.grid { grid-template-columns:repeat(auto-fit,minmax(400px,1fr)); }
 .maps.single { grid-template-columns:1fr; }
@@ -620,8 +786,9 @@ body.zoomed-in .city-labels { opacity:.95; }
         <span class="time-label">Collection date window</span>
         <span class="time-window" id="timeWindowLabel"></span>
       </div>
+      <div class="hist-wrap" id="dateHist">__DATE_HIST__</div>
       <div class="slider-track">
-        <div class="slider-rail"></div><div class="slider-fill" id="sliderFill"></div>
+        <div class="slider-inner"><div class="slider-rail"></div><div class="slider-fill" id="sliderFill"></div></div>
         <input type="range" id="rangeMin" min="0" max="1000" value="0">
         <input type="range" id="rangeMax" min="0" max="1000" value="1000">
       </div>
@@ -639,8 +806,9 @@ body.zoomed-in .city-labels { opacity:.95; }
         <span class="time-label">Depth / altitude window</span>
         <span class="time-window" id="depthWindowLabel"></span>
       </div>
+      <div class="hist-wrap" id="depthHist">__DEPTH_HIST__</div>
       <div class="slider-track">
-        <div class="slider-rail"></div><div class="slider-fill" id="depthFill"></div>
+        <div class="slider-inner"><div class="slider-rail"></div><div class="slider-fill" id="depthFill"></div></div>
         <input type="range" id="depthMin" min="0" max="1000" value="0">
         <input type="range" id="depthMax" min="0" max="1000" value="1000">
       </div>
@@ -655,14 +823,28 @@ body.zoomed-in .city-labels { opacity:.95; }
   </div>
 
   <div class="bar">
-    <span class="bar-label">__LEGEND_LABEL__</span>
-    __LEGEND__
+    <span class="bar-label">size by</span>
+    <select id="sizeMode" class="dropdown">
+      <option value="n">matched files</option>
+      <option value="nalt">distinct analogues</option>
+    </select>
+    <span class="bar-label" style="__COLORBY_STYLE__">color by</span>
+    <select id="colorMode" class="dropdown" style="__COLORBY_STYLE__">
+      <option value="delta">modification</option>
+      <option value="cat">sample type</option>
+    </select>
     <label class="undated-toggle" style="margin:0 0 0 6px"><input type="checkbox" id="showCtx" __CTX_CHECKED__>
       <span>Show sites with no hit</span></label>
     <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDetail" __DETAIL_CHECKED__>
       <span>Detailed base map</span></label>
     <button class="time-btn" id="btnResetZoom">Reset zoom</button>
     <span class="bar-label" id="zoomLabel"></span>
+  </div>
+
+  <div class="bar" id="legendBar">
+    <span class="bar-label" id="legendLabel">in view</span>
+    <span id="deltaLegend">__DELTA_LEGEND__</span>
+    <span id="catLegend"></span>
   </div>
 
   <div class="__LAYOUT_CLASS__">
@@ -675,7 +857,13 @@ body.zoomed-in .city-labels { opacity:.95; }
         <button class="time-btn" id="btnSideNone">Combined</button>
       </div>
     </aside>
-    <div class="maps __GRID_CLASS__" id="maps">__CARDS__</div>
+    <div>
+      <div class="info" id="info" hidden>
+        <button class="info-close" id="infoClose" title="Close">&times;</button>
+        <div class="info-body" id="infoBody"></div>
+      </div>
+      <div class="maps __GRID_CLASS__" id="maps">__CARDS__</div>
+    </div>
   </div>
 </div>
 <svg width="0" height="0" style="position:absolute"><defs>__DEFS__</defs></svg>
@@ -716,15 +904,87 @@ body.zoomed-in .city-labels { opacity:.95; }
   var depthMin = document.getElementById('depthMin'), depthMax = document.getElementById('depthMax');
   var depthFill = document.getElementById('depthFill'), depthLabel = document.getElementById('depthWindowLabel');
   var showNoDepth = document.getElementById('showNoDepth');
+  var dateBars = Array.from(document.querySelectorAll('#dateHist .hbar'));
+  var depthBars = Array.from(document.querySelectorAll('#depthHist .hbar'));
+  var HIST_BINS = 48;
+  function dimBars(bars, lo, hi) {
+    var b0 = Math.floor(lo / 1000 * HIST_BINS), b1 = Math.ceil(hi / 1000 * HIST_BINS) - 1;
+    bars.forEach(function(r) {
+      var i = +r.dataset.i;
+      r.classList.toggle('dim', i < b0 || i > b1);
+    });
+  }
   var showCtx = document.getElementById('showCtx');
   var showDetail = document.getElementById('showDetail');
+  var sizeMode = document.getElementById('sizeMode');
+  var colorMode = document.getElementById('colorMode');
+
+  // ---------- bubble size: matched files, or how many modifications hit that site ----------
+  function applySize() {
+    var key = (sizeMode && sizeMode.value === 'nalt') ? 'data-rd' : 'data-rn';
+    allPts.forEach(function(el) {
+      var v = el.getAttribute(key);
+      if (v !== null) el.setAttribute('data-r', v);
+    });
+    schedule();
+  }
+  if (sizeMode) sizeMode.addEventListener('change', applySize);
+
+  // ---------- color: by modification, or by sample type ----------
+  function applyColor() {
+    var byCat = colorMode && colorMode.value === 'cat';
+    document.querySelectorAll('.pt.hit').forEach(function(el) {
+      var c = el.getAttribute(byCat ? 'data-ccat' : 'data-cdelta');
+      if (c) el.setAttribute('fill', c);
+    });
+    var dl = document.getElementById('deltaLegend');
+    if (dl) dl.style.display = byCat ? 'none' : '';
+    schedule();
+  }
+  if (colorMode) colorMode.addEventListener('change', applyColor);
+
+  // ---------- click a bubble for its details ----------
+  var info = document.getElementById('info'), infoBody = document.getElementById('infoBody');
+  function row(k, v) {
+    return v ? '<div class="info-row"><span class="info-k">' + k +
+               '</span><span class="info-v">' + v + '</span></div>' : '';
+  }
+  function showInfo(el) {
+    document.querySelectorAll('.pt.picked').forEach(function(p) { p.classList.remove('picked'); });
+    el.classList.add('picked');
+    var dmin = el.getAttribute('data-dmin'), dmax = el.getAttribute('data-dmax');
+    var zmin = el.getAttribute('data-zmin'), zmax = el.getAttribute('data-zmax');
+    var d = el.getAttribute('data-delta');
+    var cx = +el.getAttribute('cx'), cy = +el.getAttribute('cy');
+    var lon = (cx / 960 * 360 - 180), lat = (90 - cy / 480 * 180);
+    infoBody.innerHTML =
+      row('sample type', el.getAttribute('data-cat')) +
+      row('modification', d === null ? '' : (+d === 0 ? 'unmodified (Δ 0 Da)' : 'Δ ' + (+d > 0 ? '+' : '') + d + ' Da')) +
+      row('layer', el.classList.contains('hit') ? 'matched' : 'no hit (ReDU context)') +
+      row('matched files', el.getAttribute('data-n')) +
+      row('analogues here', el.getAttribute('data-nalt')) +
+      row('coordinates', lat.toFixed(3) + ', ' + lon.toFixed(3)) +
+      row('collection', (dmin && dmax) ? (dmin === dmax ? dmin : dmin + ' → ' + dmax) : 'not recorded') +
+      row('depth / alt', (zmin !== null && zmax !== null) ? (zmin === zmax ? zmin + 'm' : zmin + 'm → ' + zmax + 'm') : 'not recorded') +
+      row('datasets', el.getAttribute('data-ds'));
+    info.hidden = false;
+  }
+  document.getElementById('infoClose').addEventListener('click', function() {
+    info.hidden = true;
+    document.querySelectorAll('.pt.picked').forEach(function(p) { p.classList.remove('picked'); });
+  });
 
   function applyFilters() {
     var tLo = Math.min(+rangeMin.value, +rangeMax.value), tHi = Math.max(+rangeMin.value, +rangeMax.value);
-    var wStart = stepToDate(tLo).getTime(), wEnd = stepToDate(tHi).getTime();
+    // The track covers the 1st-99th percentile, so a handle at an end means
+    // "everything beyond this too" - otherwise the few outliers past the domain
+    // could never be selected at all.
+    var wStart = tLo === 0 ? -Infinity : stepToDate(tLo).getTime();
+    var wEnd = tHi === STEPS ? Infinity : stepToDate(tHi).getTime();
     var keepUndated = showUndated.checked;
     var zLo = Math.min(+depthMin.value, +depthMax.value), zHi = Math.max(+depthMin.value, +depthMax.value);
-    var zWLo = stepToDepth(zLo), zWHi = stepToDepth(zHi);
+    var zWLo = zLo === 0 ? -Infinity : stepToDepth(zLo);
+    var zWHi = zHi === STEPS ? Infinity : stepToDepth(zHi);
     var keepNoDepth = showNoDepth.checked;
 
     allPts.forEach(function(el) {
@@ -739,12 +999,19 @@ body.zoomed-in .city-labels { opacity:.95; }
     fill.style.left = (tLo / STEPS * 100) + '%';
     fill.style.width = ((tHi - tLo) / STEPS * 100) + '%';
     label.textContent = CFG.hasDates
-      ? fmtDate(stepToDate(tLo)) + '  →  ' + fmtDate(stepToDate(tHi)) : 'no dates in this result';
+      ? (tLo === 0 ? fmtDate(new Date(Date.parse(CFG.dateTrueLo))) : fmtDate(stepToDate(tLo)))
+        + '  →  ' +
+        (tHi === STEPS ? fmtDate(new Date(Date.parse(CFG.dateTrueHi))) : fmtDate(stepToDate(tHi)))
+      : 'no dates in this result';
     depthFill.style.left = (zLo / STEPS * 100) + '%';
     depthFill.style.width = ((zHi - zLo) / STEPS * 100) + '%';
     depthLabel.textContent = CFG.hasDepth
-      ? stepToDepth(zLo).toFixed(0) + 'm  →  ' + stepToDepth(zHi).toFixed(0) + 'm'
+      ? (zLo === 0 ? CFG.zTrueLo.toFixed(0) : stepToDepth(zLo).toFixed(0)) + 'm  →  ' +
+        (zHi === STEPS ? CFG.zTrueHi.toFixed(0) : stepToDepth(zHi).toFixed(0)) + 'm'
       : 'no depth/altitude in this result';
+
+    dimBars(dateBars, tLo, tHi);
+    dimBars(depthBars, zLo, zHi);
 
     refreshLayout();
   }
@@ -760,7 +1027,7 @@ body.zoomed-in .city-labels { opacity:.95; }
   });
 
   function setTimeFromCutoff(years) {
-    var cutoff = DOMAIN_MAX - years * 365.25 * 24 * 3600 * 1000;
+    var cutoff = Date.parse(CFG.dateTrueHi) - years * 365.25 * 24 * 3600 * 1000;
     rangeMin.value = Math.max(0, Math.round((cutoff - DOMAIN_MIN) / SPAN * STEPS));
     rangeMax.value = STEPS; applyFilters();
   }
@@ -855,8 +1122,36 @@ body.zoomed-in .city-labels { opacity:.95; }
     });
     if (zoomLabel) zoomLabel.textContent = view.k > 1.01 ? view.k.toFixed(1) + '×' : '';
     document.body.classList.toggle('zoomed-in', view.k >= 3);
+    updateCatLegend();
   }
   function schedule() { if (!pending) { pending = true; requestAnimationFrame(render); } }
+
+  // Sample types among the markers currently on screen: zoom into a region and the
+  // legend narrows to what was actually matched there.
+  var catLegend = document.getElementById('catLegend');
+  var legendLabel = document.getElementById('legendLabel');
+  function updateCatLegend() {
+    if (!catLegend) return;
+    var x0 = -view.x / view.k, x1 = (-view.x + VB_W) / view.k;
+    var y0 = -view.y / view.k, y1 = (-view.y + VB_H) / view.k;
+    var seen = new Map();
+    document.querySelectorAll('.facet:not(.off):not(.empty) .hits .pt').forEach(function(el) {
+      if (el.classList.contains('hidden')) return;
+      var cx = +el.getAttribute('cx'), cy = +el.getAttribute('cy');
+      if (cx < x0 || cx > x1 || cy < y0 || cy > y1) return;
+      var c = el.getAttribute('data-cat');
+      if (!seen.has(c)) seen.set(c, { color: el.getAttribute('data-ccat'), n: 0 });
+      seen.get(c).n += +(el.getAttribute('data-n') || 1);
+    });
+    var items = [...seen.entries()].sort(function(a, b) { return b[1].n - a[1].n; });
+    catLegend.innerHTML = items.map(function(e) {
+      return '<span class="leg-item"><span class="sw" style="background:' + e[1].color +
+             '"></span><span class="leg-name">' + e[0] +
+             '</span><span class="leg-count">' + e[1].n + '</span></span>';
+    }).join('');
+    if (legendLabel) legendLabel.textContent = items.length
+      ? (view.k > 1.01 ? 'sample types in view' : 'sample types matched') : 'nothing in view';
+  }
   function toUser(svg, cx, cy) {
     var r = svg.getBoundingClientRect();
     return { x: (cx - r.left) / r.width * VB_W, y: (cy - r.top) / r.height * VB_H };
@@ -873,21 +1168,35 @@ body.zoomed-in .city-labels { opacity:.95; }
       clampView(); schedule();
     }, { passive: false });
 
+    // Pointer capture is taken only once a real drag starts. Capturing on
+    // pointerdown would retarget the following click to the <svg>, so a plain click
+    // on a marker could never be attributed to that marker.
     var drag = null;
     svg.addEventListener('pointerdown', function(e) {
-      drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y, rect: svg.getBoundingClientRect() };
-      svg.setPointerCapture(e.pointerId); svg.classList.add('dragging');
+      drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y,
+               rect: svg.getBoundingClientRect(), el: e.target, moved: false };
     });
     svg.addEventListener('pointermove', function(e) {
       if (!drag) return;
-      view.x = drag.vx + (e.clientX - drag.x) / drag.rect.width * VB_W;
-      view.y = drag.vy + (e.clientY - drag.y) / drag.rect.height * VB_H;
+      var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        svg.classList.add('dragging');
+        try { svg.setPointerCapture(e.pointerId); } catch (err) {}
+      }
+      view.x = drag.vx + dx / drag.rect.width * VB_W;
+      view.y = drag.vy + dy / drag.rect.height * VB_H;
       clampView(); schedule();
     });
     ['pointerup', 'pointercancel'].forEach(function(ev) {
       svg.addEventListener(ev, function(e) {
+        if (drag && !drag.moved && ev === 'pointerup' &&
+            drag.el && drag.el.classList && drag.el.classList.contains('pt')) {
+          showInfo(drag.el);
+        }
+        if (drag && drag.moved) { try { svg.releasePointerCapture(e.pointerId); } catch (err) {} }
         drag = null; svg.classList.remove('dragging');
-        try { svg.releasePointerCapture(e.pointerId); } catch (err) {}
       });
     });
   });
@@ -897,6 +1206,8 @@ body.zoomed-in .city-labels { opacity:.95; }
   });
 
   applyFilters();
+  applySize();
+  applyColor();
   render();
 })();
 </script>
