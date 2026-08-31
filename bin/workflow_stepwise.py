@@ -102,7 +102,7 @@ def retrieve_raw_data_matches(
 
     # # exclude unwanted columns
     columns_to_exclude = [
-        "filename","TermsofPosition","ComorbidityListDOIDIndex","SampleCollectionDateandTime",
+        "filename","TermsofPosition","ComorbidityListDOIDIndex",
         "ENVOBroadScale","ENVOLocalScale","ENVOMediumScale","qiita_sample_name","UniqueSubjectID",
         "UBERONOntologyIndex","DOIDOntologyIndex","ENVOEnvironmentBiomeIndex",
         "ENVOEnvironmentMaterialIndex","ENVOLocalScaleIndex","ENVOBroadScaleIndex",
@@ -404,7 +404,7 @@ def retrieve_raw_data_matches_from_peaks(
     redu_columns = fetch("SELECT name FROM pragma_table_info('redu_table')")
     redu_columns_list = redu_columns["name"].tolist()
     columns_to_exclude = [
-        "filename", "TermsofPosition", "ComorbidityListDOIDIndex", "SampleCollectionDateandTime",
+        "filename", "TermsofPosition", "ComorbidityListDOIDIndex",
         "ENVOBroadScale", "ENVOLocalScale", "ENVOMediumScale", "qiita_sample_name", "UniqueSubjectID",
         "UBERONOntologyIndex", "DOIDOntologyIndex", "ENVOEnvironmentBiomeIndex",
         "ENVOEnvironmentMaterialIndex", "ENVOLocalScaleIndex", "ENVOBroadScaleIndex",

@@ -736,7 +736,7 @@ def get_masst_and_redu_tables(
     redu_columns = fetch(sql)
 
     redu_columns_list = redu_columns['name'].tolist()
-    columns_to_exclude = ['filename', 'TermsofPosition', 'ComorbidityListDOIDIndex', 'SampleCollectionDateandTime', 'ENVOBroadScale', 'ENVOLocalScale', 'ENVOMediumScale', 'qiita_sample_name',
+    columns_to_exclude = ['filename', 'TermsofPosition', 'ComorbidityListDOIDIndex', 'ENVOBroadScale', 'ENVOLocalScale', 'ENVOMediumScale', 'qiita_sample_name',
                           'UniqueSubjectID', 'UBERONOntologyIndex', 'DOIDOntologyIndex', 'ENVOEnvironmentBiomeIndex', 'ENVOEnvironmentMaterialIndex', 'ENVOLocalScaleIndex', 'ENVOBroadScaleIndex',
                           'ENVOMediumScaleIndex', 'classification', 'MS2spectra_count', 'InternalStandardsUsed', 'HumanPopulationDensity']
     redu_columns_list = [col for col in redu_columns_list if col not in columns_to_exclude]

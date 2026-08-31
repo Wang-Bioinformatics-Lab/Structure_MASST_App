@@ -10,7 +10,8 @@ PKG_PATH = os.path.abspath(os.path.join(HERE, '..', 'bin'))
 if PKG_PATH not in sys.path:
     sys.path.insert(0, PKG_PATH)
 
-from plotting import raw_data_sankey, export_hits_map
+from plotting import raw_data_sankey, export_hits_map, load_environmental_context
+from geomasst_map import build_geomasst_map_html
 
 # Tracking
 import umami
@@ -55,10 +56,20 @@ if st.session_state.get("raw_results"):
             print(f"Error tracking event: {e}")
         
 
-        with st.spinner("Running GeoMASST…"): 
+        with st.spinner("Running GeoMASST…"):
             df_redu = st.session_state.raw_results[selected_name]["redu"]
-            fig_map, _ = export_hits_map(df_redu, engine="mapbox", hover_mri="count", map_style='carto-positron')
-            st.plotly_chart(fig_map, use_container_width=True, config={"scrollZoom": True}, key=f"map_{names}")
+
+            # background layer: environmental ReDU rows we did NOT hit
+            df_context = load_environmental_context(df_redu)
+
+            st.session_state["_geomasst_html"] = build_geomasst_map_html(
+                df_hits=df_redu,
+                df_background=df_context,
+                compound_name=selected_name,
+            )
+
+    if st.session_state.get("_geomasst_html"):
+        components.html(st.session_state["_geomasst_html"], height=1150, scrolling=True)
 
 else:
     st.warning("This is a downstream tool. Run StructureMASST first to generate GeoMASST results.")

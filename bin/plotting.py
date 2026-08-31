@@ -108,6 +108,44 @@ def raw_data_sankey(df, col1, col2, col3, col4):
     return fig
 
 
+def load_environmental_context(df_hits, env_col="ENVOEnvironmentMaterial"):
+    """
+    Environmental ReDU rows that carry coordinates, minus the MRIs already hit.
+
+    This is the "where could this molecule have been found" background layer, shared
+    by export_hits_map() and the GeoMASST HTML map, so the ReDU table is loaded (and
+    process-cached) once rather than once per renderer.
+    """
+    config_path = "config.py"
+    spec = importlib.util.spec_from_file_location("config", config_path)
+    config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config)
+
+    fetch = _get_fetcher(config.PATH_TO_SQLITE, config.MASSTRECORDS_ENDPOINT, config.MASSTRECORDS_TIMEOUT)
+    redu_columns = fetch("SELECT name FROM pragma_table_info('redu_table')")
+
+    redu_columns_list = redu_columns['name'].tolist()
+    columns_to_exclude = ['filename', 'TermsofPosition', 'ComorbidityListDOIDIndex', 'ENVOBroadScale', 'ENVOLocalScale', 'ENVOMediumScale', 'qiita_sample_name',
+                          'UniqueSubjectID', 'UBERONOntologyIndex', 'DOIDOntologyIndex', 'ENVOEnvironmentBiomeIndex', 'ENVOEnvironmentMaterialIndex', 'ENVOLocalScaleIndex', 'ENVOBroadScaleIndex',
+                          'ENVOMediumScaleIndex', 'classification', 'MS2spectra_count', 'InternalStandardsUsed', 'HumanPopulationDensity']
+    redu_columns_list = [col for col in redu_columns_list if col not in columns_to_exclude]
+
+    df_redu = get_redu_table_cached(fetch, redu_columns_list, config.PATH_TO_SQLITE)
+    if "USI" in df_redu.columns:
+        df_redu = df_redu.rename(columns={"USI": "mri"})
+
+    if df_hits is not None and "mri" in getattr(df_hits, "columns", []):
+        hit_mris = set(df_hits["mri"].astype(str))
+        df_redu = df_redu[~df_redu["mri"].astype(str).isin(hit_mris)].copy()
+        df_redu = df_redu[
+            (df_redu["SampleType"] == "environmental")
+            & (df_redu["LatitudeandLongitude"] != "missing value")
+            & (df_redu[env_col] != "missing value")
+        ]
+
+    return df_redu
+
+
 def export_hits_map(
     df,
     interactive=True,
@@ -153,30 +191,8 @@ def export_hits_map(
     config = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(config)
 
-    # -------- ReDU: load all possible MRIs (environmental, with coords), drop ones we've actually hit
-    fetch = _get_fetcher(config.PATH_TO_SQLITE, config.MASSTRECORDS_ENDPOINT, config.MASSTRECORDS_TIMEOUT)
-    sql = "SELECT name FROM pragma_table_info('redu_table')"
-    redu_columns = fetch(sql)
-    
-    redu_columns_list = redu_columns['name'].tolist()
-    columns_to_exclude = ['filename', 'TermsofPosition', 'ComorbidityListDOIDIndex', 'SampleCollectionDateandTime', 'ENVOBroadScale', 'ENVOLocalScale', 'ENVOMediumScale', 'qiita_sample_name',
-                          'UniqueSubjectID', 'UBERONOntologyIndex', 'DOIDOntologyIndex', 'ENVOEnvironmentBiomeIndex', 'ENVOEnvironmentMaterialIndex', 'ENVOLocalScaleIndex', 'ENVOBroadScaleIndex',
-                          'ENVOMediumScaleIndex', 'classification', 'MS2spectra_count', 'InternalStandardsUsed', 'HumanPopulationDensity']
-    redu_columns_list = [col for col in redu_columns_list if col not in columns_to_exclude]
-
-    df_redu = get_redu_table_cached(fetch, redu_columns_list, config.PATH_TO_SQLITE)
-    if "USI" in df_redu.columns:
-        df_redu = df_redu.rename(columns={"USI": "mri"})
-    # Remove any we actually hit (by MRI)
-    if "mri" in df.columns:
-        hit_mris = set(df["mri"].astype(str))
-        df_redu = df_redu[~df_redu["mri"].astype(str).isin(hit_mris)].copy()
-
-        # filter for env and latlon and env
-        df_redu = df_redu[(df_redu["SampleType"] == "environmental") & 
-        (df_redu["LatitudeandLongitude"] != "missing value") & 
-        (df_redu[env_col] != "missing value")
-        ]
+    # -------- ReDU: all environmental MRIs with coords, minus the ones we actually hit
+    df_redu = load_environmental_context(df, env_col=env_col)
 
     # df_redu = None
     # if os.path.exists(redu_feather):

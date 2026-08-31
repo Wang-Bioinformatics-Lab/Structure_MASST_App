@@ -47,7 +47,7 @@ def preload_redu_table(**kwargs):
     redu_columns_list = redu_columns["name"].tolist()
 
     columns_to_exclude = [
-        "filename", "TermsofPosition", "ComorbidityListDOIDIndex", "SampleCollectionDateandTime",
+        "filename", "TermsofPosition", "ComorbidityListDOIDIndex",
         "ENVOBroadScale", "ENVOLocalScale", "ENVOMediumScale", "qiita_sample_name",
         "UniqueSubjectID", "UBERONOntologyIndex", "DOIDOntologyIndex", "ENVOEnvironmentBiomeIndex",
         "ENVOEnvironmentMaterialIndex", "ENVOLocalScaleIndex", "ENVOBroadScaleIndex",
