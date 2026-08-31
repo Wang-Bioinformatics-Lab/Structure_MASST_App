@@ -112,9 +112,14 @@ def load_environmental_context(df_hits, env_col="ENVOEnvironmentMaterial"):
     """
     Environmental ReDU rows that carry coordinates, minus the MRIs already hit.
 
-    This is the "where could this molecule have been found" background layer, shared
-    by export_hits_map() and the GeoMASST HTML map, so the ReDU table is loaded (and
-    process-cached) once rather than once per renderer.
+    This is the "where could this molecule have been found" background layer. It is
+    not part of what StructureMASST hands over - those are the matches; this is the
+    rest of the corpus - so it has to come from ReDU.
+
+    If the full ReDU table is already in the process cache it is filtered from
+    there. If it is not (a small FASSTrecords search fetches only the MRIs it needs
+    and never populates it), loading all 412k rows to keep ~7k costs about a minute,
+    so ask the database for the environmental geolocated rows directly instead.
     """
     config_path = "config.py"
     spec = importlib.util.spec_from_file_location("config", config_path)
@@ -122,15 +127,23 @@ def load_environmental_context(df_hits, env_col="ENVOEnvironmentMaterial"):
     spec.loader.exec_module(config)
 
     fetch = _get_fetcher(config.PATH_TO_SQLITE, config.MASSTRECORDS_ENDPOINT, config.MASSTRECORDS_TIMEOUT)
-    redu_columns = fetch("SELECT name FROM pragma_table_info('redu_table')")
 
-    redu_columns_list = redu_columns['name'].tolist()
-    columns_to_exclude = ['filename', 'TermsofPosition', 'ComorbidityListDOIDIndex', 'ENVOBroadScale', 'ENVOLocalScale', 'ENVOMediumScale', 'qiita_sample_name',
-                          'UniqueSubjectID', 'UBERONOntologyIndex', 'DOIDOntologyIndex', 'ENVOEnvironmentBiomeIndex', 'ENVOEnvironmentMaterialIndex', 'ENVOLocalScaleIndex', 'ENVOBroadScaleIndex',
-                          'ENVOMediumScaleIndex', 'classification', 'MS2spectra_count', 'InternalStandardsUsed', 'HumanPopulationDensity']
-    redu_columns_list = [col for col in redu_columns_list if col not in columns_to_exclude]
+    import bin.shared_data as _shared
+    if getattr(_shared, "_redu_df_cache", None) is not None:
+        df_redu = _shared._redu_df_cache
+    else:
+        cols = ["USI", "SampleType", env_col, "LatitudeandLongitude",
+                "SampleCollectionDateandTime", "DepthorAltitudeMeters",
+                "ATTRIBUTE_DatasetAccession"]
+        available = set(fetch("SELECT name FROM pragma_table_info('redu_table')")["name"].tolist())
+        cols = [c for c in cols if c in available]
+        df_redu = fetch(
+            "SELECT " + ", ".join(cols) + " FROM redu_table"
+            " WHERE SampleType = 'environmental'"
+            "   AND LatitudeandLongitude != 'missing value'"
+            f"  AND {env_col} != 'missing value'"
+        )
 
-    df_redu = get_redu_table_cached(fetch, redu_columns_list, config.PATH_TO_SQLITE)
     if "USI" in df_redu.columns:
         df_redu = df_redu.rename(columns={"USI": "mri"})
 
