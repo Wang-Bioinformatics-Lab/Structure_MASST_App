@@ -323,6 +323,9 @@ def _circles(agg: pd.DataFrame, colors: dict, layer: str, scale: float,
         else:
             attrs.append('fill="none"')  # stroke color comes from CSS, deliberately neutral
         attrs.append(f'data-cat="{html.escape(cat, quote=True)}"')
+        # true coordinates, so the browser can re-project when the tile base map
+        # (Web Mercator) replaces the bundled vectors (equirectangular)
+        attrs.append(f'data-lat="{float(r["lat"]):.5f}" data-lon="{float(r["lon"]):.5f}"')
         if "facet" in agg.columns and pd.notna(r["facet"]):
             attrs.append(f'data-delta="{int(round(float(r["facet"])))}"')
 
@@ -566,7 +569,7 @@ def build_geomasst_map_html(
             f'<span class="facet-meta">{n_mark:,} sites &middot; {n_samp:,} files</span></div>'
             f'<svg class="fmap" viewBox="0 0 {VB_W:.0f} {VB_H:.0f}" preserveAspectRatio="xMidYMid meet">'
             f'<rect x="0" y="0" width="{VB_W:.0f}" height="{VB_H:.0f}" fill="var(--ocean)"></rect>'
-            f'<g class="zoom"><use href="#gm-land"></use>{detail_layer}{ctx_layer}'
+            f'<g class="zoom"><g class="tiles"></g><use href="#gm-land"></use>{detail_layer}{ctx_layer}'
             f'<g class="hits">{svg}</g></g></svg></div>'
         )
         return n_samp
@@ -876,6 +879,13 @@ body.detail-on .detail { display:inline; }
 body:not(.detail-on) .dams-live { display:none; }
 body.z2.names-country .country-labels { opacity:.85; }
 body.zoomed-in .city-labels { opacity:.95; }
+.credits { font-size:10.5px; line-height:1.5; color:var(--muted); margin:12px 2px 0;
+  font-family:ui-monospace,Menlo,Consolas,monospace; }
+.credits a { color:var(--muted); }
+.credits a:hover { color:var(--accent); }
+.tiles image { image-rendering:auto; }
+body.tiles-on .detail, body.tiles-on .ctx-layer .pt.bg { }
+body.tiles-on #gm-land, body.tiles-on .detail { display:none; }
 #tooltip { position:fixed; pointer-events:none; background:var(--ink); color:var(--paper);
   font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; line-height:1.5; padding:8px 10px;
   border-radius:6px; white-space:pre-wrap; box-shadow:var(--shadow); opacity:0;
@@ -947,6 +957,8 @@ body.zoomed-in .city-labels { opacity:.95; }
       <span>Country names</span></label>
     <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDamNames">
       <span>Dam names</span></label>
+    <label class="undated-toggle" style="margin:0 0 0 6px"><input type="checkbox" id="useTiles">
+      <span>Street base map (loads external tiles)</span></label>
     <button class="time-btn" id="btnResetZoom">Reset zoom</button>
     <span class="bar-label" id="zoomLabel"></span>
   </div>
@@ -978,6 +990,18 @@ body.zoomed-in .city-labels { opacity:.95; }
 </div>
 <svg width="0" height="0" style="position:absolute"><defs>__DEFS__</defs></svg>
 __DAM_DATA__
+  <p class="credits">
+    Base map data <a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener">Natural Earth</a>
+    (public domain). Dams from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>
+    contributors (<a href="https://opendatacommons.org/licenses/odbl/" target="_blank" rel="noopener">ODbL</a>)
+    and <a href="https://www.wikidata.org/" target="_blank" rel="noopener">Wikidata</a>
+    (<a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0</a>).
+    Sample metadata from <a href="https://redu.gnps2.org/" target="_blank" rel="noopener">ReDU</a>.
+    <span id="tileCredit" hidden>Street base map &copy;
+      <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors,
+      &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>
+      (<a href="https://carto.com/basemaps/" target="_blank" rel="noopener">basemap terms</a>).</span>
+  </p>
 <div id="tooltip"></div>
 <script>
 (function() {
@@ -1255,6 +1279,71 @@ __DAM_DATA__
     refreshLayout();
   });
 
+  // ---------- optional Carto street base map ----------
+  // The bundled vectors are equirectangular; XYZ tiles are Web Mercator, so they
+  // cannot simply be laid underneath. Turning tiles on switches the whole map to
+  // Mercator: markers are re-projected from the coordinates they carry, the vector
+  // base layers step aside, and the viewBox grows to keep Mercator square.
+  var MERC_LAT = 72;   // clipped; full Mercator reaches 85 and is mostly empty there
+  var MERC_Y0 = (0.5 - Math.log(Math.tan(Math.PI / 4 + MERC_LAT * Math.PI / 360)) / (2 * Math.PI)) * VB_W;
+  var VB_H_MERC = VB_W - 2 * MERC_Y0;
+  var useTiles = document.getElementById('useTiles');
+  var tileCredit = document.getElementById('tileCredit');
+  function tilesOn() { return !!(useTiles && useTiles.checked); }
+  function viewH() { return tilesOn() ? VB_H_MERC : VB_H; }
+  function mercX(lon) { return (lon + 180) / 360 * VB_W; }
+  function mercY(lat) {
+    var f = Math.max(-MERC_LAT, Math.min(MERC_LAT, lat)) * Math.PI / 180;
+    return (0.5 - Math.log(Math.tan(Math.PI / 4 + f / 2)) / (2 * Math.PI)) * VB_W - MERC_Y0;
+  }
+
+  function reproject() {
+    var merc = tilesOn();
+    allPts.forEach(function(el) {
+      var la = parseFloat(el.getAttribute('data-lat')), lo = parseFloat(el.getAttribute('data-lon'));
+      if (isNaN(la) || isNaN(lo)) return;
+      el.setAttribute('cx', (merc ? mercX(lo) : (lo + 180) / 360 * VB_W).toFixed(3));
+      el.setAttribute('cy', (merc ? mercY(la) : (90 - la) / 180 * VB_H).toFixed(3));
+    });
+    // trim a trailing .0 so switching back leaves the markup as it was served
+    var h = viewH().toFixed(1).replace(/\.0$/, '');
+    document.querySelectorAll('.fmap').forEach(function(svg) {
+      svg.setAttribute('viewBox', '0 0 ' + VB_W + ' ' + h);
+      var bg = svg.querySelector('rect');
+      if (bg) bg.setAttribute('height', h);
+    });
+    document.body.classList.toggle('tiles-on', merc);
+    if (tileCredit) tileCredit.hidden = !merc;
+    damKey = '';
+  }
+
+  var TILE_URL = 'https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png';
+  function renderTiles() {
+    var groups = Array.from(document.querySelectorAll('.tiles'));
+    if (!groups.length) return;
+    if (!tilesOn()) { groups.forEach(function(g) { if (g.innerHTML) g.innerHTML = ''; }); return; }
+    var z = Math.max(0, Math.min(18, Math.round(Math.log2(VB_W * view.k * pxPerUnit / 256))));
+    var n = Math.pow(2, z), span = VB_W / n;
+    var x0 = -view.x / view.k, x1 = (-view.x + VB_W) / view.k;
+    var y0 = -view.y / view.k, y1 = (-view.y + viewH()) / view.k;
+    var i0 = Math.max(0, Math.floor(x0 / span)), i1 = Math.min(n - 1, Math.floor(x1 / span));
+    var j0 = Math.max(0, Math.floor((y0 + MERC_Y0) / span)), j1 = Math.min(n - 1, Math.floor((y1 + MERC_Y0) / span));
+    var parts = [];
+    for (var j = j0; j <= j1; j++) {
+      for (var i = i0; i <= i1 && parts.length < 400; i++) {
+        parts.push('<image href="' + TILE_URL.replace('{z}', z).replace('{x}', i).replace('{y}', j) +
+                   '" x="' + (i * span).toFixed(3) + '" y="' + (j * span - MERC_Y0).toFixed(3) +
+                   '" width="' + (span * 1.002).toFixed(3) + '" height="' + (span * 1.002).toFixed(3) +
+                   '" preserveAspectRatio="none"></image>');
+      }
+    }
+    var html = parts.join('');
+    groups.forEach(function(g) { g.innerHTML = html; });
+  }
+  if (useTiles) useTiles.addEventListener('change', function() {
+    reproject(); render(); renderTiles(); renderDams();
+  });
+
   // ---------- synchronized pan / zoom ----------
   var zoomGroups = Array.from(document.querySelectorAll('.zoom'));
   var cityLabelUses = Array.from(document.querySelectorAll('.city-labels'));
@@ -1269,7 +1358,7 @@ __DAM_DATA__
 
   function clampView() {
     view.k = Math.max(1, Math.min(MAX_ZOOM, view.k));
-    var minX = VB_W - VB_W * view.k, minY = VB_H - VB_H * view.k;
+    var minX = VB_W - VB_W * view.k, minY = viewH() - viewH() * view.k;
     view.x = Math.max(minX, Math.min(0, view.x));
     view.y = Math.max(minY, Math.min(0, view.y));
   }
@@ -1296,6 +1385,7 @@ __DAM_DATA__
     document.body.classList.toggle('zoomed-in', view.k >= 3);
     updateCatLegend();
     scheduleDams();
+    renderTiles();
   }
   function schedule() { if (!pending) { pending = true; requestAnimationFrame(render); } }
 
@@ -1325,7 +1415,7 @@ __DAM_DATA__
       return;
     }
     var x0 = -view.x / view.k, x1 = (-view.x + VB_W) / view.k;
-    var y0 = -view.y / view.k, y1 = (-view.y + VB_H) / view.k;
+    var y0 = -view.y / view.k, y1 = (-view.y + viewH()) / view.k;
     var withLabels = view.k >= DAM_LABEL_ZOOM && !!(showDamNames && showDamNames.checked);
     var key = [x0.toFixed(2), y0.toFixed(2), x1.toFixed(2), withLabels,
                showDams && showDams.checked, visibleHitStamp].join('|');
@@ -1420,7 +1510,7 @@ __DAM_DATA__
 
   function toUser(svg, cx, cy) {
     var r = svg.getBoundingClientRect();
-    return { x: (cx - r.left) / r.width * VB_W, y: (cy - r.top) / r.height * VB_H };
+    return { x: (cx - r.left) / r.width * VB_W, y: (cy - r.top) / r.height * viewH() };
   }
 
   maps.forEach(function(svg) {
