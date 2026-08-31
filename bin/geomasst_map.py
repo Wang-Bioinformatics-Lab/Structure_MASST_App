@@ -34,7 +34,7 @@ LAND_PATH_FILE = os.path.join(ASSETS, "world_land_110m_equirect.path")
 # the map simply did not draw.
 BORDERS_FILE = os.path.join(ASSETS, "world_borders_110m_equirect.path")
 LAKES_FILE = os.path.join(ASSETS, "world_lakes_10m_equirect.path")
-RIVERS_FILE = os.path.join(ASSETS, "world_rivers_10m_equirect.path")
+RIVERS_FILE = os.path.join(ASSETS, "world_rivers_10m_equirect.json")
 CITIES_FILE = os.path.join(ASSETS, "world_cities_equirect.json")
 COUNTRY_LABELS_FILE = os.path.join(ASSETS, "world_country_labels_equirect.json")
 # Dams from Wikidata (CC0), kept to those with a recorded height of 30 m or more.
@@ -89,10 +89,19 @@ def _label_group(gid: str, points: list, cls: str, dx: float = 2.2, dy: float = 
 
 def _detail_svg(max_cities: int = 90, max_countries: int = 177) -> str:
     """Borders, rivers, lakes, countries, cities and dams, drawn under the markers."""
-    borders, lakes, rivers = _read_asset(BORDERS_FILE), _read_asset(LAKES_FILE), _read_asset(RIVERS_FILE)
+    borders, lakes = _read_asset(BORDERS_FILE), _read_asset(LAKES_FILE)
     out = []
-    if rivers:
-        out.append(f'<path class="ne-river" d="{rivers}"></path>')
+    # rivers come in four width classes so a trunk river does not read like a ditch
+    raw_rivers = _read_asset(RIVERS_FILE)
+    if raw_rivers:
+        try:
+            rivers = json.loads(raw_rivers)
+        except ValueError:
+            rivers = {}
+        for cls in ("4", "3", "2", "1"):        # thin first, so trunks draw on top
+            d = rivers.get(cls)
+            if d:
+                out.append(f'<path class="ne-river ne-river-{cls}" d="{d}"></path>')
     if lakes:
         out.append(f'<path class="ne-lake" d="{lakes}"></path>')
     if borders:
@@ -835,7 +844,13 @@ body.no-ctx .ctx-layer { display:none; }
    coastline detail stays hairline instead of thickening as you zoom. */
 .detail { display:none; }
 body.detail-on .detail { display:inline; }
-.ne-river { fill:none; stroke:var(--river); stroke-width:1.1; opacity:.9; vector-effect:non-scaling-stroke; }
+.ne-river { fill:none; stroke:var(--river); opacity:.9; vector-effect:non-scaling-stroke;
+  stroke-linecap:round; stroke-linejoin:round; }
+/* Natural Earth scalerank: 1 is the Amazon and the Nile, 2 the Danube, 4 the Rhine */
+.ne-river-1 { stroke-width:2.6; }
+.ne-river-2 { stroke-width:1.9; }
+.ne-river-3 { stroke-width:1.2; }
+.ne-river-4 { stroke-width:.8; opacity:.7; }
 .ne-lake { fill:var(--lake); stroke:var(--river); stroke-width:.5; opacity:.9; vector-effect:non-scaling-stroke; }
 /* Country outlines are solid and warm-neutral; rivers are thin, cool and
    semi-transparent, so the two never read as the same kind of line. */
@@ -858,7 +873,7 @@ body.detail-on .detail { display:inline; }
 .country-labels, .city-labels { opacity:0; transition:opacity .15s; }
 .dams-live { opacity:.95; }
 body:not(.detail-on) .dams-live { display:none; }
-body.z2 .country-labels { opacity:.85; }
+body.z2.names-country .country-labels { opacity:.85; }
 body.zoomed-in .city-labels { opacity:.95; }
 #tooltip { position:fixed; pointer-events:none; background:var(--ink); color:var(--paper);
   font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; line-height:1.5; padding:8px 10px;
@@ -927,6 +942,10 @@ body.zoomed-in .city-labels { opacity:.95; }
       <span>Detailed base map</span></label>
     <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDams" checked>
       <span>Dams near matches</span></label>
+    <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showCountryNames">
+      <span>Country names</span></label>
+    <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDamNames">
+      <span>Dam names</span></label>
     <button class="time-btn" id="btnResetZoom">Reset zoom</button>
     <span class="bar-label" id="zoomLabel"></span>
   </div>
@@ -1008,6 +1027,14 @@ __DAM_DATA__
   var showCtx = document.getElementById('showCtx');
   var showDetail = document.getElementById('showDetail');
   var showDams = document.getElementById('showDams');
+  var showCountryNames = document.getElementById('showCountryNames');
+  var showDamNames = document.getElementById('showDamNames');
+  if (showCountryNames) showCountryNames.addEventListener('change', function() {
+    document.body.classList.toggle('names-country', showCountryNames.checked);
+  });
+  if (showDamNames) showDamNames.addEventListener('change', function() {
+    damKey = ''; renderDams();
+  });
   var sizeMode = document.getElementById('sizeMode');
   var colorMode = document.getElementById('colorMode');
 
@@ -1298,7 +1325,7 @@ __DAM_DATA__
     }
     var x0 = -view.x / view.k, x1 = (-view.x + VB_W) / view.k;
     var y0 = -view.y / view.k, y1 = (-view.y + VB_H) / view.k;
-    var withLabels = view.k >= DAM_LABEL_ZOOM;
+    var withLabels = view.k >= DAM_LABEL_ZOOM && !!(showDamNames && showDamNames.checked);
     var key = [x0.toFixed(2), y0.toFixed(2), x1.toFixed(2), withLabels,
                showDams && showDams.checked, visibleHitStamp].join('|');
     if (key === damKey) return;
