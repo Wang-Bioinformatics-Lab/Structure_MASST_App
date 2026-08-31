@@ -15,8 +15,22 @@ for _p in (PKG_PATH, GEOMASST_PATH):
         sys.path.insert(0, _p)
 
 from plotting import raw_data_sankey, export_hits_map, load_environmental_context
-from run_script import get_library_spectra_display, get_raw_data_results
 from geomasst import build_geomasst_map_html
+
+sys.path.insert(0, os.path.abspath(os.path.join(HERE, '..')))
+# first-run data preparation, shared with the LifeMASST page
+from bin.streamlit_prepare import ensure_ready_ui, render_status
+# searching from here offers exactly the StructureMASST controls, and runs the
+# same search behind them - see bin/streamlit_search_ui.py
+from bin.streamlit_search_ui import (
+    build_query_table,
+    has_search_input,
+    render_search_inputs,
+    run_structuremasst_search,
+    search_kwargs,
+)
+from bin.run_masstRecords_queries import _get_fetcher
+from bin.shared_data import get_molecule_classes_cached
 
 # Tracking
 import umami
@@ -49,25 +63,16 @@ with left:
 output_folder = st.session_state["_session_output_folder"]
 
 
-def _run_standalone_search(query, searchtype, mode, min_cos, min_peaks,
-                           modification_search, elimination, addition):
-    """
-    Run a search from this page, so GeoMASST does not require a StructureMASST run
-    first. Same pipeline StructureMASST uses, driven through the headless helpers.
-    """
-    lib = get_library_spectra_display(query=query, searchtype=searchtype)
-    spectra = lib["all_spectra"]
-    if spectra is None or len(spectra) == 0:
-        return None, "No library spectra matched that structure."
-    res = get_raw_data_results(
-        library_spectra=spectra, mode=mode, min_cos=min_cos, min_peaks=min_peaks,
-        modification_search=modification_search,
-        elimination=elimination, addition=addition,
+# the class-label dropdown needs the shared ClassyFire table; without it that one
+# control simply does not appear
+try:
+    import config as _config
+    _molecule_classes_cache = get_molecule_classes_cached(
+        _get_fetcher(_config.PATH_TO_SQLITE, _config.MASSTRECORDS_ENDPOINT,
+                     _config.MASSTRECORDS_TIMEOUT)
     )
-    redu = res.get("redu")
-    if redu is None or len(redu) == 0:
-        return None, f"{len(spectra)} library spectra, but no raw-data matches."
-    return redu, f"{len(spectra)} library spectra, {len(redu):,} matched samples."
+except Exception:
+    _molecule_classes_cache = None
 
 
 ALL = "All molecules"
@@ -86,10 +91,7 @@ source = st.radio(
     horizontal=True, key="geo_source",
 )
 
-sa_query = ""
-sa_searchtype = sa_mode = None
-sa_modify = False
-sa_cos, sa_peaks = 0.70, 5
+search_ui = None
 
 if source == SRC_RESULTS:
     names = list(st.session_state.raw_results.keys())
@@ -107,24 +109,17 @@ if source == SRC_RESULTS:
 else:
     if not has_results:
         st.caption("No StructureMASST results in this session - search here instead.")
-    sa_query = st.text_input("SMILES or SMARTS", key="geo_sa_query",
-                             placeholder="CCNc1nc(Cl)nc(NC(C)(C)C)n1")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        sa_searchtype = st.selectbox("Structure match", ["exact", "substructure", "tanimoto"],
-                                     key="geo_sa_type")
-    with c2:
-        sa_mode = st.selectbox("Search backend", ["fasstrecords", "fasst"], key="geo_sa_mode",
-                               help="FASSTrecords reads precomputed matches and is much faster. "
-                                    "FASST queries the live API and supports modification search.")
-    with c3:
-        sa_modify = st.checkbox("Modification search", key="geo_sa_modify",
-                                help="FASST only. Splits the map by modification.")
-    c4, c5 = st.columns(2)
-    with c4:
-        sa_cos = st.number_input("Min cosine", 0.0, 1.0, 0.70, 0.05, key="geo_sa_cos")
-    with c5:
-        sa_peaks = st.number_input("Min matched peaks", 1, 50, 5, 1, key="geo_sa_peaks")
+    # the StructureMASST controls verbatim: name / SMILES / class / USI, a batch
+    # file, and the same advanced options
+    search_ui = render_search_inputs(prefix="geo_", molecule_classes=_molecule_classes_cache)
+    max_molecule_maps = st.slider(
+        "Maximum separate molecule maps", min_value=1, max_value=20, value=5,
+        help=("Only matters for a batch file. One map shows every molecule at "
+              "once; this caps how many also get their own."),
+        key="geo_max_maps",
+    )
+
+render_status("geomasst")
 
 if has_results or source == SRC_SEARCH:
     if st.button("Run GeoMASST", key="run_geomasst_btn"):
@@ -133,23 +128,55 @@ if has_results or source == SRC_SEARCH:
             umami.new_event(event_name="GeoMASST Button Clicked")
         except Exception as e:
             print(f"Error tracking event: {e}")
-        
 
-        if source == SRC_SEARCH and not sa_query.strip():
-            st.warning("Enter a SMILES or SMARTS to search for.")
+        # GeoMASST ships its basemap assets, so this normally only verifies them
+        if not ensure_ready_ui("geomasst"):
+            st.stop()
+
+
+        if source == SRC_SEARCH and not has_search_input("geo_", search_ui):
+            st.warning("Enter a name, SMILES/SMARTS, class or USI to search for.")
             st.stop()
 
         with st.spinner("Running GeoMASST…"):
             if source == SRC_SEARCH:
-                df_redu, msg = _run_standalone_search(
-                    sa_query.strip(), sa_searchtype, sa_mode, float(sa_cos), int(sa_peaks),
-                    bool(sa_modify) and sa_mode == "fasst", True, True,
-                )
-                if df_redu is None:
-                    st.warning(msg)
+                query_table, problem = build_query_table("geo_", search_ui)
+                if problem:
+                    st.error(problem)
                     st.stop()
-                st.caption(msg)
-                selected_name = sa_query.strip()
+                try:
+                    result = run_structuremasst_search(
+                        df_input=query_table, **search_kwargs(search_ui)
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    st.error(str(exc))
+                    st.stop()
+
+                frames = []
+                for _name, _pair in result["raw_results"].items():
+                    _df = _pair.get("redu")
+                    if _df is None or len(_df) == 0:
+                        continue
+                    _df = _df.copy()
+                    if "query_name" not in _df.columns:
+                        _df["query_name"] = _name
+                    frames.append(_df)
+                if not frames:
+                    st.warning("No raw-data matches for that search.")
+                    st.stop()
+                df_redu = pd.concat(frames, ignore_index=True)
+                st.caption(f"{len(df_redu):,} matched samples "
+                           f"across {len(frames)} molecule(s).")
+
+                # the map draws the query structures, so keep the SMILES behind
+                # each name - as prepare_lifemasst_input does for LifeMASST
+                search_structures = {
+                    str(r["name"]): str(r.get("original_smiles") or r["query"])
+                    for _, r in query_table.iterrows()
+                    if str(r.get("type")) == "smiles"
+                }
+                selected_name = (query_table["name"].iloc[0]
+                                 if len(query_table) == 1 else ALL)
             elif selected_name == ALL:
                 frames = []
                 for _name, _pair in st.session_state.raw_results.items():
@@ -170,7 +197,7 @@ if has_results or source == SRC_SEARCH:
             # SMILES behind each result, so the map can draw the query structures
             structures = dict(st.session_state.get("query_by_name") or {})
             if source == SRC_SEARCH:
-                structures = {selected_name: selected_name}   # the query is the SMILES
+                structures = search_structures
 
             st.session_state["_geomasst_html"] = build_geomasst_map_html(
                 df_hits=df_redu,
