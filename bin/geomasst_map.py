@@ -28,10 +28,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets")
 LAND_PATH_FILE = os.path.join(ASSETS, "world_land_110m_equirect.path")
 # optional detail layers, all pre-projected into the same 960x480 viewBox
-# (Natural Earth, public domain: 110m borders and lakes, 50m rivers, populated places)
+# (Natural Earth, public domain: 110m borders, 10m lakes and rivers plus their
+# European supplements, populated places). The coarse 50m rivers / 110m lakes that
+# came first carried 462 rivers and 24 lakes worldwide, so most dams sat on water
+# the map simply did not draw.
 BORDERS_FILE = os.path.join(ASSETS, "world_borders_110m_equirect.path")
-LAKES_FILE = os.path.join(ASSETS, "world_lakes_110m_equirect.path")
-RIVERS_FILE = os.path.join(ASSETS, "world_rivers_50m_equirect.path")
+LAKES_FILE = os.path.join(ASSETS, "world_lakes_10m_equirect.path")
+RIVERS_FILE = os.path.join(ASSETS, "world_rivers_10m_equirect.path")
 CITIES_FILE = os.path.join(ASSETS, "world_cities_equirect.json")
 COUNTRY_LABELS_FILE = os.path.join(ASSETS, "world_country_labels_equirect.json")
 # Dams from Wikidata (CC0), kept to those with a recorded height of 30 m or more.
@@ -114,25 +117,44 @@ def _detail_svg(max_cities: int = 90, max_countries: int = 177) -> str:
     )
 
 
-def _dam_payload(max_dams: Optional[int] = None) -> str:
+def _dam_payload(hits: pd.DataFrame, radius: float = 1.2,
+                 max_dams: Optional[int] = None) -> str:
     """
-    Dam coordinates and names, embedded as data rather than markup.
+    Dam coordinates and names for the neighbourhood of the matches, as data.
 
-    There are far too many to put in the DOM - the page draws only the ones inside
-    the current viewport, once you are zoomed in far enough for them to mean
-    anything. The file is ordered so that a capped viewport keeps the notable ones.
+    Dams are only ever drawn near a match, so there is no reason to ship the other
+    hundred thousand: filtering here turns a ~3.7 MB global list into a few hundred
+    entries. Radius is in viewBox units - 1.2 is roughly 50 km at the equator, and
+    matches the radius the page applies against the markers still visible after the
+    date and depth filters.
     """
     raw = _read_asset(DAMS_FILE)
-    if not raw:
+    if not raw or hits is None or hits.empty:
         return ""
-    if max_dams is not None:
-        try:
-            data = json.loads(raw)
-            data = {"c": data["c"][: max_dams * 2], "n": data["n"][:max_dams]}
-            raw = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
-        except (ValueError, KeyError, TypeError):
-            pass
-    return f'<script type="application/json" id="damData">{raw}</script>'
+    try:
+        data = json.loads(raw)
+        cs, ns = data["c"], data["n"]
+    except (ValueError, KeyError, TypeError):
+        return ""
+
+    hx, hy = _project(hits["lat"], hits["lon"])
+    hx, hy = hx.to_numpy(), hy.to_numpy()
+    r2 = radius * radius
+
+    keep_c, keep_n = [], []
+    for i, name in enumerate(ns):
+        x, y = cs[2 * i], cs[2 * i + 1]
+        dx = hx - x
+        dy = hy - y
+        if ((dx * dx + dy * dy) <= r2).any():
+            keep_c.extend((x, y))
+            keep_n.append(name)
+            if max_dams is not None and len(keep_n) >= max_dams:
+                break
+    if not keep_n:
+        return ""
+    body = json.dumps({"c": keep_c, "n": keep_n}, separators=(",", ":"), ensure_ascii=False)
+    return f'<script type="application/json" id="damData">{body}</script>'
 
 
 def _project(lat: pd.Series, lon: pd.Series):
@@ -463,8 +485,8 @@ def build_geomasst_map_html(
     show_context  initial state of the "sites without hits" toggle
     show_detail   initial state of the detailed-basemap toggle (borders, rivers,
                   lakes, countries, cities and dams); off by default
-    max_dams      trim the embedded dam list (ordered tallest first) when page
-                  weight matters more than coverage; None ships all of them
+    max_dams      cap the dams embedded for this result (they are already limited to
+                  the neighbourhood of the matches); None keeps all of them
     """
     has_facet = bool(facet_col) and facet_col in getattr(df_hits, "columns", [])
     tidy_hits = _prepare(df_hits, env_col, facet_col if has_facet else None)
@@ -687,7 +709,7 @@ def build_geomasst_map_html(
         .replace("__DETAIL_CHECKED__", "checked" if (show_detail and detail) else "")
         .replace("__DETAIL_CLASS__", " detail-on" if (show_detail and detail) else "")
         .replace("__DEFS__", defs)
-        .replace("__DAM_DATA__", _dam_payload(max_dams) if detail else "")
+        .replace("__DAM_DATA__", _dam_payload(hits, max_dams=max_dams) if detail else "")
         .replace("__CARDS__", "".join(cards))
     )
 
@@ -827,7 +849,8 @@ body.detail-on .detail { display:inline; }
 .ne-country-label { fill:var(--country); font-family:"IBM Plex Sans",system-ui,sans-serif;
   font-weight:600; letter-spacing:.09em; text-anchor:middle; text-transform:uppercase;
   paint-order:stroke; stroke:var(--ocean); stroke-width:2.2; vector-effect:non-scaling-stroke; }
-.ne-dam { fill:var(--dam); stroke:var(--ocean); stroke-width:1.2; vector-effect:non-scaling-stroke; }
+/* squares, not dots - a round mark reads as another match */
+.ne-dam { fill:var(--dam); stroke:var(--ocean); stroke-width:1; vector-effect:non-scaling-stroke; }
 .ne-dam-label { fill:var(--dam); font-family:ui-monospace,Menlo,Consolas,monospace;
   paint-order:stroke; stroke:var(--ocean); stroke-width:2.2; vector-effect:non-scaling-stroke; }
 /* Each label set has its own zoom threshold, so the map fills in as you go deeper
@@ -902,8 +925,8 @@ body.zoomed-in .city-labels { opacity:.95; }
       <span>Show sites with no hit</span></label>
     <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDetail" __DETAIL_CHECKED__>
       <span>Detailed base map</span></label>
-    <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="damsNear" checked>
-      <span>Dams near matches only</span></label>
+    <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDams" checked>
+      <span>Dams near matches</span></label>
     <button class="time-btn" id="btnResetZoom">Reset zoom</button>
     <span class="bar-label" id="zoomLabel"></span>
   </div>
@@ -984,7 +1007,7 @@ __DAM_DATA__
   }
   var showCtx = document.getElementById('showCtx');
   var showDetail = document.getElementById('showDetail');
-  var damsNear = document.getElementById('damsNear');
+  var showDams = document.getElementById('showDams');
   var sizeMode = document.getElementById('sizeMode');
   var colorMode = document.getElementById('colorMode');
 
@@ -1211,12 +1234,13 @@ __DAM_DATA__
   var countryLabelUses = Array.from(document.querySelectorAll('.country-labels'));
   var damLabelUses = Array.from(document.querySelectorAll('.dam-labels'));
   var maps = Array.from(document.querySelectorAll('.fmap'));
+  var MAX_ZOOM = 1500;   // ~0.6 viewBox units across, a few km of ground
   var view = { k: 1, x: 0, y: 0 };
   var zoomLabel = document.getElementById('zoomLabel');
   var pending = false;
 
   function clampView() {
-    view.k = Math.max(1, Math.min(40, view.k));
+    view.k = Math.max(1, Math.min(MAX_ZOOM, view.k));
     var minX = VB_W - VB_W * view.k, minY = VB_H - VB_H * view.k;
     view.x = Math.max(minX, Math.min(0, view.x));
     view.y = Math.max(minY, Math.min(0, view.y));
@@ -1227,7 +1251,8 @@ __DAM_DATA__
     var t = 'translate(' + view.x.toFixed(2) + ' ' + view.y.toFixed(2) + ') scale(' + view.k.toFixed(4) + ')';
     zoomGroups.forEach(function(g) { g.setAttribute('transform', t); });
     allPts.forEach(function(el) {
-      el.setAttribute('r', Math.max(0.25, parseFloat(el.getAttribute('data-r')) / view.k).toFixed(3));
+      el.setAttribute('r', Math.max(unitsForPx(0.4),
+        parseFloat(el.getAttribute('data-r')) / view.k).toFixed(5));
     });
     // labels and city dots are in the base map, but they read at screen size too
     // Base-map type is sized in screen pixels. Sizing it in user units made every
@@ -1264,33 +1289,31 @@ __DAM_DATA__
     var groups = Array.from(document.querySelectorAll('.facet:not(.off):not(.empty) .dams-live'));
     var all = Array.from(document.querySelectorAll('.dams-live'));
     if (!all.length) return;
-    var on = view.k >= DAM_ZOOM && document.body.classList.contains('detail-on');
+    var on = view.k >= DAM_ZOOM && document.body.classList.contains('detail-on') &&
+             (!showDams || showDams.checked);
     if (!on) {
-      if (damKey !== '') { damKey = ''; all.forEach(function(g) { g.innerHTML = ''; }); }
+      damKey = '';
+      all.forEach(function(g) { if (g.innerHTML) g.innerHTML = ''; });
       return;
     }
     var x0 = -view.x / view.k, x1 = (-view.x + VB_W) / view.k;
     var y0 = -view.y / view.k, y1 = (-view.y + VB_H) / view.k;
     var withLabels = view.k >= DAM_LABEL_ZOOM;
     var key = [x0.toFixed(2), y0.toFixed(2), x1.toFixed(2), withLabels,
-               damsNear && damsNear.checked, visibleHitStamp].join('|');
+               showDams && showDams.checked, visibleHitStamp].join('|');
     if (key === damKey) return;
     damKey = key;
 
-    var r = unitsForPx(2.6), fs = unitsForPx(9.5);
+    var r = unitsForPx(2.3), fs = unitsForPx(9.5);   // r is the square's half-side
 
-    // Dams anywhere is a lot of noise, and most of them sit on water too small to
-    // appear in a 110m lakes / 50m rivers base map - which is why they looked like
-    // they were in the middle of dry land. Restricted to the neighbourhood of the
-    // matches, they read as context for the samples instead of decoration.
-    var near = damsNear && damsNear.checked;
+    // Dams are only ever drawn near the matches. Shown everywhere they are noise,
+    // and most sit on water too small for a 110m lakes / 50m rivers base map to
+    // carry - which is why they looked like they stood in the middle of dry land.
     var hx = [], hy = [];
-    if (near) {
-      document.querySelectorAll('.facet:not(.off):not(.empty) .hits .pt').forEach(function(el) {
-        if (el.classList.contains('hidden')) return;
-        hx.push(+el.getAttribute('cx')); hy.push(+el.getAttribute('cy'));
-      });
-    }
+    document.querySelectorAll('.facet:not(.off):not(.empty) .hits .pt').forEach(function(el) {
+      if (el.classList.contains('hidden')) return;
+      hx.push(+el.getAttribute('cx')); hy.push(+el.getAttribute('cy'));
+    });
     // ~1.2 viewBox units is roughly 50 km at the equator
     var NEAR_R = 1.2, NEAR_R2 = NEAR_R * NEAR_R;
     function nearHit(x, y) {
@@ -1311,15 +1334,16 @@ __DAM_DATA__
     for (i = 0; i < n.length && marks.length < DAM_MARK_CAP; i++) {
       x = c[2 * i]; y = c[2 * i + 1];
       if (x < x0 || x > x1 || y < y0 || y > y1) continue;
-      if (near && !nearHit(x, y)) continue;
-      marks.push('<circle class="ne-dam" cx="' + x + '" cy="' + y + '" r="' + r.toFixed(3) +
-                 '" data-tip="' + esc(n[i]) + '\ndam"></circle>');
+      if (!nearHit(x, y)) continue;
+      marks.push('<rect class="ne-dam" x="' + (x - r).toFixed(5) + '" y="' + (y - r).toFixed(5) +
+                 '" width="' + (r * 2).toFixed(5) + '" height="' + (r * 2).toFixed(5) +
+                 '" data-tip="' + esc(n[i]) + '\ndam"></rect>');
       if (!withLabels) continue;
       cell = Math.round(x / cellW) + ':' + Math.round(y / cellH);
       if (taken[cell]) continue;
       taken[cell] = 1;
-      labels.push('<text class="ne-dam-label" x="' + (x + r * 1.7).toFixed(2) +
-                  '" y="' + (y + r * 1.1).toFixed(2) + '" style="font-size:' + fs.toFixed(3) +
+      labels.push('<text class="ne-dam-label" x="' + (x + r * 1.8).toFixed(5) +
+                  '" y="' + (y + r * 1.2).toFixed(5) + '" style="font-size:' + fs.toFixed(5) +
                   'px">' + esc(n[i]) + '</text>');
     }
     var html = marks.join('') + labels.join('');
@@ -1328,7 +1352,7 @@ __DAM_DATA__
   }
   function scheduleDams() { clearTimeout(damTimer); damTimer = setTimeout(renderDams, 110); }
   var visibleHitStamp = 0;
-  if (damsNear) damsNear.addEventListener('change', function() { damKey = ''; renderDams(); });
+  if (showDams) showDams.addEventListener('change', function() { damKey = ''; renderDams(); });
 
   // Sample types among the markers currently on screen: zoom into a region and the
   // legend narrows to what was actually matched there.
@@ -1376,7 +1400,7 @@ __DAM_DATA__
       e.preventDefault();
       var p = toUser(svg, e.clientX, e.clientY);
       var k0 = view.k;
-      view.k = Math.max(1, Math.min(40, k0 * Math.exp(-e.deltaY * 0.0015)));
+      view.k = Math.max(1, Math.min(MAX_ZOOM, k0 * Math.exp(-e.deltaY * 0.0015)));
       view.x = p.x - (p.x - view.x) * (view.k / k0);
       view.y = p.y - (p.y - view.y) * (view.k / k0);
       clampView(); schedule();
