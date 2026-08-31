@@ -726,6 +726,11 @@ if do_get_spectra:
         # lists ALWAYS defined
         query_list = df_input["query"].tolist()
         name_list = df_input["name"].tolist()
+
+        # keep the query behind each result name, so downstream pages (GeoMASST)
+        # can draw the structure without re-deriving it
+        st.session_state.setdefault("query_by_name", {})
+        st.session_state["query_by_name"].update(dict(zip(name_list, query_list)))
         type_list = df_input["type"].tolist()
         searchtype_list = df_input["searchtype"].tolist()
         formula_list = df_input["formula"].tolist()

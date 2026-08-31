@@ -71,33 +71,42 @@ def _run_standalone_search(query, searchtype, mode, min_cos, min_peaks,
 
 
 ALL = "All molecules"
-source = "structuremasst"
 selected_name = None
 max_molecule_maps = 5
 
 has_results = bool(st.session_state.get("raw_results"))
-tabs = st.tabs(["From this session's StructureMASST results", "Search from here"])
+SRC_RESULTS = "This session's StructureMASST results"
+SRC_SEARCH = "Search from here"
 
-with tabs[0]:
-    if has_results:
-        names = list(st.session_state.raw_results.keys())
-        # A batch search leaves one entry per molecule; mapping them together is the
-        # point of that search, so it is the default whenever there is more than one.
-        options = ([ALL] + names) if len(names) > 1 else names
-        selected_name = st.selectbox("Select chemical", options, key="result_name")
-        if selected_name == ALL:
-            max_molecule_maps = st.slider(
-                "Maximum separate molecule maps", min_value=1, max_value=20, value=5,
-                help=("One map shows every molecule at once, sized by how many were "
-                      "matched at each site. Pick molecules in the side list to split "
-                      "them out; this caps how many get their own map."),
-            )
-    else:
-        st.info("No StructureMASST results in this session yet. "
-                "Run one, or use the other tab to search from here.")
+# One source, one button. A separate "search" button made GeoMASST feel like two
+# tools; the run button behaves the same whichever source the matches come from.
+source = st.radio(
+    "Matches to map",
+    [SRC_RESULTS, SRC_SEARCH] if has_results else [SRC_SEARCH],
+    horizontal=True, key="geo_source",
+)
 
-with tabs[1]:
-    st.caption("Runs the same search StructureMASST would, then maps it.")
+sa_query = ""
+sa_searchtype = sa_mode = None
+sa_modify = False
+sa_cos, sa_peaks = 0.70, 5
+
+if source == SRC_RESULTS:
+    names = list(st.session_state.raw_results.keys())
+    # A batch search leaves one entry per molecule; mapping them together is the
+    # point of that search, so it is the default whenever there is more than one.
+    options = ([ALL] + names) if len(names) > 1 else names
+    selected_name = st.selectbox("Select chemical", options, key="result_name")
+    if selected_name == ALL:
+        max_molecule_maps = st.slider(
+            "Maximum separate molecule maps", min_value=1, max_value=20, value=5,
+            help=("One map shows every molecule at once, sized by how many were "
+                  "matched at each site. Pick molecules in the side list to split "
+                  "them out; this caps how many get their own map."),
+        )
+else:
+    if not has_results:
+        st.caption("No StructureMASST results in this session - search here instead.")
     sa_query = st.text_input("SMILES or SMARTS", key="geo_sa_query",
                              placeholder="CCNc1nc(Cl)nc(NC(C)(C)C)n1")
     c1, c2, c3 = st.columns(3)
@@ -116,23 +125,8 @@ with tabs[1]:
         sa_cos = st.number_input("Min cosine", 0.0, 1.0, 0.70, 0.05, key="geo_sa_cos")
     with c5:
         sa_peaks = st.number_input("Min matched peaks", 1, 50, 5, 1, key="geo_sa_peaks")
-    if st.button("Search and map", key="geo_sa_run", disabled=not sa_query.strip()):
-        with st.spinner("Searching…"):
-            redu, msg = _run_standalone_search(
-                sa_query.strip(), sa_searchtype, sa_mode, float(sa_cos), int(sa_peaks),
-                bool(sa_modify) and sa_mode == "fasst", True, True,
-            )
-        if redu is None:
-            st.warning(msg)
-        else:
-            st.success(msg)
-            st.session_state["_geomasst_standalone"] = redu
-            st.session_state["_geomasst_standalone_name"] = sa_query.strip()
 
-if st.session_state.get("_geomasst_standalone") is not None and not has_results:
-    source = "standalone"
-
-if has_results or st.session_state.get("_geomasst_standalone") is not None:
+if has_results or source == SRC_SEARCH:
     if st.button("Run GeoMASST", key="run_geomasst_btn"):
         # Tracking this action
         try:
@@ -141,11 +135,21 @@ if has_results or st.session_state.get("_geomasst_standalone") is not None:
             print(f"Error tracking event: {e}")
         
 
+        if source == SRC_SEARCH and not sa_query.strip():
+            st.warning("Enter a SMILES or SMARTS to search for.")
+            st.stop()
+
         with st.spinner("Running GeoMASST…"):
-            standalone = st.session_state.get("_geomasst_standalone")
-            if selected_name is None and standalone is not None:
-                df_redu = standalone
-                selected_name = st.session_state.get("_geomasst_standalone_name", "query")
+            if source == SRC_SEARCH:
+                df_redu, msg = _run_standalone_search(
+                    sa_query.strip(), sa_searchtype, sa_mode, float(sa_cos), int(sa_peaks),
+                    bool(sa_modify) and sa_mode == "fasst", True, True,
+                )
+                if df_redu is None:
+                    st.warning(msg)
+                    st.stop()
+                st.caption(msg)
+                selected_name = sa_query.strip()
             elif selected_name == ALL:
                 frames = []
                 for _name, _pair in st.session_state.raw_results.items():
@@ -163,11 +167,17 @@ if has_results or st.session_state.get("_geomasst_standalone") is not None:
             # background layer: environmental ReDU rows we did NOT hit
             df_context = load_environmental_context(df_redu)
 
+            # SMILES behind each result, so the map can draw the query structures
+            structures = dict(st.session_state.get("query_by_name") or {})
+            if source == SRC_SEARCH:
+                structures = {selected_name: selected_name}   # the query is the SMILES
+
             st.session_state["_geomasst_html"] = build_geomasst_map_html(
                 df_hits=df_redu,
                 df_background=df_context,
                 compound_name=selected_name,
                 max_molecule_maps=max_molecule_maps,
+                structures=structures,
             )
 
     if st.session_state.get("_geomasst_html"):
