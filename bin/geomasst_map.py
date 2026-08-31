@@ -846,7 +846,9 @@ body { margin:0; background:var(--paper); color:var(--ink); font:14px -apple-sys
 .facet-head { display:flex; justify-content:space-between; align-items:baseline; gap:10px; padding:2px 4px 6px; }
 .facet-name { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px; font-weight:600; }
 .facet-meta { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; color:var(--muted); }
-.fmap { width:100%; height:auto; display:block; cursor:grab; touch-action:none; }
+.fmap { width:100%; height:auto; display:block; cursor:grab; touch-action:none;
+  user-select:none; -webkit-user-select:none; }
+.ne-city-label, .ne-country-label, .ne-dam-label { pointer-events:none; }
 .fmap.dragging { cursor:grabbing; }
 .pt { cursor:pointer; }
 /* no outline on hits; the marker radius is counter-scaled on zoom but a stroke width
@@ -1484,6 +1486,9 @@ __CTX_DATA__
   var pending = false;
 
   function clampView() {
+    if (!isFinite(view.k)) view.k = 1;
+    if (!isFinite(view.x)) view.x = 0;
+    if (!isFinite(view.y)) view.y = 0;
     view.k = Math.max(1, Math.min(MAX_ZOOM, view.k));
     var minX = VB_W - VB_W * view.k, minY = viewH() - viewH() * view.k;
     view.x = Math.max(minX, Math.min(0, view.x));
@@ -1492,6 +1497,9 @@ __CTX_DATA__
   var lastK = -1, wheelIdle = null;
   function render() {
     pending = false;
+    try { draw(); } catch (err) { /* never strand the scheduler */ }
+  }
+  function draw() {
     var t = 'translate(' + view.x.toFixed(2) + ' ' + view.y.toFixed(2) + ') scale(' + view.k.toFixed(4) + ')';
     zoomGroups.forEach(function(g) { g.setAttribute('transform', t); });
     allPts.forEach(function(el) {
@@ -1676,32 +1684,37 @@ __CTX_DATA__
     }, { passive: false });
 
     svg.addEventListener('pointerdown', function(e) {
-      // One shared drag record, not one per map. Per-map state could be left
-      // half-set - a pointerup delivered elsewhere, or capture never released -
-      // and that map would then ignore every later drag while its neighbour
-      // still worked.
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      // Any stale record is dropped here, so a drag can never be blocked by
+      // whatever happened last time.
       drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y,
-               rect: svg.getBoundingClientRect(), el: e.target, moved: false, svg: svg,
-               id: e.pointerId };
-    });
-    svg.addEventListener('pointermove', function(e) {
-      if (!drag) return;
-      var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
-      if (!drag.moved) {
-        // capture only once a real drag starts; taking it on pointerdown would
-        // retarget the following click and break clicking a marker
-        drag.moved = true;
-        drag.svg.classList.add('dragging');
-        document.body.classList.add('interacting');
-        try { drag.svg.setPointerCapture(e.pointerId); } catch (err) {}
-      }
-      view.x = drag.vx + dx / drag.rect.width * VB_W;
-      view.y = drag.vy + dy / drag.rect.height * viewH();
-      clampView(); schedule();
+               svg: svg, el: e.target, moved: false, id: e.pointerId };
+      // stop the browser starting a text selection or a native image drag, either
+      // of which swallows the pointer stream for the rest of the gesture
+      e.preventDefault();
     });
   });
 
+  // Pan from window-level listeners rather than setPointerCapture. Capture had to
+  // be released to be healthy, and any pointerup that went astray - released over
+  // the page around the component, the window losing focus - left it held by one
+  // map, which then swallowed the pointer stream while its neighbour still worked.
+  function onMove(e) {
+    if (!drag) return;
+    if (e.buttons === 0) { endDrag(null); return; }   // pointerup we never saw
+    var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!drag.moved) {
+      if (Math.abs(dx) + Math.abs(dy) < 4) return;
+      drag.moved = true;
+      drag.svg.classList.add('dragging');
+      document.body.classList.add('interacting');
+    }
+    var rect = drag.svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    view.x = drag.vx + dx / rect.width * VB_W;
+    view.y = drag.vy + dy / rect.height * viewH();
+    clampView(); schedule();
+  }
   function endDrag(e) {
     if (!drag) return;
     var d = drag;
@@ -1710,17 +1723,16 @@ __CTX_DATA__
         d.el && d.el.classList && d.el.classList.contains('pt')) {
       showInfo(d.el);
     }
-    try { if (e && d.svg.hasPointerCapture && d.svg.hasPointerCapture(d.id)) d.svg.releasePointerCapture(d.id); } catch (err) {}
     d.svg.classList.remove('dragging');
     document.body.classList.remove('interacting');
     lastK = -1; schedule();
   }
-  // on the window, so releasing outside a map still ends the drag
+  window.addEventListener('pointermove', onMove, true);
   ['pointerup', 'pointercancel'].forEach(function(ev) {
     window.addEventListener(ev, endDrag, true);
   });
-  window.addEventListener('lostpointercapture', function() { if (drag) endDrag(null); }, true);
   window.addEventListener('blur', function() { if (drag) endDrag(null); });
+  document.addEventListener('visibilitychange', function() { if (drag) endDrag(null); });
 
   document.getElementById('btnResetZoom').addEventListener('click', function() {
     view = { k: 1, x: 0, y: 0 }; schedule();
