@@ -71,11 +71,21 @@ def _load_points(path: str, limit: int) -> list:
         return []
 
 
-def _label_group(gid: str, points: list, cls: str, dx: float = 2.2, dy: float = 1.4) -> str:
+def _label_group(gid: str, points: list, cls: str,
+                 dx_em: float = 0.55, dy_em: float = 0.32) -> str:
+    """
+    Labels sit at the feature, offset in em.
+
+    The offset has to scale with the type, not with the map: expressed in viewBox
+    units it grew with the zoom, so a city name drifted further from its dot the
+    further you zoomed in. em resolves against the font size, which is held
+    constant in screen pixels.
+    """
     if not points:
         return ""
+    off = f' dx="{dx_em}em" dy="{dy_em}em"' if (dx_em or dy_em) else ""
     txt = "".join(
-        f'<text class="{cls}" x="{c["x"] + dx}" y="{c["y"] + dy}">{html.escape(str(c["n"]))}</text>'
+        f'<text class="{cls}" x="{c["x"]}" y="{c["y"]}"{off}>{html.escape(str(c["n"]))}</text>'
         for c in points
     )
     return f'<g id="{gid}">{txt}</g>'
@@ -92,7 +102,7 @@ def _detail_svg(max_cities: int = 90, max_countries: int = 177) -> str:
         f'<circle class="ne-city" cx="{c["x"]}" cy="{c["y"]}" r="0.9"></circle>' for c in cities)
     return (
         f'<g id="gm-detail">{dots}</g>'
-        + _label_group("gm-country-labels", countries, "ne-country-label", dx=0, dy=0)
+        + _label_group("gm-country-labels", countries, "ne-country-label", dx_em=0, dy_em=0.3)
         + _label_group("gm-city-labels", cities, "ne-city-label")
     )
 
@@ -962,12 +972,10 @@ body.tiles-on .basemap, body.tiles-on .detail { display:none; }
       <span>Show sites with no hit</span></label>
     <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDetail" __DETAIL_CHECKED__>
       <span>Detailed base map</span></label>
-    <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDams" checked>
+    <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDams">
       <span>Dams near matches</span></label>
     <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showCountryNames">
       <span>Country names</span></label>
-    <label class="undated-toggle" style="margin:0 0 0 6px;__DETAIL_ROW_STYLE__"><input type="checkbox" id="showDamNames">
-      <span>Dam names</span></label>
     <label class="undated-toggle" style="margin:0 0 0 6px"><input type="checkbox" id="useTiles">
       <span>Street base map (loads external tiles)</span></label>
     <button class="time-btn" id="btnResetZoom">Reset zoom</button>
@@ -1066,13 +1074,11 @@ __CTX_DATA__
   var showDetail = document.getElementById('showDetail');
   var showDams = document.getElementById('showDams');
   var showCountryNames = document.getElementById('showCountryNames');
-  var showDamNames = document.getElementById('showDamNames');
+
   if (showCountryNames) showCountryNames.addEventListener('change', function() {
     document.body.classList.toggle('names-country', showCountryNames.checked);
   });
-  if (showDamNames) showDamNames.addEventListener('change', function() {
-    damKey = ''; renderDams();
-  });
+
   var sizeMode = document.getElementById('sizeMode');
   var colorMode = document.getElementById('colorMode');
 
@@ -1496,7 +1502,7 @@ __CTX_DATA__
     // Base-map type is sized in screen pixels. Sizing it in user units made every
     // label render at roughly 0.6 px per unit - a 4.6 unit label came out under 3 px
     // and was effectively invisible.
-    cityLabelUses.forEach(function(u) { u.style.fontSize = unitsForPx(10.5).toFixed(3) + 'px'; });
+    cityLabelUses.forEach(function(u) { u.style.fontSize = unitsForPx(9).toFixed(3) + 'px'; });
     countryLabelUses.forEach(function(u) { u.style.fontSize = unitsForPx(11.5).toFixed(3) + 'px'; });
     damLabelUses.forEach(function(u) { u.style.fontSize = unitsForPx(9.5).toFixed(3) + 'px'; });
     var cityR = unitsForPx(2.4).toFixed(3);
@@ -1539,7 +1545,7 @@ __CTX_DATA__
     }
     var x0 = -view.x / view.k, x1 = (-view.x + VB_W) / view.k;
     var y0 = -view.y / view.k, y1 = (-view.y + viewH()) / view.k;
-    var withLabels = view.k >= DAM_LABEL_ZOOM && !!(showDamNames && showDamNames.checked);
+    var withLabels = view.k >= DAM_LABEL_ZOOM;   // names come with the dams
     var key = [x0.toFixed(2), y0.toFixed(2), x1.toFixed(2), withLabels,
                showDams && showDams.checked, visibleHitStamp].join('|');
     if (key === damKey) return;
@@ -1583,8 +1589,8 @@ __CTX_DATA__
       cell = Math.round(x / cellW) + ':' + Math.round(y / cellH);
       if (taken[cell]) continue;
       taken[cell] = 1;
-      labels.push('<text class="ne-dam-label" x="' + (x + r * 1.8).toFixed(5) +
-                  '" y="' + (y + r * 1.2).toFixed(5) + '" style="font-size:' + fs.toFixed(5) +
+      labels.push('<text class="ne-dam-label" x="' + x + '" y="' + y +
+                  '" dx="0.6em" dy="0.32em" style="font-size:' + fs.toFixed(5) +
                   'px">' + esc(n[i]) + '</text>');
     }
     var html = marks.join('') + labels.join('');
@@ -1635,13 +1641,24 @@ __CTX_DATA__
   }
   function unitsForPx(px) { return px / (view.k * pxPerUnit); }
   measure();
-  window.addEventListener('resize', function() { measure(); lastK = -1; baseKey = ''; schedule(); });
+  // measure() used to run once, before layout had settled, which left px-per-unit
+  // about 1.5x too small and every label correspondingly too big. Watch the map
+  // instead of guessing, and keep it out of the per-frame path.
+  function remeasure() { measure(); lastK = -1; baseKey = ''; ctxKey = ''; schedule(); }
+  window.addEventListener('resize', remeasure);
+  if (window.ResizeObserver) {
+    var ro = new ResizeObserver(remeasure);
+    document.querySelectorAll('.facet .fmap').forEach(function(el) { ro.observe(el); });
+  } else {
+    setTimeout(remeasure, 250);
+  }
 
   function toUser(svg, cx, cy) {
     var r = svg.getBoundingClientRect();
     return { x: (cx - r.left) / r.width * VB_W, y: (cy - r.top) / r.height * viewH() };
   }
 
+  var drag = null;
   maps.forEach(function(svg) {
     svg.addEventListener('wheel', function(e) {
       e.preventDefault();
@@ -1658,41 +1675,52 @@ __CTX_DATA__
       clampView(); schedule();
     }, { passive: false });
 
-    // Pointer capture is taken only once a real drag starts. Capturing on
-    // pointerdown would retarget the following click to the <svg>, so a plain click
-    // on a marker could never be attributed to that marker.
-    var drag = null;
     svg.addEventListener('pointerdown', function(e) {
+      // One shared drag record, not one per map. Per-map state could be left
+      // half-set - a pointerup delivered elsewhere, or capture never released -
+      // and that map would then ignore every later drag while its neighbour
+      // still worked.
       drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y,
-               rect: svg.getBoundingClientRect(), el: e.target, moved: false };
+               rect: svg.getBoundingClientRect(), el: e.target, moved: false, svg: svg,
+               id: e.pointerId };
     });
     svg.addEventListener('pointermove', function(e) {
       if (!drag) return;
       var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
       if (!drag.moved) {
+        // capture only once a real drag starts; taking it on pointerdown would
+        // retarget the following click and break clicking a marker
         drag.moved = true;
-        svg.classList.add('dragging');
+        drag.svg.classList.add('dragging');
         document.body.classList.add('interacting');
-        try { svg.setPointerCapture(e.pointerId); } catch (err) {}
+        try { drag.svg.setPointerCapture(e.pointerId); } catch (err) {}
       }
       view.x = drag.vx + dx / drag.rect.width * VB_W;
-      view.y = drag.vy + dy / drag.rect.height * VB_H;
+      view.y = drag.vy + dy / drag.rect.height * viewH();
       clampView(); schedule();
     });
-    ['pointerup', 'pointercancel'].forEach(function(ev) {
-      svg.addEventListener(ev, function(e) {
-        if (drag && !drag.moved && ev === 'pointerup' &&
-            drag.el && drag.el.classList && drag.el.classList.contains('pt')) {
-          showInfo(drag.el);
-        }
-        if (drag && drag.moved) { try { svg.releasePointerCapture(e.pointerId); } catch (err) {} }
-        drag = null; svg.classList.remove('dragging');
-        document.body.classList.remove('interacting');
-        lastK = -1; schedule();
-      });
-    });
   });
+
+  function endDrag(e) {
+    if (!drag) return;
+    var d = drag;
+    drag = null;
+    if (!d.moved && e && e.type === 'pointerup' &&
+        d.el && d.el.classList && d.el.classList.contains('pt')) {
+      showInfo(d.el);
+    }
+    try { if (e && d.svg.hasPointerCapture && d.svg.hasPointerCapture(d.id)) d.svg.releasePointerCapture(d.id); } catch (err) {}
+    d.svg.classList.remove('dragging');
+    document.body.classList.remove('interacting');
+    lastK = -1; schedule();
+  }
+  // on the window, so releasing outside a map still ends the drag
+  ['pointerup', 'pointercancel'].forEach(function(ev) {
+    window.addEventListener(ev, endDrag, true);
+  });
+  window.addEventListener('lostpointercapture', function() { if (drag) endDrag(null); }, true);
+  window.addEventListener('blur', function() { if (drag) endDrag(null); });
 
   document.getElementById('btnResetZoom').addEventListener('click', function() {
     view = { k: 1, x: 0, y: 0 }; schedule();
