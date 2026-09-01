@@ -829,6 +829,38 @@ def build_query_table(prefix: str = "lm_", ui: dict | None = None):
     return df_input, None
 
 
+def structures_for_results(state=None) -> dict:
+    """
+    The SMILES behind each result name, for drawing query structures downstream.
+
+    Two records exist and neither is complete on its own. query_by_name is
+    written when a search is launched, so it knows the names the user typed.
+    query_table also gains a row whenever a substructure hit is split into one
+    query per matched molecule - a path that leaves query_by_name naming only the
+    original SMARTS, which matches no result and draws nothing. Reading both, with
+    query_by_name last, covers either.
+
+    Entries that will not parse (a SMARTS, say) are harmless: the map skips what
+    it cannot draw.
+    """
+    state = st.session_state if state is None else state
+    out = {}
+
+    table = state.get("query_table")
+    if isinstance(table, pd.DataFrame) and not table.empty and "name" in table.columns:
+        for _, row in table.iterrows():
+            smiles = str(row.get("original_smiles") or "").strip()
+            if not smiles and str(row.get("type", "")).strip() == "smiles":
+                smiles = str(row.get("query") or "").strip()
+            if smiles:
+                out[str(row["name"])] = smiles
+
+    for name, smiles in (state.get("query_by_name") or {}).items():
+        if smiles:
+            out[str(name)] = str(smiles)
+    return out
+
+
 def search_kwargs(ui: dict) -> dict:
     """The run_structuremasst_search() arguments these controls describe."""
     return {

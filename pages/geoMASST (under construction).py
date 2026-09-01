@@ -28,6 +28,7 @@ from bin.streamlit_search_ui import (
     render_search_inputs,
     run_structuremasst_search,
     search_kwargs,
+    structures_for_results,
 )
 from bin.run_masstRecords_queries import _get_fetcher
 from bin.shared_data import get_molecule_classes_cached
@@ -195,7 +196,7 @@ if has_results or source == SRC_SEARCH:
             df_context = load_environmental_context(df_redu)
 
             # SMILES behind each result, so the map can draw the query structures
-            structures = dict(st.session_state.get("query_by_name") or {})
+            structures = structures_for_results()
             if source == SRC_SEARCH:
                 structures = search_structures
 

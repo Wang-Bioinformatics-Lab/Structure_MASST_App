@@ -1210,9 +1210,19 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                             ignore_index=True
                                         )
 
+                                    # the split makes each molecule its own result, so
+                                    # each needs its own structure - downstream pages
+                                    # look results up by name
+                                    st.session_state.setdefault("query_by_name", {})
+                                    st.session_state["query_by_name"][new_name] = row["Smiles"]
+
                                 # remove the original group
                                 st.session_state.molecule_overview.pop(name, None)
                                 st.session_state.grouped_results.pop(name, None)
+                                # ...and the query it came from, which is a SMARTS or a
+                                # substructure and no longer names any result
+                                if isinstance(st.session_state.get("query_by_name"), dict):
+                                    st.session_state["query_by_name"].pop(name, None)
 
                             st.rerun()
 
