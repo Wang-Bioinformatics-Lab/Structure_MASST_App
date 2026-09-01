@@ -209,9 +209,10 @@ if has_results or source == SRC_SEARCH:
             )
 
     if st.session_state.get("_geomasst_html"):
-        # tall enough that the controls and both maps fit without the component
-        # scrolling inside itself; the controls are sticky in case it still does
-        components.html(st.session_state["_geomasst_html"], height=1600, scrolling=True)
+        # The component measures itself and asks the host to resize the frame, so
+        # this height only covers the moment before that message arrives. No
+        # scrolling: a scrollbar inside a scrollbar is what we are getting rid of.
+        components.html(st.session_state["_geomasst_html"], height=1100, scrolling=False)
 
 else:
     st.warning("This is a downstream tool. Run StructureMASST first to generate GeoMASST results.")
