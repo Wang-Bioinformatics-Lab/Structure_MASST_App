@@ -354,6 +354,50 @@ def _tree_svg(tree, x_map, y_map, max_x, tree_w: int, n_leaves: int,
     )
 
 
+# ── Molecule order ───────────────────────────────────────────────────────────
+
+def _order_from_molecules(pairs: list, molecules_path: str | None) -> list | None:
+    """
+    Put the molecules in the order the input file lists them.
+
+    The pair list is built from dataframe column order, which follows the merge
+    rather than anything the user chose, and was then reordered again by
+    similarity clustering. When a batch file exists it states an order, and that
+    is the one worth keeping: it is how the person reading the tree expects to
+    find their molecules, and it is the same order in both heatmaps.
+
+    Returns None when there is no usable file, so the caller can fall back.
+    """
+    if not molecules_path:
+        return None
+    path = Path(molecules_path)
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path, sep="\t", low_memory=False)
+    except Exception:
+        return None
+    if "name" not in df.columns:
+        return None
+
+    def key(name: str) -> str:
+        return re.sub(r"[\s\W]+", "_", str(name)).strip("_")
+
+    rank, seen = {}, set()
+    for name in df["name"].astype(str):
+        for form in (name, key(name)):
+            if form and form not in seen:
+                seen.add(form)
+                rank.setdefault(form, len(rank))
+    if not rank:
+        return None
+
+    known = [pr for pr in pairs if pr[0] in rank or key(pr[0]) in rank]
+    rest = [pr for pr in pairs if pr not in known]
+    known.sort(key=lambda pr: rank.get(pr[0], rank.get(key(pr[0]), 0)))
+    return known + rest
+
+
 # ── Molecule reordering by Animalia MASST similarity ─────────────────────────
 
 def _reorder_by_animalia(df: pd.DataFrame, pairs: list) -> list:
@@ -3447,7 +3491,9 @@ def main():
     ap = argparse.ArgumentParser(description="Generate MetaboTree HTML heatmap")
     ap.add_argument("--metadata",      required=True,  help="merged_metadata.tsv")
     ap.add_argument("--tree",          required=True,  help="labelled_supertree_subset_prepped.nwk")
-    ap.add_argument("--molecules",     default=None,   help="structuremasst_input_unique.tsv (SMILES source)")
+    ap.add_argument("--molecules",     default=None,
+                    help="structuremasst_input_unique.tsv: the SMILES source, and "
+                         "the order the molecules appear in on the tree")
     ap.add_argument("--output",        default="tree_heatmap.html")
     ap.add_argument("--row-height",    type=float, default=0.45, dest="row_h",    metavar="PX")
     ap.add_argument("--cell-width",    type=int,   default=10,   dest="cell_w",   metavar="PX")
@@ -3507,9 +3553,15 @@ def main():
     pairs = _get_pairs(df_full)   # pair list from full dataset so all molecules appear
     print(f"  {len(pairs)} molecule pairs found")
 
-    # reorder molecules by Animalia MASST similarity (always uses full df for consistency)
-    print("  Reordering molecules by Animalia MASST similarity …")
-    pairs = _reorder_by_animalia(df_full, pairs)
+    ordered = _order_from_molecules(pairs, args.molecules)
+    if ordered is not None:
+        pairs = ordered
+        print("  Molecules ordered as listed in the input file")
+    else:
+        # no input file to take an order from - fall back to grouping molecules
+        # that hit the same animals
+        print("  Reordering molecules by Animalia MASST similarity …")
+        pairs = _reorder_by_animalia(df_full, pairs)
 
     strip1_hex_map, strip1_rare, strip1_def_hex = _build_strip_colormap(df, args.strip1)
     strip2_hex_map, strip2_rare, strip2_def_hex = _build_strip_colormap(df, args.strip2)
