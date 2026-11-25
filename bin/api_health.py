@@ -13,6 +13,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from gnpsdata import fasst
+from bin.fasst_rate import submit_with_rate_limit
 
 # single source of truth, shared with the query path in bin/run_fasst.py
 from bin.run_fasst import FASST_NONTERMINAL_STATUS
@@ -85,7 +86,7 @@ def test_fasst_api_search_nonblocking():
     print("submitted", 0)
 
     # IMPORTANT: blocking=False so we always get a task id back
-    submit = fasst.query_fasst_api_usi(
+    submit = submit_with_rate_limit(fasst.query_fasst_api_usi,
         usi,
         database,
         host=FASST_API_SERVER_URL,

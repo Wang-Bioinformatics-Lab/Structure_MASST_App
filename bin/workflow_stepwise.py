@@ -26,6 +26,7 @@ if PKG_PATH not in sys.path:
 
 
 from gnpsdata import fasst
+from bin.fasst_rate import submit_with_rate_limit
 
 
 # FASST2: same production endpoints (POST /search, GET /search/result/{id}), a larger index,
@@ -137,7 +138,7 @@ def retrieve_raw_data_matches(
             usi_full = _as_usi(sid)
             print("submitted", usi_full)
 
-            token = fasst.query_fasst_api_usi(
+            token = submit_with_rate_limit(fasst.query_fasst_api_usi,
                 usi_full, database,
                 host=FASST_API_SERVER_URL,
                 analog=analog,
@@ -466,7 +467,7 @@ def retrieve_raw_data_matches_from_peaks(
                 continue
             spec = spec_lookup[sid]
             print(f"Submitting peaks query for spectrum {sid}")
-            token = fasst.query_fasst_api_peaks(
+            token = submit_with_rate_limit(fasst.query_fasst_api_peaks,
                 spec["precursor_mz"],
                 spec["peaks"],
                 database,
