@@ -1,10 +1,12 @@
 version: '3'
 services:
-  structure-masst-streamlit:
+  # Rust web server + Python compute worker processes (replaces the Streamlit
+  # app, the Celery worker container and Redis)
+  structure-masst-server:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: structure-masst-streamlit
+    container_name: structure-masst-server
     volumes:
       - ./logs:/app/logs:rw
       - ./database/:/app/database:ro
@@ -24,13 +26,13 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8000M
+          memory: 24000M   # now also hosts the compute workers (the old worker container had no limit)
     environment:
+      WORKER_PROCESSES: 4
       VIRTUAL_HOST: structure-masst.gnps2.org
       VIRTUAL_PORT: 5000
       LETSENCRYPT_HOST: structure-masst.gnps2.org
       LETSENCRYPT_EMAIL: mwang87@gmail.com
-      USE_CELERY: "true"
 
   structure-masst-datasette:
     ports:
@@ -60,33 +62,6 @@ services:
       LETSENCRYPT_HOST: masst-records.gnps2.org
       LETSENCRYPT_EMAIL: mwang87@gmail.com
 
-
-  structure-masst-redis:
-    image: redis:7.2
-    container_name: structure-masst-redis
-    networks:
-      - default
-    restart: unless-stopped
-    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
-
-  structure-masst-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: structure-masst-worker
-    command: /app/run_worker.sh
-    volumes:
-      - ./logs:/app/logs:rw
-      - ./database/:/app/database:ro
-      - ./sessionoutput:/app/sessionoutput:rw
-    depends_on:
-      - structure-masst-redis
-    networks:
-      - default
-    restart: unless-stopped
-    environment:
-      USE_CELERY: "true"
-      
 networks:
   nginx-net:
     external:

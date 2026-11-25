@@ -5,3 +5,6 @@ sessionoutput*
 work/work*
 work/work_env*
 external
+target
+static/ketcher
+static/ketcher.zip

@@ -1,5 +1,5 @@
 version: '3'
 services:
-  structure-masst-streamlit:
+  structure-masst-server:
     ports:
     - "5000:5000"

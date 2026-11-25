@@ -32,3 +32,7 @@ __pycache__/
 .nextflow.log*
 work/
 .nextflow/
+# Rust build output and the downloaded Ketcher editor (make ketcher)
+target/
+static/ketcher/
+static/ketcher.zip

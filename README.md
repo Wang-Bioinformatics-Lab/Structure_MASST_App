@@ -1,5 +1,34 @@
 ## Structure MASST
 
+### Architecture
+
+The web app is a Rust server (`src/`, axum) that serves the browser UI
+(`static/`) and a JSON API. Chemistry and data work stays in Python: the server
+starts one long-lived compute worker (`bin/compute_worker.py`) that calls the
+existing `bin/` and `external/` modules (RDKit, masst_records, FASST, LifeMASST,
+GeoMASST) over a JSON-lines pipe. Worker processes are forked from a forkserver
+that preloads the ReDU table and the class labels, like the former Celery
+worker did, so Redis and the separate worker container are no longer needed.
+
+| Former (Streamlit)                              | Now                                                   |
+|-------------------------------------------------|-------------------------------------------------------|
+| `structureMASST.py`, `pages/*`                  | `static/*.html`, `static/app.js`, `static/pages.js`   |
+| `bin/streamlit_search_ui.py`, `streamlit_prepare.py` | `static/search.js` + `src/workflows.rs`          |
+| `st.session_state`                              | `src/session.rs` (`sessionoutput/<sid>/state.json`)   |
+| Celery + Redis (`tasks.py`, `run_worker.sh`)    | `bin/compute_worker.py`, `bin/compute_ops.py`, `src/worker.rs` |
+| spinners blocking the page                      | background jobs with live logs (`src/jobs.rs`)        |
+| `streamlit_ketcher`                             | Ketcher standalone in an iframe (`static/ketcher/`)   |
+
+Pages: `/` (StructureMASST), `/domainmasst`, `/geomasst`, `/lifemasst`.
+
+Environment: `PORT` (5000), `STRUCTUREMASST_PYTHON` / `STRUCTUREMASST_NEXTFLOW`
+(the conda env's binaries), `SESSION_DIR`, `WORKER_PROCESSES` (4),
+`PRELOAD_REDU` (1), `SMARTS_API_KEY` (or `keys.env`), plus `PATH_TO_SQLITE`,
+`LIFEMASST_SCRATCH`, `NF_WORK_DIR`, `NF_CONDA_CACHE` below.
+
+Development: `make ketcher` (download the structure editor), `make test`,
+`make run-local` (with `StructureMASST_env` active).
+
 ### Reference data for LifeMASST and GeoMASST
 
 Both tools need reference data that a MASST search does not produce. **You no
@@ -44,6 +73,6 @@ what is fetched, and why.
 Neither page requires a StructureMASST run first: both offer the StructureMASST
 search controls directly — name, SMILES/SMARTS, class label or USI, a batch CSV,
 and the same advanced options — and run the same search behind them. Those
-widgets live in `bin/streamlit_search_ui.py` and are keyed by a caller-supplied
-prefix, so the two pages share one implementation instead of each growing its
-own subset of the options.
+controls live in `static/search.js` (keyed by a page prefix) and the search
+behind them in `src/workflows.rs`, so all three pages share one implementation
+instead of each growing its own subset of the options.

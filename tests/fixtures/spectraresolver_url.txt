@@ -1,0 +1,1 @@
+http://metabolomics-usi.gnps2.org/dashinterface?usi1=mzspec%3AMSV1%3Aa+b%2Fc.mzML%3Ascan%3A1&usi2=mzspec%3AGNPS%3AGNPS-LIBRARY%3Aaccession%3ACCMSLIB1&width=10.0&height=6.0&mz_min=None&mz_max=None&max_intensity=125&annotate_precision=4&annotation_rotation=90&cosine=standard&fragment_mz_tolerance=0.05&grid=True&annotate_peaks=%5B%5B%5D%2C%20%5B%5D%5D

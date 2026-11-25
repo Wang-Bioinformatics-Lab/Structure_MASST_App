@@ -1,0 +1,33 @@
+[package]
+name = "structure-masst"
+version = "0.1.0"
+edition = "2021"
+description = "StructureMASST web app (Rust server; RDKit/pandas compute stays in bin/compute_worker.py)"
+publish = false
+
+[[bin]]
+name = "structure-masst"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["multipart"] }
+base64 = "0.22"
+csv = "1"
+dotenvy = "0.15"
+indexmap = { version = "2", features = ["serde"] }
+percent-encoding = "2"
+rand = "0.8"
+sha1_smol = "1"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

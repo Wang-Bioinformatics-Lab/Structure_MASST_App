@@ -12,7 +12,7 @@ dependencies:
   - requests>=2.31
   - requests-cache>=1.2
   - tqdm>=4.66
-  - streamlit>=1.45
+  - plotly               # bin/plotting.py imports it
   - lxml>=5.2             
   - beautifulsoup4>=4.12  
   - anytree>=2.12
@@ -38,9 +38,3 @@ dependencies:
   - pip:
       - formula_validation
       - git+https://github.com/Wang-Bioinformatics-Lab/GNPSDataPackage.git
-      - dash_extensions
-      - python-dotenv
-      - streamlit_ketcher
-      - umami-analytics
-      - celery==5.2.2
-      - redis
