@@ -1,3 +1,4 @@
+import re
 import pandas as pd
 import argparse
 import os
@@ -71,7 +72,7 @@ def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
 
             if 'error' in response:
                 if log_output:
-                    with open(os.path.join(log_output, f"{usi}_error.log"), "w") as f:
+                    with open(os.path.join(log_output, re.sub(r"[^A-Za-z0-9._-]", "_", str(usi))[:150] + "_error.log"), "w") as f:  # usi is user input: no path parts
                         json.dump(response, f)
 
                 raise RuntimeError(response['error'])

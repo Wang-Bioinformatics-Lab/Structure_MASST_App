@@ -11,7 +11,7 @@ const SMA = (() => {
   let sid = storageGet(SID_KEY);
 
   async function ensureSession() {
-    if (sid && /^[0-9a-f]{12}$/.test(sid)) return sid;
+    if (sid && /^([0-9a-f]{12}|[0-9a-f]{32})$/.test(sid)) return sid;
     const r = await fetch("/api/session", { method: "POST" });
     sid = (await r.json()).sid;
     storageSet(SID_KEY, sid);
@@ -67,10 +67,13 @@ const SMA = (() => {
     return el;
   }
 
-  // Minimal **bold** support for messages (as st.markdown did).
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  // Minimal **bold** support for messages (as st.markdown did); everything else is escaped.
   function md(text) {
-    const esc = String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-    return esc.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    return escapeHtml(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   }
 
   function msg(kind, text, extra) {
@@ -150,10 +153,17 @@ const SMA = (() => {
     const links = opts.links || {};
     const images = opts.images || {};
     const columns = cols.map((c, j) => {
-      const def = { title: (opts.titles || {})[c] || c, field: "c" + j, headerTooltip: true, maxWidth: 420 };
+      // column names can come from uploaded files: escape them
+      const def = { title: escapeHtml((opts.titles || {})[c] || c), field: "c" + j, headerTooltip: true, maxWidth: 420 };
       if (links[c]) {
-        def.formatter = "link";
-        def.formatterParams = { label: links[c], target: "_blank" };
+        // only real web links become clickable (never javascript: or data: URLs)
+        def.formatter = (cell) => {
+          const v = cell.getValue();
+          if (typeof v !== "string" || !/^https?:\/\//i.test(v)) return "";
+          const a = document.createElement("a");
+          a.href = v; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = links[c];
+          return a;
+        };
         def.headerSort = false;
       } else if (images[c]) {
         def.formatter = (cell) => {

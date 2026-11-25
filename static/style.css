@@ -177,3 +177,8 @@ pre.joblog {
 .caption { color: var(--muted); font-size: 0.9rem; margin: 0.25rem 0; }
 .report-frame.auto { height: 1100px; }
 .popover-body.left { right: auto; left: 0; }
+/* The batch panel opens in the page flow (pushing content down) rather than
+   floating, so it can never cover the search button. */
+.popover-body, .popover-body.left {
+  position: static; width: min(420px, 100%); margin-top: 0.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}

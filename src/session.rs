@@ -75,12 +75,14 @@ pub struct SessionStore {
     sessions: std::sync::Mutex<HashMap<String, SessionRef>>,
 }
 
+/// 32 hex characters (128 bits, unguessable); 12-character ids from the
+/// Streamlit era are still accepted for existing session folders.
 pub fn valid_sid(sid: &str) -> bool {
-    sid.len() == 12 && sid.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    (sid.len() == 32 || sid.len() == 12) && sid.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 pub fn new_sid() -> String {
-    let mut bytes = [0u8; 6];
+    let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

@@ -16,6 +16,7 @@ use crate::jobs::JobCtx;
 use crate::links;
 use crate::session::{Group, MgfSpectrum, SessionRef};
 use crate::table::{value_as_f64, value_as_i64, value_to_string, Table};
+use crate::validate;
 use crate::AppState;
 
 // ---------------------------------------------------------------------------
@@ -122,6 +123,16 @@ pub async fn build_query_table(
     let elements = |selected: &str| if selected == "substructure" { input.allowed_elements.clone() } else { "any".into() };
 
     let smiles = input.smiles.trim();
+    // check what was typed before it reaches RDKit or the database
+    if !input.usi.trim().is_empty() {
+        validate::usi(input.usi.trim())?;
+    } else if !smiles.is_empty() {
+        validate::structure(smiles)?;
+    }
+    validate::name(&input.name_query)?;
+    for (v, what) in [(&input.allowed_formula, "Fixed molecular formula"), (&input.allowed_elements, "Allowed element difference")] {
+        validate::formula_like(v.trim(), what)?;
+    }
     if !input.usi.trim().is_empty() {
         table.rows.push(qrow(input.usi.trim(), "USI_Query", "usi", "usi", "any", "any", ""));
     } else if !smiles.is_empty() {
@@ -144,6 +155,9 @@ pub async fn build_query_table(
                 .await?;
             if spectra.is_empty() {
                 bail!("No valid spectra found in the uploaded MGF file.");
+            }
+            if spectra.len() > validate::max_batch() {
+                bail!("The MGF file has {} spectra; the limit is {}.", spectra.len(), validate::max_batch());
             }
             for s in spectra {
                 let sid = s["spectrum_id"].as_str().unwrap_or_default().to_string();
@@ -173,7 +187,45 @@ pub async fn build_query_table(
     if table.is_empty() {
         bail!("No valid search input could be prepared.");
     }
+    validate_query_table(app, &table).await?;
     Ok((table, mgf))
+}
+
+/// Every row of the query table, whatever produced it (typed input or a batch file).
+async fn validate_query_table(app: &AppState, t: &Table) -> Result<()> {
+    if t.len() > validate::max_batch() {
+        bail!("Too many queries ({}); the limit is {}.", t.len(), validate::max_batch());
+    }
+    let mut classes: Option<HashSet<&str>> = None;
+    for r in 0..t.len() {
+        let get = |c: &str| t.cell(r, c).filter(|v| !v.is_null()).map(value_to_string).unwrap_or_default();
+        let (q, name, typ, st) = (get("query"), get("name"), get("type"), get("searchtype"));
+        let row = |e: anyhow::Error| anyhow!("{}: {e}", if t.len() > 1 { format!("Row {} ({name})", r + 1) } else { "Input".to_string() });
+        validate::name(&name).map_err(row)?;
+        validate::one_of(&st, &["exact", "substructure", "tanimoto", "usi", "class_label", "mgf_spectrum"], "search type").map_err(row)?;
+        match typ.as_str() {
+            "usi" => validate::usi(&q).map_err(row)?,
+            "smiles" | "smarts" => validate::structure(&q).map_err(row)?,
+            "mgf_spectrum" => validate::name(&q).map_err(row)?,
+            "class_label" => {
+                if classes.is_none() {
+                    let all = app.classes.get_or_try_init(|| async { app.worker.call_as::<Vec<String>>("molecule_classes", json!({})).await }).await?;
+                    classes = Some(all.iter().map(String::as_str).collect());
+                }
+                if !classes.as_ref().unwrap().contains(q.as_str()) {
+                    bail!("{}", row(anyhow!("unknown class label '{}'", q.chars().take(80).collect::<String>())));
+                }
+            }
+            _ => bail!("{}", row(anyhow!("not a valid SMILES/SMARTS, USI or class label"))),
+        }
+        for (c, what) in [("formula", "Fixed molecular formula"), ("allowed_elements", "Allowed element difference")] {
+            let v = get(c);
+            if v != "any" {
+                validate::formula_like(v.trim(), what).map_err(row)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn csv_query_table(app: &AppState, bytes: &[u8], selected: &str, flavor: Flavor) -> Result<Table> {
@@ -203,6 +255,15 @@ async fn csv_query_table(app: &AppState, bytes: &[u8], selected: &str, flavor: F
     }
     if t.is_empty() {
         bail!("The CSV has no rows with both a query and a name.");
+    }
+    if t.len() > validate::max_batch() {
+        bail!("The CSV has {} queries; the limit is {}.", t.len(), validate::max_batch());
+    }
+    for r in t.rows.iter() {
+        let q = value_to_string(&r[qc]);
+        if q.len() > validate::MAX_QUERY_LEN {
+            bail!("A query in the CSV is too long (max {} characters).", validate::MAX_QUERY_LEN);
+        }
     }
     let given_types: Option<Vec<Value>> = t.col("type").map(|c| t.rows.iter().map(|r| r[c].clone()).collect());
     let req: Vec<Value> = t
@@ -754,6 +815,15 @@ pub async fn raw_results_for(
     if p.min_peaks < min_peaks_allowed {
         bail!("Minimum Matching Peaks must be at least {min_peaks_allowed} for {}.", p.mode);
     }
+    if let Some(c) = &p.modification_condition {
+        validate::one_of(c, &["Raw file", "ATTRIBUTE_DatasetAccession", "NCBITaxonomy"], "modification condition")?;
+    }
+    if let Some(f) = &p.modification_formula {
+        validate::formula_like(f.trim(), "Modification formula")?;
+    }
+    if p.min_rank < 0 || p.min_rank > 10 {
+        bail!("Minimum Annotation Rank must be between 0 and 10.");
+    }
     if p.mode == "FASSTrecords" && has_direct_spectra(groups, mgf) {
         bail!("FASSTrecords cannot run for USI input (no library spectrum_id_int available). Use FASST.");
     }
@@ -789,8 +859,11 @@ pub async fn raw_results_for(
             }
         }
         "FASST" => {
-            let prec_tol: f64 = p.prec_tol.as_deref().unwrap_or("0.02").trim().parse().context("Precursor Tolerance must be a number")?;
-            let frag_tol: f64 = p.frag_tol.as_deref().unwrap_or("0.02").trim().parse().context("Fragment Tolerance must be a number")?;
+            let prec_tol = validate::number(p.prec_tol.as_deref().unwrap_or("0.02"), "Precursor Tolerance")?;
+            let frag_tol = validate::number(p.frag_tol.as_deref().unwrap_or("0.02"), "Fragment Tolerance")?;
+            if !(0.0..=10.0).contains(&prec_tol) || !(0.0..=10.0).contains(&frag_tol) {
+                bail!("Tolerances must be between 0 and 10 Da.");
+            }
 
             ctx.progress("Checking the FASST API…");
             let mut fasst_works = false;
@@ -823,7 +896,7 @@ pub async fn raw_results_for(
                         .with_context(|| format!("Could not parse modification formula '{formula}'"))?;
                     modimass = value_as_f64(&v);
                 } else if let Some(m) = p.modification_mass.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
-                    modimass = Some(m.parse().context("Modification mass must be a number")?);
+                    modimass = Some(validate::number(m, "Modification mass")?);
                 }
             }
             let condition = if p.modification_search { p.modification_condition.clone() } else { None };
@@ -1023,7 +1096,8 @@ pub async fn domainmasst(app: Arc<AppState>, session: SessionRef, ctx: JobCtx, n
     let input_path = dir.join(format!("topicMasst_input_{}.tsv", safe_name(&name)));
     write_tsv(&input_path, &input)?;
     ctx.progress("Running DomainMASSTs…");
-    run_topic_massts(&app, &input_path, &dir, &name).await?;
+    // masst_client puts the name into output file names, so pass a file-safe one
+    run_topic_massts(&app, &input_path, &dir, &safe_name(&name)).await?;
     Ok(json!({"message": format!("DomainMASSTs for **{name}** completed.")}))
 }
 

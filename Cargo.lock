@@ -1256,6 +1256,7 @@ dependencies = [
  "serde_json",
  "sha1_smol",
  "tokio",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",

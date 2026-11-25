@@ -15,6 +15,7 @@ use crate::external;
 use crate::plots;
 use crate::session::SessionRef;
 use crate::table::Table;
+use crate::validate;
 use crate::workflows::{self, RowAction, Upload};
 use crate::AppState;
 
@@ -52,12 +53,22 @@ impl FromRequestParts<Arc<AppState>> for Sess {
 
     async fn from_request_parts(parts: &mut Parts, app: &Arc<AppState>) -> Result<Self, Self::Rejection> {
         let from_header = parts.headers.get("x-session-id").and_then(|v| v.to_str().ok()).map(String::from);
-        let from_query = parts.uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("sid=").map(String::from)));
+        // ?sid= only for downloading session files (links, iframes); every other
+        // call must send the header, which cross-site forms cannot set
+        let file_get = parts.method == axum::http::Method::GET && parts.uri.path().starts_with("/api/files/");
+        let from_query = if file_get {
+            parts.uri.query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("sid=").map(String::from)))
+        } else {
+            None
+        };
         let sid = from_header.or(from_query).ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "missing session".into()))?;
         let s = app.sessions.get(&sid).ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "invalid session".into()))?;
         Ok(Sess(sid, s))
     }
 }
+
+/// Largest batch file accepted (CSV / MGF). Other requests keep axum's 2 MB default.
+const UPLOAD_LIMIT: usize = 25 * 1024 * 1024;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -69,7 +80,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/pubchem/resolve", get(pubchem_resolve))
         .route("/api/preview", post(preview))
         .route("/api/render", get(render))
-        .route("/api/search/library", post(search_library))
+        .route("/api/search/library", post(search_library).layer(axum::extract::DefaultBodyLimit::max(UPLOAD_LIMIT)))
         .route("/api/jobs/{id}", get(job))
         .route("/api/library/molecules", post(library_molecules))
         .route("/api/library/spectra", post(library_spectra))
@@ -82,8 +93,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/prep/{tool}", get(prep_status).post(prep_run))
         .route("/api/lifemasst/setup", post(lifemasst_setup))
         .route("/api/lifemasst/status", get(lifemasst_status))
-        .route("/api/lifemasst/run", post(lifemasst_run))
-        .route("/api/geomasst", post(geomasst))
+        .route("/api/lifemasst/run", post(lifemasst_run).layer(axum::extract::DefaultBodyLimit::max(UPLOAD_LIMIT)))
+        .route("/api/geomasst", post(geomasst).layer(axum::extract::DefaultBodyLimit::max(UPLOAD_LIMIT)))
         .route("/api/files/{*path}", get(session_file))
 }
 
@@ -142,6 +153,7 @@ struct SuggestQ {
 }
 
 async fn pubchem_suggest(State(app): State<Arc<AppState>>, Query(q): Query<SuggestQ>) -> ApiResult<Json<Value>> {
+    validate::name(&q.q)?;
     let suggestions = external::pubchem_autocomplete(&app.http, q.q.trim()).await;
     let (smiles, warning) = match suggestions.first() {
         Some(top) => external::resolve_name(&app.http, top).await,
@@ -156,6 +168,7 @@ struct ResolveQ {
 }
 
 async fn pubchem_resolve(State(app): State<Arc<AppState>>, Query(q): Query<ResolveQ>) -> ApiResult<Json<Value>> {
+    validate::name(&q.name)?;
     let (smiles, warning) = external::resolve_name(&app.http, &q.name).await;
     Ok(Json(json!({"smiles": smiles, "warning": warning})))
 }
@@ -172,6 +185,7 @@ async fn preview(State(app): State<Arc<AppState>>, Json(req): Json<PreviewReq>) 
     if text.is_empty() {
         return Ok(Json(json!({"type": null})));
     }
+    validate::structure(&text)?;
     let types: Vec<String> = app.worker.call_as("detect", json!({"items": [text]})).await?;
     let typ = types.into_iter().next().unwrap_or_else(|| "Invalid".into());
     let b64 = |png: Vec<u8>| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png));
@@ -198,6 +212,9 @@ struct RenderQ {
 /// PNG of a SMILES (molecule overview table images).
 async fn render(State(app): State<Arc<AppState>>, Query(q): Query<RenderQ>) -> Response {
     let size = q.size.unwrap_or(500).clamp(50, 1000);
+    if validate::structure(&q.smiles).is_err() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     match app.render_png(&q.smiles, size).await {
         Some(png) => (
             [(header::CONTENT_TYPE, HeaderValue::from_static("image/png")), (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400"))],
@@ -212,19 +229,27 @@ async fn render(State(app): State<Arc<AppState>>, Query(q): Query<RenderQ>) -> R
 // Multipart: a JSON field plus an optional batch file
 // ---------------------------------------------------------------------------
 
+fn multipart_error(e: axum::extract::multipart::MultipartError) -> ApiError {
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError(StatusCode::PAYLOAD_TOO_LARGE, format!("The file is too large (max {} MB).", UPLOAD_LIMIT / 1024 / 1024))
+    } else {
+        ApiError::bad(e.body_text())
+    }
+}
+
 async fn read_multipart<T: DeserializeOwned>(mut mp: Multipart, field: &str) -> ApiResult<(T, Option<Upload>)> {
     let mut json_text = None;
     let mut upload = None;
-    while let Some(f) = mp.next_field().await.map_err(|e| ApiError::bad(e.to_string()))? {
+    while let Some(f) = mp.next_field().await.map_err(multipart_error)? {
         let name = f.name().unwrap_or("").to_string();
         if name == "file" {
             let filename = f.file_name().unwrap_or("upload.csv").to_string();
-            let bytes = f.bytes().await.map_err(|e| ApiError::bad(e.to_string()))?;
+            let bytes = f.bytes().await.map_err(multipart_error)?;
             if !bytes.is_empty() {
                 upload = Some(Upload { filename, bytes: bytes.to_vec() });
             }
         } else if name == field {
-            json_text = Some(f.text().await.map_err(|e| ApiError::bad(e.to_string()))?);
+            json_text = Some(f.text().await.map_err(multipart_error)?);
         }
     }
     let text = json_text.ok_or_else(|| ApiError::bad(format!("missing field {field}")))?;
@@ -453,6 +478,15 @@ async fn session_file(Sess(_, s): Sess, AxPath(path): AxPath<String>) -> Respons
     };
     let mut resp = Response::new(Body::from(bytes));
     resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(ctype));
+    if ctype.starts_with("text/html") || ctype == "image/svg+xml" {
+        // Reports are generated from user input (names, queries). Serve them in a
+        // sandbox with an opaque origin: their scripts run, but cannot read this
+        // app's session or call its API.
+        resp.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads"),
+        );
+    }
     if ctype == "application/zip" {
         let fname = full.file_name().and_then(|n| n.to_str()).unwrap_or("download.zip");
         if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{fname}\"")) {

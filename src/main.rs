@@ -10,6 +10,7 @@ mod links;
 mod plots;
 mod session;
 mod table;
+mod validate;
 mod worker;
 mod workflows;
 
@@ -22,7 +23,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
+use axum::http::{header, HeaderValue};
+
+/// Content Security Policy for the app pages: only this server's scripts, the
+/// pinned CDN libraries (Tabulator, Plotly) and the GNPS analytics may run.
+const PAGE_CSP: &str = "default-src 'self'; \
+script-src 'self' https://unpkg.com https://cdn.jsdelivr.net https://analytics.gnps2.org https://analytics-api.gnps2.org; \
+style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com; \
+font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; \
+connect-src 'self' https://analytics.gnps2.org https://analytics-api.gnps2.org; \
+frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'";
 
 pub struct Config {
     pub root: PathBuf,
@@ -117,7 +129,12 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let page = |f: &str| get_service(ServeFile::new(static_dir.join(f)));
+    let page = |f: &str| {
+        use tower::Layer;
+        let csp = SetResponseHeaderLayer::overriding(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(PAGE_CSP));
+        let xfo = SetResponseHeaderLayer::overriding(header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
+        get_service(xfo.layer(csp.layer(ServeFile::new(static_dir.join(f)))))
+    };
     let app = Router::new()
         .merge(api::router())
         .route_service("/", page("index.html"))
@@ -126,6 +143,8 @@ async fn main() -> anyhow::Result<()> {
         .route_service("/geomasst", page("geomasst.html"))
         .route_service("/logo.png", get_service(ServeFile::new(state.cfg.root.join("logo.png"))))
         .nest_service("/static", ServeDir::new(&static_dir))
+        .layer(SetResponseHeaderLayer::if_not_present(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")))
+        .layer(SetResponseHeaderLayer::if_not_present(header::REFERRER_POLICY, HeaderValue::from_static("strict-origin-when-cross-origin")))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());

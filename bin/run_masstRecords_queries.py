@@ -586,7 +586,8 @@ def get_library_table(
         library_column_list = [c for c in library_columns_list if c not in columns_to_exclude]
 
         #Exclude blob columns from the select statement
-        molecule_class = smiles
+        # escape quotes: the class label is user input (also checked against the known labels upstream)
+        molecule_class = str(smiles).replace("'", "''")
         fetch = _get_fetcher(sqlite_path, api_endpoint, timeout)
         lib_sql = (
             "SELECT " + ", ".join(library_column_list) +
