@@ -285,7 +285,7 @@ def run_structuremasst_search(
 
             redu_df = tasks.run_retrieve_raw_data_matches(
                 df_for_name,
-                "metabolomicspanrepo_index_nightly",
+                "metabolomicspanrepo_index",
                 float(prec_tol),
                 float(frag_tol),
                 float(min_cosine),

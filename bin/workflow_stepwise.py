@@ -28,7 +28,9 @@ if PKG_PATH not in sys.path:
 from gnpsdata import fasst
 
 
-FASST_API_SERVER_URL = "https://api.fasst.gnps2.org"
+# FASST2: same production endpoints (POST /search, GET /search/result/{id}), a larger index,
+# and no cosine floor - FASSTrecords cannot return below 0.7 because it was built at that cut.
+FASST_API_SERVER_URL = os.environ.get("FASST_API_SERVER_URL", "https://fasst2.gnps2.org")
 
 def _as_usi(x: str) -> str:
     """Return a full mzspec USI given either a full USI or a library accession."""
@@ -62,7 +64,7 @@ def retrieve_raw_data_matches(
     addition: bool = False,
     modimass: float | None = None,
     modification_condition: str = None,
-    database: str = 'metabolomicspanrepo_index_nightly',
+    database: str = 'metabolomicspanrepo_index',
     precursor_mz_tol: float = 0.05,
     fragment_mz_tol: float = 0.05,
     min_cos: float = 0.7,
@@ -171,7 +173,8 @@ def retrieve_raw_data_matches(
                 modimass=modimass,
                 elimination=elimination,
                 addition=addition,
-                log_output=output_folder
+                log_output=output_folder,
+                host=FASST_API_SERVER_URL,
             )
             print(f"Returned {len(df)} rows for SID {sid}")
             if not df.empty:
@@ -409,7 +412,7 @@ def retrieve_raw_data_matches_from_peaks(
     addition: bool = False,
     modimass: float | None = None,
     modification_condition: str = None,
-    database: str = 'metabolomicspanrepo_index_nightly',
+    database: str = 'metabolomicspanrepo_index',
     precursor_mz_tol: float = 0.05,
     fragment_mz_tol: float = 0.05,
     min_cos: float = 0.7,
@@ -544,7 +547,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Query FASST USI')
     parser.add_argument('input', help='Library csv path')
     parser.add_argument('structure', help='structure')
-    parser.add_argument('--database', help='Database to query', default='metabolomicspanrepo_index_nightly')
+    parser.add_argument('--database', help='Database to query', default='metabolomicspanrepo_index')
     parser.add_argument('--analog', help='Analog search', default=False, type=bool)
     parser.add_argument('--precursor_mz_tol', help='Precursor m/z tolerance', default=0.05, type=float)
     parser.add_argument('--fragment_mz_tol', help='Fragment m/z tolerance', default=0.05, type=float)

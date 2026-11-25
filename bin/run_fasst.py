@@ -22,13 +22,15 @@ from gnpsdata import fasst
 # "results" is terminal. Kept as an allowlist of non-terminal states so a new
 # intermediate status shows up as a timeout rather than as a silent empty result.
 FASST_NONTERMINAL_STATUS = {"PENDING", "RUNNING", "QUEUED", "STARTED", "PROGRESS"}
+FASST_API_SERVER_URL = os.environ.get("FASST_API_SERVER_URL", "https://fasst2.gnps2.org")
 FASST_POLL_INTERVAL = 2      # seconds between polls
 FASST_POLL_TIMEOUT = 900     # seconds to wait for one query before giving up
 
 
 
 def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
-                    matching_peaks=6, modimass=None, elimination=False, addition=False, log_output=None):
+                    matching_peaks=6, modimass=None, elimination=False, addition=False, log_output=None,
+                    host=None):
 
     #print(f"Querying FASST for USI {usi} with status {status} and parameters: analog={analog}, precursor_mz_tol={precursor_mz_tol}, matching_peaks={matching_peaks}, modimass={modimass}, elimination={elimination}, addition={addition}")
     try:
@@ -48,7 +50,7 @@ def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
         notfound_retries = 0
         deadline = time.time() + FASST_POLL_TIMEOUT
         while True:
-            response = fasst.get_results(status, blocking=True)  # pass the SAME host you submitted to
+            response = fasst.get_results(status, host=host or FASST_API_SERVER_URL, blocking=True)  # same host as the submit
             resp_status = response.get("status") if isinstance(response, dict) else None
 
             # task id not registered yet, right after submission

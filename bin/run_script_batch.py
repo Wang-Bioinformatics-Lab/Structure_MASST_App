@@ -892,7 +892,7 @@ def main():
     p.add_argument("--max-returned-rows", type=int, default=200, help="FASSTrecords: max returned rows (app uses 200).")
 
     # FASST-only knobs
-    p.add_argument("--database", default="metabolomicspanrepo_index_nightly")
+    p.add_argument("--database", default="metabolomicspanrepo_index")
     p.add_argument("--precursor-tol", type=float, default=0.02)
     p.add_argument("--fragment-tol", type=float, default=0.02)
     p.add_argument("--mod-search", action="store_true")

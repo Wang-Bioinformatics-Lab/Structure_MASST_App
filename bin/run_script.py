@@ -475,7 +475,7 @@ def get_raw_data_results(
     dereplicate: bool = True,
     add_links: bool = True,
     # fasst-only
-    database: str = "metabolomicspanrepo_index_nightly",
+    database: str = "metabolomicspanrepo_index",
     precursor_tol: float = 0.02,
     fragment_tol: float = 0.02,
     modification_search: bool = False,
@@ -573,7 +573,7 @@ def _cli():
     p.add_argument("--min-peaks", type=int, default=5)
 
     # fasst-only knobs
-    p.add_argument("--database", default="metabolomicspanrepo_index_nightly")
+    p.add_argument("--database", default="metabolomicspanrepo_index")
     p.add_argument("--precursor-tol", type=float, default=0.02)
     p.add_argument("--fragment-tol", type=float, default=0.02)
     p.add_argument("--mod-search", action="store_true")

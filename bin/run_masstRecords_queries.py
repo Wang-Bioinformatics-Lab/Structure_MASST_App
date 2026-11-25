@@ -771,8 +771,15 @@ def get_masst_and_redu_tables(
         # redu_df = redu_df[redu_df['mri_id_int'].isin(mids_str)]
         print(f"[STEP 4] >{MAX_IDS_FOR_IN} mri_id_ints → using shared ReDU table cache")
         redu_df_full = get_redu_table_cached(fetch, redu_columns_list, sqlite_path)
-        mids_str = list(map(str, mids))
-        redu_df = redu_df_full[redu_df_full['mri_id_int'].isin(mids_str)]
+        # Compare numerically on both sides: the cached ReDU frame types mri_id_int as int, float or
+        # object depending on the fetcher and on whether the table carries rows without an id (ReDU
+        # entries for files that FASSTrecords has not indexed), and a str/int mismatch silently
+        # yields an empty frame rather than an error.
+        mids_num = pd.to_numeric(pd.Series(list(mids)), errors="coerce").dropna().astype("int64")
+        redu_ids = pd.to_numeric(redu_df_full['mri_id_int'], errors="coerce")
+        redu_df = redu_df_full[redu_ids.isin(mids_num)].copy()
+        # and keep the key numeric, so the merge onto the masst results below matches on type
+        redu_df['mri_id_int'] = pd.to_numeric(redu_df['mri_id_int'], errors="coerce").astype('Int64')
 
     #Relocated from structureMASST.py to here
 
@@ -782,6 +789,11 @@ def get_masst_and_redu_tables(
     df_masst_unique = df_masst_sorted.drop_duplicates(subset="mri_id_int", keep="first")
 
     if 'mri_id_int' in redu_df.columns:
+        redu_df = redu_df.copy()
+        redu_df['mri_id_int'] = pd.to_numeric(redu_df['mri_id_int'], errors="coerce").astype('Int64')
+        df_masst_unique = df_masst_unique.copy()
+        df_masst_unique['mri_id_int'] = pd.to_numeric(df_masst_unique['mri_id_int'],
+                                                      errors="coerce").astype('Int64')
         # add query spectrum ID and scan ID to redu_df //could potentially move this into get_masst_and_redu_tables
         redu_df = redu_df.merge(
             df_masst_unique[["mri_id_int", "scan_id", "query_spectrum_id", 'matching_peaks', 'cosine', 'Adduct', 'Precursor_MZ', 'inchikey_first_block', 'similar_library_spectra', 'unique_spectra_in_mri']],

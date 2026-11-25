@@ -17,10 +17,10 @@ from gnpsdata import fasst
 # single source of truth, shared with the query path in bin/run_fasst.py
 from bin.run_fasst import FASST_NONTERMINAL_STATUS
 
-FASST_API_SERVER_URL = os.environ.get("FASST_API_SERVER_URL", "https://api.fasst.gnps2.org")
+FASST_API_SERVER_URL = os.environ.get("FASST_API_SERVER_URL", "https://fasst2.gnps2.org")
 
 
-def get_results(task_id, host="https://api.fasst.gnps2.org", retries_max=120, sleep_s=1, not_found_grace_tries=15):
+def get_results(task_id, host=FASST_API_SERVER_URL, retries_max=120, sleep_s=1, not_found_grace_tries=15):
     """
     Minimal poller:
       - returns dict once results are ready
@@ -80,7 +80,7 @@ def get_results(task_id, host="https://api.fasst.gnps2.org", retries_max=120, sl
 
 def test_fasst_api_search_nonblocking():
     usi = "mzspec:GNPS:GNPS-LIBRARY:accession:CCMSLIB00005435899"
-    database = "metabolomicspanrepo_index_nightly"
+    database = "metabolomicspanrepo_index"
 
     print("submitted", 0)
 

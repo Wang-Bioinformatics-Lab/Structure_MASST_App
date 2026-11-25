@@ -1676,7 +1676,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 ]
                                 redu_df = tasks.run_retrieve_raw_data_matches_from_peaks(
                                     _spectra_for_fasst,
-                                    "metabolomicspanrepo_index_nightly",
+                                    "metabolomicspanrepo_index",
                                     float(prec_tol),
                                     float(frag_tol),
                                     float(min_cosine),
@@ -1696,7 +1696,7 @@ if "grouped_results" in st.session_state and st.session_state["grouped_results"]
                                 # retrieve raw data matches through MASST (USI-based)
                                 redu_df = tasks.run_retrieve_raw_data_matches(
                                     df_for_name,
-                                    "metabolomicspanrepo_index_nightly",
+                                    "metabolomicspanrepo_index",
                                     float(prec_tol),
                                     float(frag_tol),
                                     float(min_cosine),
