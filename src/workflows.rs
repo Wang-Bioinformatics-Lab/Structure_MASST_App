@@ -727,6 +727,33 @@ pub fn result_action(
 // Raw data search ("Search Raw Data")
 // ---------------------------------------------------------------------------
 
+/// What the FASST worker ops return: matches with ReDU metadata, and the
+/// spectra FASST could not search (whose matches are therefore missing).
+#[derive(Deserialize)]
+struct FasstOut {
+    table: Table,
+    #[serde(default)]
+    failed: Vec<FasstFailure>,
+}
+
+#[derive(Deserialize)]
+struct FasstFailure {
+    spectrum: String,
+    #[serde(default)]
+    error: String,
+}
+
+fn fasst_failure_note(name: &str, failed: &[FasstFailure], total: usize) -> String {
+    let ids: Vec<&str> = failed.iter().take(3).map(|f| f.spectrum.as_str()).collect();
+    let more = if failed.len() > 3 { ", …" } else { "" };
+    let why: String = failed.first().map(|f| f.error.chars().take(200).collect()).unwrap_or_default();
+    format!(
+        "FASST could not search {} of the {total} spectra of **{name}** ({}{more}), so their matches are missing. FASST said: {why}",
+        failed.len(),
+        ids.join(", ")
+    )
+}
+
 /// Keep one spectrum per falcon cluster (the one closest to the representative).
 /// Rows without library integer ids (USI / MGF queries) are kept as they are.
 pub fn dereplicate(t: &Table) -> Table {
@@ -1007,7 +1034,7 @@ pub async fn raw_results_for(
                 let ids: Vec<String> = df_for_name.column_values("query_spectrum_id").iter().map(value_to_string).collect();
                 let is_mgf = ids.iter().any(|s| mgf.contains_key(s));
                 let mut args = common.clone();
-                let mut redu: Table = if is_mgf {
+                let out: FasstOut = if is_mgf {
                     let spectra: Vec<Value> = ids
                         .iter()
                         .filter_map(|s| mgf.get(s).map(|m| json!({"spectrum_id": s, "precursor_mz": m.precursor_mz, "peaks": m.peaks})))
@@ -1018,6 +1045,10 @@ pub async fn raw_results_for(
                     args["table"] = json!(df_for_name);
                     app.worker.call_as("raw_data_matches", args).await?
                 };
+                if !out.failed.is_empty() {
+                    ctx.warn(fasst_failure_note(name, &out.failed, ids.len()));
+                }
+                let mut redu = out.table;
                 if !redu.is_empty() {
                     if !redu.has("lib_usi") {
                         let lib_usi = redu.column_values("query_spectrum_id").iter().map(|v| json!(links::library_usi(&value_to_string(v)))).collect();
@@ -1701,6 +1732,21 @@ mod tests {
         assert!(!d.query_by_name.contains_key("b"));
         assert_eq!(d.query_table.as_ref().unwrap().len(), 2);
         assert_eq!(unmatched(&d).molecules(&d), 0);
+    }
+
+    #[test]
+    fn fasst_failures_become_a_warning() {
+        let out: FasstOut = serde_json::from_value(json!({
+            "table": {"columns": ["USI"], "rows": [["mzspec:MSV1:a.mzML:scan:1"]]},
+            "failed": [{"spectrum": "MSBNK-AAFC-AC000726", "error": "resolving USI: 404 Not Found"}],
+        }))
+        .unwrap();
+        assert_eq!(out.table.len(), 1);
+        let note = fasst_failure_note("Input_query", &out.failed, 13);
+        assert!(note.starts_with("FASST could not search 1 of the 13 spectra of **Input_query** (MSBNK-AAFC-AC000726)"), "{note}");
+        assert!(note.ends_with("FASST said: resolving USI: 404 Not Found"), "{note}");
+        let none: FasstOut = serde_json::from_value(json!({"table": {"columns": [], "rows": []}})).unwrap();
+        assert!(none.failed.is_empty());
     }
 
     #[test]

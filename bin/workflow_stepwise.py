@@ -27,6 +27,7 @@ if PKG_PATH not in sys.path:
 
 from gnpsdata import fasst
 from bin.fasst_rate import submit_with_rate_limit
+from bin.massbank_spectra import accession_of, massbank_spectrum
 
 
 # FASST2: same production endpoints (POST /search, GET /search/result/{id}), a larger index,
@@ -74,10 +75,15 @@ def retrieve_raw_data_matches(
     sqlite_path: str | None = None,
     api_endpoint: str = "http://127.0.0.1:8001/masst_records",
     timeout: int = 10,
-    output_folder: str | None = None
+    output_folder: str | None = None,
+    failures: list | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Query FASST for each spectrum in library_subset and optionally merge ReDU metadata.
+
+    MassBank library spectra are sent by their peaks (see bin/massbank_spectra.py).
+    Spectra FASST could not search are appended to `failures` as
+    {"spectrum": id, "error": message}, when a list is given.
 
     Args:
         library_subset: DataFrame with a 'query_spectrum_id' column.
@@ -138,17 +144,32 @@ def retrieve_raw_data_matches(
             usi_full = _as_usi(sid)
             print("submitted", usi_full)
 
-            token = submit_with_rate_limit(fasst.query_fasst_api_usi,
-                usi_full, database,
-                host=FASST_API_SERVER_URL,
-                analog=analog,
-                lower_delta=170, upper_delta=170,
-                precursor_mz_tol=precursor_mz_tol,
-                fragment_mz_tol=fragment_mz_tol,
-                min_cos=min_cos,
-                #cache=cache,
-                blocking=False
-            )
+            # The GNPS USI resolver no longer resolves MassBank USIs, which FASST
+            # needs to fetch the query spectrum: send MassBank spectra by peaks.
+            mb = massbank_spectrum(sid) if accession_of(sid) else None
+            if mb is not None:
+                token = submit_with_rate_limit(fasst.query_fasst_api_peaks,
+                    mb["precursor_mz"], mb["peaks"], database,
+                    host=FASST_API_SERVER_URL,
+                    analog=analog,
+                    lower_delta=170, upper_delta=170,
+                    precursor_mz_tol=precursor_mz_tol,
+                    fragment_mz_tol=fragment_mz_tol,
+                    min_cos=min_cos,
+                    blocking=False
+                )
+            else:
+                token = submit_with_rate_limit(fasst.query_fasst_api_usi,
+                    usi_full, database,
+                    host=FASST_API_SERVER_URL,
+                    analog=analog,
+                    lower_delta=170, upper_delta=170,
+                    precursor_mz_tol=precursor_mz_tol,
+                    fragment_mz_tol=fragment_mz_tol,
+                    min_cos=min_cos,
+                    #cache=cache,
+                    blocking=False
+                )
 
             in_flight[sid] = {"token": token, "submitted_at": time.time()}
 
@@ -164,7 +185,8 @@ def retrieve_raw_data_matches(
                 continue
             
             # print(f"Attempting to collect SID {sid} with token {token} (age {age:.1f}s)")
-            # single collection attempt
+            # single collection attempt (it waits for the task to finish)
+            errors = []
             df = query_fasst_usi(
                 token,
                 sid,
@@ -176,13 +198,15 @@ def retrieve_raw_data_matches(
                 addition=addition,
                 log_output=output_folder,
                 host=FASST_API_SERVER_URL,
+                errors=errors,
             )
             print(f"Returned {len(df)} rows for SID {sid}")
-            if not df.empty:
+            if errors:
+                # a failed query is not "no matches": report it
+                if failures is not None:
+                    failures.append({"spectrum": sid, "error": errors[-1]})
+            elif not df.empty:
                 responses.append(df)
-            else:
-                # not ready -> re-request next batch with a fresh token
-                to_request.append(sid)
 
             # remove from in_flight in all cases (never collect twice for same token)
             done.add(sid)
@@ -319,6 +343,101 @@ def filter_analogues_to_parent_datasets(df, delta_col="Unit Delta Mass"):
     return df[keep].copy()
 
 
+# Folders that hold copies of a dataset's files: MassIVE's conversions
+# (ccms_peak/<path>.mzML of peak/<path> or raw/<path>) and GNPS2's
+# (gnps2_converted/<path>.mzML); re-uploads sit under updates/<stamp>/.
+_COPY_DIRS = ("ccms_peak/", "gnps2_converted/", "peak/", "raw/")
+_COPY_FOLDERS = {d.rstrip("/") for d in _COPY_DIRS}
+
+
+def _file_keys(usi):
+    """(dataset, path, name, folders) of a file USI, in lower case, or None.
+
+    path leaves out the copy folders in front and the extension; name is the
+    file name without extension; folders are the path's other folder names,
+    which tell same-named files apart (pos/neg, rp/hilic, ...).
+    """
+    parts = str(usi).split(":", 2)
+    if len(parts) < 3 or not parts[2]:
+        return None
+    path = parts[2].replace("\\", "/").strip("/").lower()
+    if path.startswith("updates/") and path.count("/") >= 2:
+        path = path.split("/", 2)[2]
+    stripped = True
+    while stripped:
+        stripped = False
+        for d in _COPY_DIRS:
+            if path.startswith(d):
+                path, stripped = path[len(d):], True
+    segs = path.split("/")
+    name = segs[-1].rsplit(".", 1)[0] if "." in segs[-1] else segs[-1]
+    folders = frozenset(s for s in segs[:-1] if s and s not in _COPY_FOLDERS)
+    return parts[1], "/".join(segs[:-1] + [name]), name, folders
+
+
+def align_files_to_redu(files: pd.Series, redu_files: pd.Series) -> pd.Series:
+    """Map matched file USIs to the ReDU file USIs they stand for.
+
+    FASST indexes converted copies of some files (ccms_peak/....mzML,
+    gnps2_converted/...) that ReDU lists under their original path
+    (peak/....mzXML, updates/.../peak/...), so an exact match misses them.
+    Exact matches stay. Otherwise a file is tied to the ReDU file of the same
+    dataset with the same file name (any extension):
+      - one ReDU file with that name, and the matched files with that name are
+        one file or its copies: tied;
+      - the name in several folders (pos/neg, rp/hilic, ...) on either side:
+        the folders decide - the same path, else the most shared folder names -
+        and only when they point to exactly one ReDU file that no other
+        same-named file fits as well.
+    Anything else is left as it is and finds no ReDU metadata, as before.
+    """
+    uniq = pd.Series(pd.unique(files.dropna().astype(str)))
+    if uniq.empty:
+        return files
+    redu_files = redu_files.dropna().astype(str)
+    exact = set(redu_files[redu_files.isin(uniq)])
+    file_keys = {u: _file_keys(u) for u in uniq}
+    prefixes = tuple(sorted({f"mzspec:{k[0]}:" for u, k in file_keys.items() if k and u not in exact}))
+    if not prefixes:
+        return files
+    redu_by_name = {}
+    for u in redu_files[redu_files.str.startswith(prefixes)]:
+        k = _file_keys(u)
+        if k:
+            redu_by_name.setdefault((k[0], k[2]), []).append((u, k))
+    matched_by_name = {}
+    for u, k in file_keys.items():
+        if k:
+            matched_by_name.setdefault((k[0], k[2]), []).append((u, k))
+
+    def fit(fk, rk):
+        return float("inf") if fk[1] == rk[1] else len(fk[3] & rk[3])
+
+    mapping = {}
+    for key, same_name in matched_by_name.items():
+        redu = redu_by_name.get(key)
+        todo = [(u, k) for u, k in same_name if u not in exact]
+        if not redu or not todo:
+            continue
+        if len(redu) == 1 and len({k[3] for _, k in same_name}) == 1:
+            for u, _ in todo:  # one file, or copies of one file
+                mapping[u] = redu[0][0]
+            continue
+        for u, k in todo:  # folders decide
+            scores = [fit(k, rk) for _, rk in redu]
+            best = max(scores)
+            if best <= 0 or scores.count(best) != 1:
+                continue
+            r, rk = redu[scores.index(best)]
+            rivals = [fit(ok, rk) for o, ok in same_name if o != u and ok[3] != k[3]]
+            if all(x < best for x in rivals):
+                mapping[u] = r
+    if not mapping:
+        return files
+    print(f"[add_redu] {len(mapping)} matched file(s) tied to their ReDU entry under another path")
+    return files.map(lambda f: mapping.get(f, f) if isinstance(f, str) else f)
+
+
 def add_redu(
     raw_matches: pd.DataFrame,
     redu_df: pd.DataFrame,
@@ -348,7 +467,14 @@ def add_redu(
     if "USI" in df.columns:
         df[["mri", "scan_id"]] = df["USI"].str.split(":scan:", n=1, expand=True)
         df["scan_id"] = pd.to_numeric(df["scan_id"], errors="raise").astype(int)
-        
+
+    # 2b. Files FASST knows under another path than ReDU (converted copies) are
+    #     tied to their ReDU entry before the best match per file is picked, so a
+    #     copy and its original count once. The USI column keeps FASST's path.
+    redu_files = redu_df["mri"] if "mri" in redu_df.columns else redu_df.get("USI")
+    if "mri" in df.columns and redu_files is not None:
+        df["mri"] = align_files_to_redu(df["mri"], redu_files)
+
     df = df.sort_values(
         by=["Cosine", "Matching Peaks"], 
         ascending=[False, False]
@@ -422,9 +548,11 @@ def retrieve_raw_data_matches_from_peaks(
     api_endpoint: str = "http://127.0.0.1:8001/masst_records",
     timeout: int = 10,
     output_folder: str | None = None,
+    failures: list | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Like retrieve_raw_data_matches but submits spectra by peaks instead of USI.
+    Spectra FASST could not search are appended to `failures`, when a list is given.
 
     Args:
         spectra: list of dicts, each with keys:
@@ -491,6 +619,7 @@ def retrieve_raw_data_matches_from_peaks(
                 del in_flight[sid]
                 continue
 
+            errors = []
             df = query_fasst_usi(
                 token,
                 sid,
@@ -501,12 +630,14 @@ def retrieve_raw_data_matches_from_peaks(
                 elimination=elimination,
                 addition=addition,
                 log_output=output_folder,
+                errors=errors,
             )
             print(f"Returned {len(df)} rows for spectrum {sid}")
-            if not df.empty:
+            if errors:
+                if failures is not None:
+                    failures.append({"spectrum": sid, "error": errors[-1]})
+            elif not df.empty:
                 responses.append(df)
-            else:
-                to_request.append(sid)
 
             done.add(sid)
             del in_flight[sid]

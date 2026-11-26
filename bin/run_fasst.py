@@ -31,7 +31,10 @@ FASST_POLL_TIMEOUT = 900     # seconds to wait for one query before giving up
 
 def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
                     matching_peaks=6, modimass=None, elimination=False, addition=False, log_output=None,
-                    host=None):
+                    host=None, errors=None):
+    """Collect one FASST query. A failed query returns an empty frame, like one
+    without matches; pass a list as `errors` to tell the two apart (the error
+    message is appended to it)."""
 
     #print(f"Querying FASST for USI {usi} with status {status} and parameters: analog={analog}, precursor_mz_tol={precursor_mz_tol}, matching_peaks={matching_peaks}, modimass={modimass}, elimination={elimination}, addition={addition}")
     try:
@@ -137,6 +140,8 @@ def query_fasst_usi(status, usi, analog=False, precursor_mz_tol=0.05,
     except Exception as e:
         print(f"Failed at retrieving {status} with usi {usi}")
         print(f"Error: {e}")
+        if errors is not None:
+            errors.append(str(e))
         return pd.DataFrame()
 
 

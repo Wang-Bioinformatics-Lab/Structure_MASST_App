@@ -244,15 +244,18 @@ def _fasst_kwargs(args):
 
 
 def op_raw_data_matches(args):
+    """FASST matches with ReDU metadata, plus the spectra FASST could not search."""
     from bin.workflow_stepwise import retrieve_raw_data_matches
-    _, redu_df = retrieve_raw_data_matches(_table_to_df(args["table"]), **_fasst_kwargs(args))
-    return _df_to_table(redu_df)
+    failed = []
+    _, redu_df = retrieve_raw_data_matches(_table_to_df(args["table"]), failures=failed, **_fasst_kwargs(args))
+    return {"table": _df_to_table(redu_df), "failed": failed}
 
 
 def op_raw_data_matches_from_peaks(args):
     from bin.workflow_stepwise import retrieve_raw_data_matches_from_peaks
-    _, redu_df = retrieve_raw_data_matches_from_peaks(args["spectra"], **_fasst_kwargs(args))
-    return _df_to_table(redu_df)
+    failed = []
+    _, redu_df = retrieve_raw_data_matches_from_peaks(args["spectra"], failures=failed, **_fasst_kwargs(args))
+    return {"table": _df_to_table(redu_df), "failed": failed}
 
 
 # ---------------------------------------------------------------------------
