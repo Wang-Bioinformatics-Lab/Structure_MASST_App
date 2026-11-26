@@ -86,6 +86,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/library/spectra", post(library_spectra))
         .route("/api/search/raw", post(search_raw))
         .route("/api/results/rows", post(result_rows))
+        .route("/api/results/remove-unmatched", post(remove_unmatched))
         .route("/api/results/values", get(result_values))
         .route("/api/results/sankey", post(result_sankey))
         .route("/api/domainmasst", post(domainmasst))
@@ -140,6 +141,7 @@ async fn state(Sess(sid, s): Sess) -> ApiResult<Json<Value>> {
         "direct_spectra": workflows::has_direct_spectra(&s.data.groups, &s.data.mgf_store),
         "raw_mode": s.data.raw_mode,
         "raw_results": raw,
+        "unmatched_molecules": workflows::unmatched(&s.data).molecules(&s.data),
     })))
 }
 
@@ -308,6 +310,14 @@ async fn library_molecules(Sess(_, s): Sess, Json(req): Json<RowsReq>) -> ApiRes
     workflows::molecule_action(&mut s.data, &req.name, req.action, &req.rows)?;
     s.save()?;
     Ok(Json(json!({"ok": true})))
+}
+
+/// "Remove molecules without raw data matches" (library entries and results).
+async fn remove_unmatched(Sess(_, s): Sess) -> ApiResult<Json<Value>> {
+    let mut s = s.lock().await;
+    let removed = workflows::remove_unmatched(&mut s.data);
+    s.save()?;
+    Ok(Json(json!({"removed": removed})))
 }
 
 async fn library_spectra(Sess(_, s): Sess, Json(req): Json<RowsReq>) -> ApiResult<Json<Value>> {

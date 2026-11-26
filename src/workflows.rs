@@ -520,23 +520,105 @@ fn sorted_unique(rows: &[usize]) -> Vec<usize> {
     v
 }
 
+/// Take whole queries out of the session: their library entries, raw data
+/// results and query rows.
+fn remove_queries(data: &mut crate::session::SessionData, names: &HashSet<String>) {
+    if names.is_empty() {
+        return;
+    }
+    data.groups.retain(|n, _| !names.contains(n));
+    if let Some(r) = data.raw_results.as_mut() {
+        r.retain(|n, _| !names.contains(n));
+    }
+    data.query_by_name.retain(|n, _| !names.contains(n));
+    if let Some(t) = data.query_table.as_mut() {
+        if let Some(c) = t.col("name") {
+            t.rows.retain(|r| !names.contains(value_to_string(&r[c]).trim()));
+        }
+    }
+}
+
+/// Molecules the last raw data search found nothing for: whole queries without
+/// matches, and - in a query holding several molecules (an unsplit substructure
+/// or Tanimoto search) - the molecules none of its matches belong to.
+#[derive(Debug, Default)]
+pub struct Unmatched {
+    pub queries: Vec<String>,
+    /// query -> rows of its molecule overview without matches
+    pub within: Vec<(String, Vec<usize>)>,
+}
+
+impl Unmatched {
+    /// Number of molecules (rows of the molecule overviews) this takes away.
+    pub fn molecules(&self, data: &crate::session::SessionData) -> usize {
+        let whole: usize = self.queries.iter().map(|q| data.groups.get(q).map_or(1, |g| g.overview.len().max(1))).sum();
+        whole + self.within.iter().map(|(_, rows)| rows.len()).sum::<usize>()
+    }
+}
+
+pub fn unmatched(data: &crate::session::SessionData) -> Unmatched {
+    let mut u = Unmatched::default();
+    let Some(results) = data.raw_results.as_ref() else { return u };
+    for (name, t) in results {
+        if t.is_empty() || !(t.has("mri_id_int") || t.has("mri")) {
+            u.queries.push(name.clone());
+            continue;
+        }
+        let Some(g) = data.groups.get(name) else { continue };
+        let (Some(oc), true) = (g.overview.col("inchikey_first_block"), t.has("inchikey_first_block")) else { continue };
+        if g.overview.len() < 2 {
+            continue;
+        }
+        let hit: HashSet<String> = t.column_values("inchikey_first_block").iter().map(|v| value_to_string(v)).collect();
+        let rows: Vec<usize> = (0..g.overview.len()).filter(|&r| !hit.contains(&value_to_string(&g.overview.rows[r][oc]))).collect();
+        // a query with matches never loses all of its molecules here (keys that do
+        // not line up, as for USI queries, must not empty it)
+        if !rows.is_empty() && rows.len() < g.overview.len() {
+            u.within.push((name.clone(), rows));
+        }
+    }
+    u
+}
+
+/// "Remove molecules without raw data matches": from the library entries and
+/// from the raw data results. Returns how many molecules were removed.
+pub fn remove_unmatched(data: &mut crate::session::SessionData) -> usize {
+    let u = unmatched(data);
+    let n = u.molecules(data);
+    for (name, rows) in &u.within {
+        if let Some(g) = data.groups.get_mut(name) {
+            let overview = g.overview.drop_rows(rows);
+            let keep: HashSet<String> = overview.unique("inchikey_first_block").iter().map(value_to_string).collect();
+            g.spectra.retain(|ik, _| keep.contains(ik));
+            g.overview = overview;
+        }
+    }
+    remove_queries(data, &u.queries.into_iter().collect());
+    n
+}
+
 /// "Remove / Keep only selected molecule(s)" and "Split each molecule into separate query".
 pub fn molecule_action(data: &mut crate::session::SessionData, name: &str, action: RowAction, rows: &[usize]) -> Result<()> {
     let rows = sorted_unique(rows);
-    let groups = &mut data.groups;
-    let group = groups.get(name).ok_or_else(|| anyhow!("unknown query {name}"))?.clone();
+    let group = data.groups.get(name).ok_or_else(|| anyhow!("unknown query {name}"))?.clone();
     match action {
         RowAction::Remove | RowAction::Keep => {
             if rows.is_empty() {
                 bail!("No rows selected!");
             }
             let overview = if matches!(action, RowAction::Remove) { group.overview.drop_rows(&rows) } else { group.overview.take_rows(&rows) };
+            if overview.is_empty() {
+                // no molecule left: the query goes, with its raw data results
+                remove_queries(data, &HashSet::from([name.to_string()]));
+                return Ok(());
+            }
             let keep: HashSet<String> = overview.unique("inchikey_first_block").iter().map(value_to_string).collect();
-            let g = groups.get_mut(name).unwrap();
+            let g = data.groups.get_mut(name).unwrap();
             g.spectra.retain(|ik, _| keep.contains(ik));
             g.overview = overview;
         }
         RowAction::Split => {
+            let groups = &mut data.groups;
             if group.overview.len() < 2 {
                 bail!("Splitting needs more than one molecule.");
             }
@@ -1576,5 +1658,60 @@ mod tests {
         result_action(&mut m, "a", RowAction::Keep, &[], Some(("NCBIDivision", &vals)), true).unwrap();
         assert_eq!(m["a"].len(), 1);
         assert_eq!(m["b"].rows, vec![vec![json!("Primates")]]);
+    }
+
+    /// Queries with their molecules' InChIKeys, and raw data matches per query (as InChIKeys).
+    fn session_with(groups: Vec<(&str, Vec<&str>)>, raw: Vec<(&str, Vec<&str>)>) -> crate::session::SessionData {
+        let mut d = crate::session::SessionData::default();
+        let mut qt = t(&["query", "name"], vec![]);
+        for (name, iks) in &groups {
+            let ov = t(&["Compound_Name", "inchikey_first_block"], iks.iter().map(|ik| vec![json!(format!("mol {ik}")), json!(ik)]).collect());
+            let spectra = iks.iter().map(|ik| (ik.to_string(), t(&["spectrum_id"], vec![vec![json!(format!("s_{ik}"))]]))).collect();
+            d.groups.insert(name.to_string(), Group { overview: ov, spectra });
+            d.query_by_name.insert(name.to_string(), format!("q_{name}"));
+            qt.rows.push(vec![json!(format!("q_{name}")), json!(name)]);
+        }
+        d.query_table = Some(qt);
+        d.raw_results = Some(
+            raw.into_iter()
+                .map(|(name, iks)| (name.to_string(), t(&["mri_id_int", "inchikey_first_block"], iks.iter().enumerate().map(|(i, ik)| vec![json!(i), json!(ik)]).collect())))
+                .collect(),
+        );
+        d
+    }
+
+    #[test]
+    fn remove_molecules_without_raw_data_matches() {
+        // a: matched; b: no matches; c: three molecules of which only X matched
+        let mut d = session_with(
+            vec![("a", vec!["A"]), ("b", vec!["B"]), ("c", vec!["X", "Y", "Z"])],
+            vec![("a", vec!["A"]), ("b", vec![]), ("c", vec!["X", "X"])],
+        );
+        assert_eq!(unmatched(&d).molecules(&d), 3);
+        assert_eq!(remove_unmatched(&mut d), 3);
+        assert_eq!(d.groups.keys().collect::<Vec<_>>(), ["a", "c"]);
+        assert_eq!(d.groups["c"].overview.len(), 1);
+        assert_eq!(d.groups["c"].spectra.keys().collect::<Vec<_>>(), ["X"]);
+        assert!(!d.raw_results.as_ref().unwrap().contains_key("b"));
+        assert!(!d.query_by_name.contains_key("b"));
+        assert_eq!(d.query_table.as_ref().unwrap().len(), 2);
+        assert_eq!(unmatched(&d).molecules(&d), 0);
+    }
+
+    #[test]
+    fn a_query_with_matches_keeps_its_molecules_when_keys_do_not_line_up() {
+        // like a USI query: the matches carry no key the molecule overview knows
+        let d = session_with(vec![("u", vec!["K1", "K2"])], vec![("u", vec!["other"])]);
+        assert_eq!(unmatched(&d).molecules(&d), 0);
+    }
+
+    #[test]
+    fn removing_every_molecule_of_a_query_removes_the_query() {
+        let mut d = session_with(vec![("a", vec!["A"]), ("b", vec!["B1", "B2"])], vec![("a", vec!["A"]), ("b", vec!["B1"])]);
+        molecule_action(&mut d, "b", RowAction::Remove, &[0, 1]).unwrap();
+        assert!(!d.groups.contains_key("b"));
+        assert!(!d.raw_results.as_ref().unwrap().contains_key("b"));
+        molecule_action(&mut d, "a", RowAction::Keep, &[0]).unwrap();
+        assert!(d.groups.contains_key("a"));
     }
 }

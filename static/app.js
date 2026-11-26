@@ -161,6 +161,7 @@ async function searchRaw() {
     if (b) b.disabled = v;
   };
   setRunning(true);
+  pruneStatus.replaceChildren();
   rawStatus.replaceChildren(spinner("Searching raw data…"));
   try {
     const v = await runJob("/api/search/raw", rawOpts.params(), jobProgress(rawStatus, "Searching raw data…"));
@@ -320,6 +321,22 @@ function renderResultTab(tab, name, table, resultFigId, multi) {
   }));
 }
 
+// Outcome of "Remove molecules without raw data matches"; outlives re-renders.
+const pruneStatus = h("div");
+
+async function removeUnmatched(n) {
+  const s = n === 1 ? "" : "s";
+  if (!confirm(`Remove ${n} molecule${s} without raw data matches from the library entries and the raw data results?`)) return;
+  pruneStatus.replaceChildren(spinner("Removing…"));
+  try {
+    const r = await api("/api/results/remove-unmatched", { body: {} });
+    pruneStatus.replaceChildren(msg("success", `Removed ${r.removed} molecule${r.removed === 1 ? "" : "s"} without raw data matches.`));
+    await loadState();
+  } catch (e) {
+    pruneStatus.replaceChildren(msg("error", e.message));
+  }
+}
+
 function renderResults() {
   const sec = $("results-section");
   sec.replaceChildren();
@@ -331,6 +348,14 @@ function renderResults() {
   }
   const body = h("div", { class: "body" }, h("h3", {}, "Metabolomics Raw Data Matches"));
   sec.append(h("details", { class: "expander", open: true }, h("summary", {}, "Metabolomics Raw Data Matches"), body));
+  const nUnmatched = state.unmatched_molecules || 0;
+  if (nUnmatched > 0) {
+    const s = nUnmatched === 1 ? "" : "s";
+    body.append(h("div", { class: "btn-row" },
+      h("button", { type: "button", onclick: () => removeUnmatched(nUnmatched) }, `Remove the ${nUnmatched} molecule${s} without raw data matches`),
+      h("span", { class: "small muted" }, "from the library entries and from the results below")));
+  }
+  body.append(pruneStatus);
   tabs(body, "results", results.map((r, i) => ({ key: r.name, label: r.name, render: (tab) => renderResultTab(tab, r.name, r.table, i, results.length > 1) })));
 
   if (results.length > 1 && results.some((r) => r.table.rows.length > 1)) {
