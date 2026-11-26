@@ -249,7 +249,7 @@ function renderResultTab(tab, name, table, resultFigId, multi) {
       h("div", { class: "preset-text" }, h("span", { class: "preset-title" }, vals.join(" → ")), h("span", { class: "preset-sub", html: sub })),
       h("button", { type: "button", onclick: () => {
         ui.sankeyCols[name] = vals.map(defVal); saveUi();
-        selects.forEach((s, i) => { s.value = ui.sankeyCols[name][i]; });
+        selects.forEach((s, i) => { s.value = ui.sankeyCols[name][i]; SMA.refreshSelect(s); });
         drawSankey();
       } }, "Apply")));
   }
@@ -262,6 +262,7 @@ function renderResultTab(tab, name, table, resultFigId, multi) {
     selRow.append(h("div", { class: "col" }, h("label", { class: "field" }, `Column ${i + 1}`), s));
   }
   tab.append(selRow, plotMsg, plotEl);
+  selects.forEach((s) => SMA.searchable(s, "Type to search columns…"));
   drawSankey();
 
   const t = makeTable(tab, table, {
@@ -281,10 +282,12 @@ function renderResultTab(tab, name, table, resultFigId, multi) {
   colSel.addEventListener("change", async () => {
     valSel.replaceChildren();
     valSel.disabled = true;
+    SMA.refreshSelect(valSel);
     if (colSel.value !== "None") {
       const r = await api(`/api/results/values?name=${encodeURIComponent(name)}&col=${encodeURIComponent(colSel.value)}`);
       valSel.replaceChildren(...r.values.map((v) => h("option", { value: v }, v)));
       valSel.disabled = false;
+      SMA.refreshSelect(valSel);
     }
     updateApplyAll();
   });
@@ -293,6 +296,8 @@ function renderResultTab(tab, name, table, resultFigId, multi) {
     h("div", { class: "col", style: "flex:2" }, h("label", { class: "field" }, "Column"), colSel),
     h("div", { class: "col", style: "flex:3" }, h("label", { class: "field" }, "Value(s)"), valSel),
     h("div", { class: "col", style: "flex:5" })));
+  SMA.searchable(colSel, "Type to search columns…");
+  SMA.searchable(valSel);
   const st = h("div");
   const act = (action) => {
     const vals = [...valSel.selectedOptions].map((o) => o.value);

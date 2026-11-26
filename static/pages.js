@@ -58,6 +58,7 @@ async function domainPage(main) {
   const show = () => { chosen.textContent = `You selected: ${sel.value}`; frame.src = fileUrl(sel.value); };
   sel.addEventListener("change", show);
   main.append(h("div", { style: "max-width:520px" }, h("label", { class: "field" }, "Choose a file"), sel), chosen, frame);
+  SMA.searchable(sel, "Type to search files…");
   show();
 }
 
@@ -214,6 +215,7 @@ async function geoPage(main) {
     "One map shows every molecule at once, sized by how many were matched at each site. Pick molecules in the side list to split them out; this caps how many get their own map.");
   if (hasResults) {
     resultsBox.append(h("div", { style: "max-width:520px" }, h("label", { class: "field" }, "Select chemical"), nameSel), resSlider.wrap);
+    SMA.searchable(nameSel, "Type to search molecules…");
     const syncSlider = () => resSlider.wrap.classList.toggle("hidden", nameSel.value !== ALL);
     nameSel.addEventListener("change", syncSlider);
     syncSlider();

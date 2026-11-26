@@ -148,9 +148,11 @@ const SearchUI = (() => {
       smilesInput.addEventListener("change", () => this.onSmiles());
       classSel.addEventListener("change", () => this.onClass());
       usiInput.addEventListener("change", () => this.onUsi());
+      SMA.searchable(classSel, "Type to search class labels…");
 
       classes().then((labels) => {
         classSel.append(...labels.map((l) => h("option", { value: l, selected: l === this.st.classLabel }, l)));
+        SMA.refreshSelect(classSel);
       });
       this.sync();
       this.updatePreview();
@@ -162,6 +164,7 @@ const SearchUI = (() => {
       smilesInput.value = this.st.smiles;
       usiInput.value = this.st.usi;
       classSel.value = this.st.classLabel;
+      SMA.refreshSelect(classSel);
       const sel = nameSuggest.querySelector("select");
       if (this.st.suggestions.length) {
         nameSuggest.classList.remove("hidden");

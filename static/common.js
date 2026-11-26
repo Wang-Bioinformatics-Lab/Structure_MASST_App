@@ -241,6 +241,28 @@ const SMA = (() => {
     document.body.prepend(wrapper);
   }
 
+  // ---------- dropdowns you can type in (like Streamlit's selectbox/multiselect) ----------
+  // Tom Select draws the control; the <select> stays the source of truth, so code
+  // keeps reading .value / .selectedOptions and listening to "change". After code
+  // changes a select's options, value or disabled state, call refreshSelect().
+  function searchable(select, placeholder) {
+    if (typeof TomSelect === "undefined" || select.tomselect) return select; // without the library: a plain select
+    // an empty choice ("") shows the hint instead, and × clears the box back to it
+    const clearable = !select.multiple && [...select.options].some((o) => o.value === "");
+    new TomSelect(select, {
+      maxOptions: null, // every match, as a plain select would list them
+      allowEmptyOption: false,
+      placeholder: placeholder || "Type to search…",
+      plugins: select.multiple ? ["remove_button"] : clearable ? ["clear_button"] : [],
+      render: { no_results: () => '<div class="no-results">No matches</div>' },
+    });
+    return select;
+  }
+
+  function refreshSelect(select) {
+    if (select && select.tomselect) select.tomselect.sync();
+  }
+
   // ---------- tables (Tabulator) ----------
   // table = {columns:[...], rows:[[...]]}
   // opts: selectable, titles: {col: header}, links: {col: displayText}, images: {col: {width, height}}, height, name
@@ -347,5 +369,5 @@ const SMA = (() => {
   }
 
   return { ensureSession, api, runJob, fileUrl, h, md, msg, spinner, jobProgress, jobOutcome, shell, makeTable, tabs,
-           linkParams, linkHas, trackUrl, syncUrl, get sid() { return sid; } };
+           linkParams, linkHas, trackUrl, syncUrl, searchable, refreshSelect, get sid() { return sid; } };
 })();

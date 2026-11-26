@@ -83,6 +83,26 @@ input[type=text], input[type=number], select {
 }
 input[type=text]:focus, input[type=number]:focus, select:focus { outline: 2px solid #ff4b4b55; border-color: var(--primary); }
 select[multiple] { min-height: 6.5em; }
+/* searchable dropdowns (Tom Select), drawn like the other inputs */
+.ts-wrapper { width: 100%; }
+.ts-wrapper .ts-control {
+  font: inherit; font-size: clamp(13px, 1.0vw, 17px); color: var(--text); line-height: 1.4;
+  padding: 6px 28px 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: #f7f8fa; box-shadow: none; min-height: 0;
+}
+.ts-wrapper.multi .ts-control { padding: 4px 8px; }
+.ts-wrapper.focus .ts-control { outline: 2px solid #ff4b4b55; border-color: var(--primary); box-shadow: none; }
+.ts-wrapper .ts-control input, .ts-wrapper .ts-control input[type=text] {
+  width: auto; min-width: 5rem; padding: 0; border: 0; border-radius: 0; background: transparent;
+  outline: none; font: inherit; color: var(--text);
+}
+.ts-wrapper.disabled .ts-control { opacity: 0.55; background: #eef0f3; }
+.ts-wrapper.multi .ts-control > .item {
+  background: var(--primary-soft); color: var(--text); border: 1px solid #ffc9c9; border-radius: 6px;
+}
+.ts-dropdown { font-size: clamp(13px, 1.0vw, 17px); color: var(--text); border-color: var(--border); border-radius: 8px; }
+.ts-dropdown .active { background: var(--primary-soft); color: var(--text); }
+.ts-dropdown .no-results { padding: 6px 10px; color: var(--muted); }
 .radio-group { display: flex; gap: 1rem; flex-wrap: wrap; }
 .radio-group label, .check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .help { cursor: help; color: var(--muted); font-size: 0.85em; }
