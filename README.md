@@ -68,6 +68,32 @@ Two environment variables matter for a local (non-docker) checkout:
 `external/LifeMASST/data/README.md` documents exactly what ships in git versus
 what is fetched, and why.
 
+### Updating ReDU in the FASSTrecords database
+
+`bin/update_redu_table.py` replaces `redu_table` in the FASSTrecords database
+(`masst_records.sqlite`) with a fresh ReDU dump and links each ReDU row to the
+file FASSTrecords indexed: by exact path, and for converted copies
+(`ccms_peak/`, `gnps2_converted/`) of files ReDU lists under their original path
+(`peak/`, `raw/`, `updates/`) with the same rule FASST mode uses. It is a manual
+tool; neither the app nor its workflows run it.
+
+```bash
+curl -L -o redu_dump.tsv https://redu.gnps2.org/dump      # ~1.7 GB
+python bin/update_redu_table.py --dump redu_dump.tsv --keep-unmatched --drop-empty --dry-run
+python bin/update_redu_table.py --dump redu_dump.tsv --keep-unmatched --drop-empty
+```
+
+- The database path comes from `config.py` (`PATH_TO_SQLITE`, which the
+  environment variable of that name overrides), or `--db`.
+- `--keep-unmatched` keeps the ReDU rows of files FASSTrecords has not indexed
+  (FASST mode needs them); `--dry-run` reports what would change and writes nothing.
+- The previous table stays as `redu_table_bak_<date>`; renaming it back to
+  `redu_table` undoes the update.
+- With docker-compose the database is mounted read-only into the containers: run
+  the script on the host against `database/masst_records.sqlite`, then restart the
+  containers (the server preloads the ReDU table, and datasette opens the file as
+  immutable).
+
 ### Links: session and search settings in the address
 
 The address bar always describes the page, so it can be bookmarked or shared:
