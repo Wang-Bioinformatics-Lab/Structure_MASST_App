@@ -210,7 +210,7 @@ function downstreamButton(label, path, body, opts = {}) {
   return h("div", { style: "max-width:520px" }, h("div", { class: "btn-row" }, btn), status);
 }
 
-function renderResultTab(tab, name, table, resultFigId) {
+function renderResultTab(tab, name, table, resultFigId, multi) {
   const n = table.rows.length;
   tab.append(h("p", { html: md(`Retrieved **${n}** matching samples with ReDU metadata for **${name}**.`) }));
   if (!(table.columns.includes("mri_id_int") || table.columns.includes("mri")) || n === 0) {
@@ -301,11 +301,15 @@ function renderResultTab(tab, name, table, resultFigId) {
       column: byValue ? colSel.value : null, values: byValue ? vals : [], apply_all: byValue && applyAll.checked,
     }, st);
   };
-  tab.append(h("div", { class: "btn-row" },
+  const actions = h("div", { class: "btn-row" },
     h("button", { onclick: () => act("remove") }, "Remove selected rows"),
-    h("button", { onclick: () => act("keep") }, "Keep only selected rows"),
-    h("label", { class: "check", title: "Applies the column/value filter above to every molecule, not just this one. Only available when a column + value(s) are selected." },
-      applyAll, "Apply to all molecules")), st);
+    h("button", { onclick: () => act("keep") }, "Keep only selected rows"));
+  // with a single molecule there is nothing else to apply the filter to
+  if (multi) {
+    actions.append(h("label", { class: "check", title: "Applies the column/value filter above to every molecule, not just this one. Only available when a column + value(s) are selected." },
+      applyAll, "Apply to all molecules"));
+  }
+  tab.append(actions, st);
 
   tab.append(h("h5", { html: md(`Downstream tooling for **${name}**`) }));
   tab.append(downstreamButton(`Populate DomainMASST for ${name}`, "/api/domainmasst", { name }, {
@@ -327,7 +331,7 @@ function renderResults() {
   }
   const body = h("div", { class: "body" }, h("h3", {}, "Metabolomics Raw Data Matches"));
   sec.append(h("details", { class: "expander", open: true }, h("summary", {}, "Metabolomics Raw Data Matches"), body));
-  tabs(body, "results", results.map((r, i) => ({ key: r.name, label: r.name, render: (tab) => renderResultTab(tab, r.name, r.table, i) })));
+  tabs(body, "results", results.map((r, i) => ({ key: r.name, label: r.name, render: (tab) => renderResultTab(tab, r.name, r.table, i, results.length > 1) })));
 
   if (results.length > 1 && results.some((r) => r.table.rows.length > 1)) {
     body.append(h("h5", {}, "Downstream tooling for all molecules"));

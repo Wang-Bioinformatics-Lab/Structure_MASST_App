@@ -5,7 +5,8 @@ const { api, runJob, h, msg, spinner, jobProgress, jobOutcome, makeTable, fileUr
 const { StructureInput, LibraryOptions, RawOptions, logProgress, showLog, prepPanel } = SearchUI;
 
 // Reports are built from user input: run them without access to this app (the
-// server also serves them with a sandbox CSP).
+// server also serves them with a sandbox CSP). Full screen is a separate
+// permission (allowfullscreen), not a sandbox flag; the GeoMASST map uses it.
 const SANDBOX = "allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads";
 
 function header(main, title, text) {
@@ -16,7 +17,7 @@ function header(main, title, text) {
 // An iframe that follows the height its document asks for (the GeoMASST map and
 // the LifeMASST tree heatmap post Streamlit's setFrameHeight message).
 function autoFrame(src, height, title) {
-  const frame = h("iframe", { class: "report-frame", src, title, style: `height:${height}px`, sandbox: SANDBOX });
+  const frame = h("iframe", { class: "report-frame", src, title, style: `height:${height}px`, sandbox: SANDBOX, allowfullscreen: true });
   window.addEventListener("message", (e) => {
     const d = e.data;
     if (e.source === frame.contentWindow && d && d.type === "streamlit:setFrameHeight" && d.height) frame.style.height = `${Math.ceil(d.height)}px`;
@@ -53,7 +54,7 @@ async function domainPage(main) {
   }
   const sel = h("select", {}, files.map((f) => h("option", { value: f }, f)));
   const chosen = h("p");
-  const frame = h("iframe", { class: "report-frame", title: "DomainMASST result", sandbox: SANDBOX });
+  const frame = h("iframe", { class: "report-frame", title: "DomainMASST result", sandbox: SANDBOX, allowfullscreen: true });
   const show = () => { chosen.textContent = `You selected: ${sel.value}`; frame.src = fileUrl(sel.value); };
   sel.addEventListener("change", show);
   main.append(h("div", { style: "max-width:520px" }, h("label", { class: "field" }, "Choose a file"), sel), chosen, frame);
