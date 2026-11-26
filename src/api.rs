@@ -102,8 +102,17 @@ pub fn router() -> Router<Arc<AppState>> {
 // Session + state
 // ---------------------------------------------------------------------------
 
-async fn new_session(State(app): State<Arc<AppState>>) -> ApiResult<Json<Value>> {
-    Ok(Json(json!({"sid": app.sessions.create()?})))
+/// A new session, or the one asked for with `{"resume": "<id>"}` while the server
+/// still has it. Links carry their session (?session=<id>); one that is gone or
+/// malformed is ignored and a new session is started instead.
+async fn new_session(State(app): State<Arc<AppState>>, body: axum::body::Bytes) -> ApiResult<Json<Value>> {
+    let wanted = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|v| v.get("resume").and_then(Value::as_str).map(str::to_owned));
+    if let Some(id) = wanted.filter(|id| app.sessions.exists(id)) {
+        return Ok(Json(json!({"sid": id, "resumed": true})));
+    }
+    Ok(Json(json!({"sid": app.sessions.create()?, "resumed": false})))
 }
 
 async fn state(Sess(sid, s): Sess) -> ApiResult<Json<Value>> {

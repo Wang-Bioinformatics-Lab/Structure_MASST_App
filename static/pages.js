@@ -98,7 +98,8 @@ async function lifePage(main) {
   if (status.prepared_from_structuremasst) {
     main.append(msg("info", "LifeMASST input has already been prepared from StructureMASST for this session. Simply select a tree from the dropdown and hit Run LifeMASST!"));
     const body = h("div", { class: "body" });
-    fresh = h("details", { class: "expander" }, h("summary", {}, "Discard StructureMASST results and start fresh."), body);
+    // a link with a structure to search opens it
+    fresh = h("details", { class: "expander", open: SMA.linkHas("input") }, h("summary", {}, "Discard StructureMASST results and start fresh."), body);
     main.append(fresh);
     controls = searchControls(body, "lm");
   } else {
@@ -190,7 +191,8 @@ async function geoPage(main) {
   const SRC_RESULTS = "This session's StructureMASST results";
   const SRC_SEARCH = "Search from here";
   const sources = hasResults ? [SRC_RESULTS, SRC_SEARCH] : [SRC_SEARCH];
-  let source = sources[0];
+  const fromLink = SMA.linkParams("page"); // ?source=search
+  let source = fromLink && fromLink.source === "search" ? SRC_SEARCH : sources[0];
 
   const srcBox = h("div", { class: "radio-group" });
   main.append(h("div", {}, h("label", { class: "field" }, "Matches to map"), srcBox));
@@ -228,8 +230,10 @@ async function geoPage(main) {
     source = s;
     resultsBox.classList.toggle("hidden", s !== SRC_RESULTS);
     searchBox.classList.toggle("hidden", s !== SRC_SEARCH);
+    SMA.syncUrl();
   };
   srcBox.append(...sources.map((s) => h("label", {}, h("input", { type: "radio", name: "geo_source", value: s, checked: s === source, onchange: () => setSource(s) }), s)));
+  SMA.trackUrl("page", () => ({ source: hasResults && source === SRC_SEARCH ? "search" : "" }));
   setSource(source);
 
   await prepPanel(main, "geomasst");

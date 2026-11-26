@@ -13,6 +13,17 @@ const SearchUI = (() => {
   }
   function saveState(key, st) {
     try { sessionStorage.setItem(key, JSON.stringify(st)); } catch (e) { /* ignore */ }
+    SMA.syncUrl(); // the address bar mirrors the search settings
+  }
+
+  // Whether a link's settings are what this tab already has. Then the tab keeps
+  // its state as it is (name suggestions, an open editor), so a refresh, whose
+  // address mirrors the form, changes nothing.
+  function sameSettings(a, b) {
+    const norm = (o) => JSON.stringify(Object.entries(o || {})
+      .filter(([, v]) => v !== null && v !== undefined && String(v) !== "")
+      .map(([k, v]) => [k, String(v)]).sort());
+    return norm(a) === norm(b);
   }
 
   let classesPromise = null;
@@ -36,10 +47,35 @@ const SearchUI = (() => {
       this.file = null;
       this.type = null; // smiles | smarts | Invalid | class_label | usi | null
       this.listeners = [];
+      const link = SMA.linkParams("input");
+      if (link && !sameSettings(link, this.urlParams())) this.fromLink(link);
       this.render(container);
+      SMA.trackUrl("input", () => this.urlParams());
+      if (this.lookUpName) this.onName(); // a link with only a name: look it up as if typed
     }
 
     save() { saveState(this.key, this.st); }
+
+    // A link's ?usi= / ?smiles= (with ?name= when it came from a name search) /
+    // ?class= / ?name= replaces this tab's input.
+    fromLink(p) {
+      if (!p) return;
+      const v = (k) => String(p[k] || "").trim();
+      Object.assign(this.st, { nameQuery: "", lastFetched: null, suggestions: [], nameChoice: null, nameWarning: null,
+        smiles: "", newSmiles: "", editorOpen: false, classLabel: "", usi: "" });
+      if (v("usi")) this.st.usi = v("usi");
+      else if (v("smiles")) Object.assign(this.st, { smiles: v("smiles"), nameQuery: v("name") });
+      else if (v("class")) this.st.classLabel = v("class");
+      else if (v("name")) { this.st.nameQuery = v("name"); this.lookUpName = true; }
+      this.save();
+    }
+
+    urlParams() {
+      const s = this.st;
+      if (s.usi) return { usi: s.usi };
+      if (s.classLabel) return { class: s.classLabel };
+      return { name: s.nameQuery, smiles: s.smiles.trim() ? this.effective() : "" };
+    }
     onChange(fn) { this.listeners.push(fn); }
     emit() { this.listeners.forEach((fn) => fn(this.type)); }
     effective() { return (this.st.newSmiles || this.st.smiles || "").trim(); }
@@ -258,13 +294,31 @@ const SearchUI = (() => {
   class LibraryOptions {
     constructor(container, prefix, input, opts = {}) {
       this.key = `sm_lib_${prefix}`;
-      this.st = loadState(this.key, { searchtype: "exact", tanimoto: "0.8", formula: "", elements: "" });
+      const defaults = { searchtype: "exact", tanimoto: "0.8", formula: "", elements: "" };
+      this.st = loadState(this.key, defaults);
       this.input = input;
+      const p = SMA.linkParams("lib");
+      if (p && !sameSettings(p, this.urlParams())) {
+        this.st = Object.assign({}, defaults, {
+          searchtype: SEARCH_OPTIONS.some((o) => o[0] === p.searchtype) ? p.searchtype : defaults.searchtype,
+          tanimoto: p.tanimoto !== undefined && Number(p.tanimoto) >= 0 && Number(p.tanimoto) <= 1 ? p.tanimoto : defaults.tanimoto,
+          formula: p.formula || "", elements: p.elements || "",
+        });
+        saveState(this.key, this.st);
+      }
       this.label = opts.label || "Find available MS/MS spectra";
       this.root = h("div");
       container.append(this.root);
       input.onChange(() => this.render());
       this.render();
+      SMA.trackUrl("lib", () => this.urlParams());
+    }
+
+    urlParams() {
+      if (!this.input.hasInput()) return {}; // nothing entered yet: keep the address short
+      const { searchtype: t, tanimoto, formula, elements } = this.st;
+      return { searchtype: t, tanimoto: t === "tanimoto" ? tanimoto : "",
+        formula: t !== "exact" ? formula : "", elements: t !== "exact" ? elements : "" };
     }
 
     render() {
@@ -293,6 +347,7 @@ const SearchUI = (() => {
       }
       row.append(h("div", { class: "col", style: "flex:2" }));
       this.root.replaceChildren(row);
+      SMA.syncUrl(); // the search type may have been narrowed to fit the input
     }
 
     values() {
@@ -304,22 +359,57 @@ const SearchUI = (() => {
   // Raw data search options (mode, cosine, peaks, rank, FASST + modifications)
   // -------------------------------------------------------------------------
   const LAST_ITERATION = "09/2025";
+  const MOD_CONDITIONS = ["Raw file", "ATTRIBUTE_DatasetAccession", "NCBITaxonomy"];
 
   class RawOptions {
     constructor(container, prefix, opts = {}) {
       this.key = `sm_raw_${prefix}`;
       this.opts = Object.assign({ cards: false, analogues: false, forceFasst: false }, opts);
-      this.st = loadState(this.key, {
+      const defaults = {
         mode: "FASSTrecords", minCos: 0.7, minPeaks: 5, minRank: 0, precTol: "0.02", fragTol: "0.02",
         modSearch: false, elimination: true, addition: true, analoguesSameDataset: false,
         modFormula: "", modMass: "", subsetMod: false, modCondition: "Raw file",
-      });
+      };
+      this.st = loadState(this.key, defaults);
+      const p = SMA.linkParams("raw");
+      if (p && !sameSettings(p, this.urlParams())) {
+        // numbers are checked here and clamped to the allowed range in render()
+        const num = (k, d) => (p[k] !== undefined && p[k] !== "" && Number.isFinite(Number(p[k])) ? Number(p[k]) : d);
+        const flag = (k, d) => (p[k] === undefined ? d : p[k] === "1" || p[k] === "true");
+        this.st = Object.assign({}, defaults, {
+          mode: ["FASSTrecords", "FASST"].includes(p.mode) ? p.mode : defaults.mode,
+          minCos: num("cosine", defaults.minCos), minPeaks: Math.round(num("peaks", defaults.minPeaks)),
+          minRank: Math.min(10, Math.max(0, Math.round(num("rank", 0)))),
+          precTol: p.prectol || defaults.precTol, fragTol: p.fragtol || defaults.fragTol,
+          modSearch: flag("modsearch", false), elimination: flag("elimination", true), addition: flag("addition", true),
+          analoguesSameDataset: flag("analogues", false), modFormula: p.modformula || "", modMass: p.modmass || "",
+          subsetMod: MOD_CONDITIONS.includes(p.modcondition),
+          modCondition: MOD_CONDITIONS.includes(p.modcondition) ? p.modcondition : defaults.modCondition,
+        });
+        saveState(this.key, this.st);
+      }
       this.root = h("div");
       container.append(this.root);
       this.render();
+      SMA.trackUrl("raw", () => this.urlParams());
     }
 
-    setForceFasst(v) { this.opts.forceFasst = v; this.render(); }
+    urlParams() {
+      const s = this.st;
+      const mode = this.mode();
+      const out = { mode, cosine: s.minCos, peaks: s.minPeaks, rank: Number(s.minRank) ? s.minRank : "" };
+      if (mode === "FASST") {
+        Object.assign(out, { prectol: s.precTol, fragtol: s.fragTol });
+        if (s.modSearch) {
+          Object.assign(out, { modsearch: "1", elimination: s.elimination ? "1" : "0", addition: s.addition ? "1" : "0",
+            analogues: this.opts.analogues && s.analoguesSameDataset ? "1" : "",
+            modformula: s.modFormula, modmass: s.modMass, modcondition: s.subsetMod ? s.modCondition : "" });
+        }
+      }
+      return out;
+    }
+
+    setForceFasst(v) { this.opts.forceFasst = v; this.render(); SMA.syncUrl(); }
     mode() { return this.opts.forceFasst ? "FASST" : this.st.mode; }
 
     render() {
@@ -374,7 +464,7 @@ const SearchUI = (() => {
           if (this.st.subsetMod) {
             left.append(h("div", { style: "margin-top:0.5rem" }, h("label", { class: "field" }, "Unmodified found in same"),
               h("select", { onchange: set("modCondition") },
-                ["Raw file", "ATTRIBUTE_DatasetAccession", "NCBITaxonomy"].map((o) => h("option", { value: o, selected: this.st.modCondition === o }, o)))));
+                MOD_CONDITIONS.map((o) => h("option", { value: o, selected: this.st.modCondition === o }, o)))));
           }
         }
         root.append(h("div", { class: "row", style: "margin-top:0.5rem" }, left, right, h("div", { class: "col" }), h("div", { class: "col" })));

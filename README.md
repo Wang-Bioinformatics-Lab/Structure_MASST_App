@@ -68,6 +68,24 @@ Two environment variables matter for a local (non-docker) checkout:
 `external/LifeMASST/data/README.md` documents exactly what ships in git versus
 what is fetched, and why.
 
+### Links: session and search settings in the address
+
+The address bar always describes the page, so it can be bookmarked or shared:
+
+```
+https://<host>/?session=<id>&smiles=CN1C%3DNC2C1C(%3DO)N(C(%3DO)N2C)C&searchtype=substructure&mode=FASST&cosine=0.8
+```
+
+- `session` reopens that session - its results and files - for as long as its
+  folder in `sessionoutput/` exists. A session that is gone is ignored: a new one is
+  started and the search settings from the link are filled in.
+- Search settings: `name`, `smiles`, `class`, `usi` (structure input); `searchtype`,
+  `tanimoto`, `formula`, `elements` (library search); `mode`, `cosine`, `peaks`,
+  `rank`, `prectol`, `fragtol`, `modsearch`, `elimination`, `addition`, `analogues`,
+  `modformula`, `modmass`, `modcondition` (raw data search); `source=search`
+  (GeoMASST). A link fills the form in; it never starts a search by itself.
+- Whoever has a link with a session in it can see and change that session.
+
 ### Searching from the LifeMASST and GeoMASST pages
 
 Neither page requires a StructureMASST run first: both offer the StructureMASST

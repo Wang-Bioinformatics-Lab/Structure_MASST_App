@@ -2,20 +2,104 @@
 "use strict";
 
 const SMA = (() => {
-  // ---------- session (per browser tab, like a Streamlit session) ----------
+  // ---------- session (per browser tab; a link can carry one: ?session=<id>) ----------
   const SID_KEY = "structuremasst_sid";
+  const SID_RE = /^([0-9a-f]{12}|[0-9a-f]{32})$/;
 
   function storageGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
   function storageSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) { /* ignore */ } }
 
-  let sid = storageGet(SID_KEY);
+  // What the page was opened with, read before the address bar is rewritten.
+  const linkQuery = new URLSearchParams(location.search);
+  const linkSession = (linkQuery.get("session") || "").trim().toLowerCase();
 
-  async function ensureSession() {
-    if (sid && /^([0-9a-f]{12}|[0-9a-f]{32})$/.test(sid)) return sid;
-    const r = await fetch("/api/session", { method: "POST" });
-    sid = (await r.json()).sid;
-    storageSet(SID_KEY, sid);
-    return sid;
+  let sid = null;
+  let ready = null;
+
+  // The session in the link, else this tab's own - reopened if the server still
+  // has it. One that is gone (old sessions are deleted on the server) is ignored
+  // and a new session is started.
+  function ensureSession() {
+    if (!ready) {
+      ready = (async () => {
+        const wanted = linkSession || storageGet(SID_KEY) || "";
+        const r = await fetch("/api/session", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ resume: SID_RE.test(wanted) ? wanted : null }),
+        });
+        if (!r.ok) throw new Error(`Could not start a session (${r.status}).`);
+        const d = await r.json();
+        sid = d.sid;
+        storageSet(SID_KEY, sid);
+        if (wanted && !d.resumed) sessionGone(!!linkSession);
+        syncUrl();
+        return sid;
+      })();
+      ready.catch(() => { ready = null; });
+    }
+    return ready;
+  }
+
+  function sessionGone(fromLink) {
+    const main = document.getElementById("main");
+    if (!main) return;
+    main.prepend(msg("warning", (fromLink
+      ? "The session in this link is no longer available, so a new session was started."
+      : "Your previous session is no longer available, so a new session was started.")
+      + (fromLink && linkHasSearch ? " The search settings from the link are filled in." : "")));
+  }
+
+  // ---------- address bar: ?session=<id>&<search settings> ----------
+  // The address always describes the page, so it can be bookmarked or shared and
+  // a refresh keeps what is on screen. Each kind of search control reports its
+  // settings (trackUrl); a link's settings are handed to it once (linkParams).
+  const LINK_KEYS = {
+    input: ["name", "smiles", "class", "usi"],
+    lib: ["searchtype", "tanimoto", "formula", "elements"],
+    raw: ["mode", "cosine", "peaks", "rank", "prectol", "fragtol", "modsearch", "elimination", "addition",
+          "analogues", "modformula", "modmass", "modcondition"],
+    page: ["source"], // GeoMASST: map this session's results or search from there
+  };
+  const linkHasSearch = Object.values(LINK_KEYS).flat().some((k) => linkQuery.has(k));
+  const linkOf = (kind) => Object.fromEntries(LINK_KEYS[kind].filter((k) => linkQuery.has(k)).map((k) => [k, linkQuery.get(k)]));
+  const urlState = {};
+  const linkTaken = {};
+
+  // The link's settings for one kind of control, the first time it asks: null
+  // when the link has no search settings (the tab keeps its own), otherwise the
+  // values given for this kind (missing ones mean the defaults).
+  function linkParams(kind) {
+    if (linkTaken[kind] || !linkHasSearch) return null;
+    linkTaken[kind] = true;
+    return linkOf(kind);
+  }
+
+  // Whether the link gives any value of this kind (without taking it).
+  function linkHas(kind) { return LINK_KEYS[kind].some((k) => (linkQuery.get(k) || "").trim() !== ""); }
+
+  function trackUrl(kind, settings) { urlState[kind] = settings; syncUrl(); }
+
+  function syncUrl() {
+    const q = new URLSearchParams();
+    if (sid || SID_RE.test(linkSession)) q.set("session", sid || linkSession);
+    for (const kind of Object.keys(LINK_KEYS)) {
+      // a control that is not on the page yet keeps the link's settings
+      const vals = urlState[kind] ? urlState[kind]() : linkTaken[kind] ? {} : linkOf(kind);
+      for (const [k, v] of Object.entries(vals || {})) {
+        if (v !== null && v !== undefined && String(v) !== "") q.set(k, String(v));
+      }
+    }
+    const s = q.toString();
+    const url = location.pathname + (s ? `?${s}` : "") + location.hash;
+    if (url !== location.pathname + location.search + location.hash) {
+      try { history.replaceState(history.state, "", url); } catch (e) { /* ignore */ }
+    }
+    // the menu links keep the session too, so a page opened in a new tab shares it
+    if (sid) {
+      document.querySelectorAll("#sidebar a[href^='/']").forEach((a) => {
+        a.setAttribute("href", `${a.getAttribute("href").split("?")[0]}?session=${sid}`);
+      });
+    }
   }
 
   // ---------- API ----------
@@ -240,5 +324,5 @@ const SMA = (() => {
   }
 
   return { ensureSession, api, runJob, fileUrl, h, md, msg, spinner, jobProgress, jobOutcome, shell, makeTable, tabs,
-           get sid() { return sid; } };
+           linkParams, linkHas, trackUrl, syncUrl, get sid() { return sid; } };
 })();

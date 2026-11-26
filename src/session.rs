@@ -1,9 +1,10 @@
 //! Per-session state (the Rust counterpart of `st.session_state`).
 //!
-//! A session id is a 12-character hex string, as before, and every session has
-//! its folder `sessionoutput/<sid>/`. The state is kept in memory and written
-//! to `sessionoutput/<sid>/state.json` after each change, so it survives server
-//! restarts and idle eviction.
+//! A session id is 32 hex characters (12 for sessions from the Streamlit app),
+//! and every session has its folder `sessionoutput/<sid>/`. The state is kept in
+//! memory and written to `sessionoutput/<sid>/state.json` after each change, so it
+//! survives server restarts and idle eviction, and a link (?session=<sid>) can
+//! reopen it for as long as the folder is kept.
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -102,6 +103,12 @@ impl SessionStore {
         Ok(sid)
     }
 
+    /// Whether a session can be reopened from a link: its folder is still there
+    /// (old sessions are removed on the server by deleting their folders).
+    pub fn exists(&self, sid: &str) -> bool {
+        valid_sid(sid) && self.root.join(sid).is_dir()
+    }
+
     /// Get (or lazily load/create) a session. Returns None for malformed ids.
     pub fn get(&self, sid: &str) -> Option<SessionRef> {
         if !valid_sid(sid) {
@@ -132,5 +139,24 @@ impl SessionStore {
             Ok(g) => g.last_access.elapsed() < max_idle,
             Err(_) => true,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_existing_well_formed_sessions_can_be_reopened() {
+        let root = std::env::temp_dir().join(format!("sm_sessions_{}", new_sid()));
+        let store = SessionStore::new(root.clone());
+        let sid = store.create().unwrap();
+        assert!(store.exists(&sid));
+        assert!(!store.exists(&new_sid()), "an id the server never issued");
+        std::fs::remove_dir_all(root.join(&sid)).unwrap();
+        assert!(!store.exists(&sid), "a session whose folder was deleted");
+        assert!(!store.exists("../../etc"));
+        assert!(!store.exists(""));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
