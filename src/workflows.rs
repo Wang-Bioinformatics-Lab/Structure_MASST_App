@@ -559,8 +559,13 @@ impl Unmatched {
 pub fn unmatched(data: &crate::session::SessionData) -> Unmatched {
     let mut u = Unmatched::default();
     let Some(results) = data.raw_results.as_ref() else { return u };
+    let has_matches = |t: &Table| !t.is_empty() && (t.has("mri_id_int") || t.has("mri"));
+    // nothing matched at all: removing every molecule is not a clean-up, so there is nothing to offer
+    if !results.values().any(has_matches) {
+        return u;
+    }
     for (name, t) in results {
-        if t.is_empty() || !(t.has("mri_id_int") || t.has("mri")) {
+        if !has_matches(t) {
             u.queries.push(name.clone());
             continue;
         }
@@ -1696,6 +1701,16 @@ mod tests {
         assert!(!d.query_by_name.contains_key("b"));
         assert_eq!(d.query_table.as_ref().unwrap().len(), 2);
         assert_eq!(unmatched(&d).molecules(&d), 0);
+    }
+
+    #[test]
+    fn nothing_to_remove_when_nothing_matched_at_all() {
+        let mut d = session_with(vec![("a", vec!["A"]), ("b", vec!["B"])], vec![("a", vec![]), ("b", vec![])]);
+        assert_eq!(unmatched(&d).molecules(&d), 0);
+        assert_eq!(remove_unmatched(&mut d), 0);
+        assert_eq!(d.groups.len(), 2);
+        let d = session_with(vec![("a", vec!["A"])], vec![("a", vec!["A"])]);
+        assert_eq!(unmatched(&d).molecules(&d), 0, "every molecule matched");
     }
 
     #[test]
