@@ -400,8 +400,13 @@ def align_files_to_redu(files: pd.Series, redu_files: pd.Series) -> pd.Series:
     prefixes = tuple(sorted({f"mzspec:{k[0]}:" for u, k in file_keys.items() if k and u not in exact}))
     if not prefixes:
         return files
+    if len(prefixes) <= 50:  # a search: a few datasets
+        candidates = redu_files[redu_files.str.startswith(prefixes)]
+    else:  # many datasets (e.g. a whole-database pass)
+        wanted = {p.split(":")[1] for p in prefixes}
+        candidates = redu_files[redu_files.str.split(":", n=2).str[1].isin(wanted)]
     redu_by_name = {}
-    for u in redu_files[redu_files.str.startswith(prefixes)]:
+    for u in candidates:
         k = _file_keys(u)
         if k:
             redu_by_name.setdefault((k[0], k[2]), []).append((u, k))
