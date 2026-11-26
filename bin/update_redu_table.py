@@ -36,8 +36,8 @@ import config  # noqa: E402  (PATH_TO_SQLITE)
 
 ap = argparse.ArgumentParser(description="Replace redu_table in the FASSTrecords database with a fresh ReDU dump.")
 ap.add_argument("--dump", required=True, type=Path, help="ReDU dump (TSV), e.g. from https://redu.gnps2.org/dump")
-ap.add_argument("--db", type=Path, default=Path(config.PATH_TO_SQLITE),
-                help=f"FASSTrecords database (default from config.py: {config.PATH_TO_SQLITE})")
+ap.add_argument("--db", type=Path, default=None,
+                help=f"FASSTrecords database (default: PATH_TO_SQLITE from config.py, now {config.PATH_TO_SQLITE})")
 ap.add_argument("--dry-run", action="store_true", help="report only, write nothing")
 ap.add_argument("--keep-unmatched", action="store_true",
                 help="also keep dump rows whose USI is not indexed in mri_table (mri_id_int NULL)")
@@ -48,13 +48,16 @@ ap.add_argument("--drop-empty", action="store_true",
 ap.add_argument("--no-path-rule", action="store_true",
                 help="link exact paths only (no linking of copies indexed under another path)")
 a = ap.parse_args()
+DB_SOURCE = "--db" if a.db else ("PATH_TO_SQLITE from the environment" if os.environ.get("PATH_TO_SQLITE") else "config.py")
+a.db = a.db or Path(config.PATH_TO_SQLITE)
 if not a.db.is_file():
-    sys.exit(f"no database at {a.db} (set PATH_TO_SQLITE or pass --db)")
+    sys.exit(f"no database at {a.db} (path from {DB_SOURCE}): fix PATH_TO_SQLITE in config.py or the environment, or pass --db")
 if not a.dump.is_file():
     sys.exit(f"no dump at {a.dump}")
 T0 = time.time(); log = lambda m: print(f"[{time.time() - T0:6.1f}s] {m}", flush=True)
 csv.field_size_limit(10_000_000)
 
+log(f"database: {a.db.resolve()}  ({DB_SOURCE})")
 con = sqlite3.connect(a.db, timeout=120)
 old_cols = [r[1] for r in con.execute("PRAGMA table_info(redu_table)")]
 if not old_cols:
