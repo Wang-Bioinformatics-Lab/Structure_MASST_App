@@ -85,6 +85,8 @@ https://<host>/?session=<id>&smiles=CN1C%3DNC2C1C(%3DO)N(C(%3DO)N2C)C&searchtype
   `modformula`, `modmass`, `modcondition` (raw data search); `source=search`
   (GeoMASST). A link fills the form in; it never starts a search by itself.
 - Whoever has a link with a session in it can see and change that session.
+- **↺ New session** in the menu starts an empty session (results and form); the
+  previous session stays available under its address, which the new page links to.
 
 ### Searching from the LifeMASST and GeoMASST pages
 

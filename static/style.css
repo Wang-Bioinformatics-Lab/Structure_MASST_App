@@ -40,6 +40,7 @@ a { color: #1c64c8; }
 }
 .sidebar nav a:hover { background: #e3e6ec; }
 .sidebar nav a.active { background: #e3e6ec; font-weight: 600; }
+.sidebar .new-session { display: block; width: 100%; margin-top: 14px; }
 .sidebar .contributors { font-size: 0.85em; margin-top: 24px; }
 .sidebar-toggle { display: none; }
 .main { flex: 1; min-width: 0; padding: 1rem 2vw 4rem; }

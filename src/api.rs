@@ -97,6 +97,14 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/lifemasst/run", post(lifemasst_run).layer(axum::extract::DefaultBodyLimit::max(UPLOAD_LIMIT)))
         .route("/api/geomasst", post(geomasst).layer(axum::extract::DefaultBodyLimit::max(UPLOAD_LIMIT)))
         .route("/api/files/{*path}", get(session_file))
+        // The session travels in a header, so one address (e.g. /api/state) answers
+        // differently per session: the browser must not keep these answers, or Back
+        // shows another session's (or an older) state. Responses that set their own
+        // caching (the structure images) keep it.
+        .layer(tower_http::set_header::SetResponseHeaderLayer::if_not_present(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        ))
 }
 
 // ---------------------------------------------------------------------------

@@ -4,10 +4,12 @@
 const SMA = (() => {
   // ---------- session (per browser tab; a link can carry one: ?session=<id>) ----------
   const SID_KEY = "structuremasst_sid";
+  const PREV_KEY = "structuremasst_prev"; // address of the session left with "New session"
   const SID_RE = /^([0-9a-f]{12}|[0-9a-f]{32})$/;
 
   function storageGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
   function storageSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) { /* ignore */ } }
+  function storageRemove(k) { try { sessionStorage.removeItem(k); } catch (e) { /* ignore */ } }
 
   // What the page was opened with, read before the address bar is rewritten.
   const linkQuery = new URLSearchParams(location.search);
@@ -31,13 +33,32 @@ const SMA = (() => {
         const d = await r.json();
         sid = d.sid;
         storageSet(SID_KEY, sid);
-        if (wanted && !d.resumed) sessionGone(!!linkSession);
+        const prev = storageGet(PREV_KEY);
+        if (prev) { storageRemove(PREV_KEY); sessionStarted(prev); }
+        else if (wanted && !d.resumed) sessionGone(!!linkSession);
         syncUrl();
         return sid;
       })();
       ready.catch(() => { ready = null; });
     }
     return ready;
+  }
+
+  // "New session": an empty session and an empty form, as a browser refresh gave
+  // under Streamlit. The session left behind stays on the server; its address
+  // (offered on the new page, and in the browser history) reopens it.
+  function newSession() {
+    const prev = location.pathname + location.search;
+    try { sessionStorage.clear(); } catch (e) { /* ignore */ }
+    storageSet(PREV_KEY, prev);
+    location.assign(location.pathname);
+  }
+
+  function sessionStarted(prev) {
+    const main = document.getElementById("main");
+    if (!main) return;
+    const back = /^\/(?!\/)/.test(prev) ? h("a", { href: prev }, "Back to the previous session") : "";
+    main.prepend(msg("info", "Started a new, empty session. ", back));
   }
 
   function sessionGone(fromLink) {
@@ -210,6 +231,8 @@ const SMA = (() => {
     const sidebar = h("aside", { class: "sidebar", id: "sidebar" },
       h("a", { href: "/" }, h("img", { class: "logo", src: "/logo.png", alt: "StructureMASST" })),
       h("nav", {}, PAGES.map(([href, label]) => h("a", { href, class: href === active ? "active" : null }, label))),
+      h("button", { type: "button", class: "new-session", onclick: newSession,
+        title: "Start over with an empty session. The current one stays available under its address." }, "↺ New session"),
       h("div", { class: "contributors", html: "<strong>Contributors</strong><br>Yasin El Abiead (BOKU University)<br>Wilhan Nunes (UCSD)<br>Mingxun Wang (UCR)<br>" }),
     );
     const toggle = h("button", { class: "sidebar-toggle", onclick: () => sidebar.classList.toggle("open") }, "☰ Menu");
